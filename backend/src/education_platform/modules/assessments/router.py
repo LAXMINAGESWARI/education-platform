@@ -2,16 +2,20 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.api.deps import get_scope
 from education_platform.db.session import get_session
-from education_platform.modules.assessments import service
+from education_platform.modules.assessments import feedback_service, goals_service, service
 from education_platform.modules.assessments.schemas import (
     AttemptHistoryItem,
     AttemptResult,
+    FeedbackHighlights,
+    GoalOut,
+    SetGoalRequest,
     StartAttemptResponse,
+    SubjectFeedbackDashboard,
     SubmitAttemptRequest,
 )
 from education_platform.modules.authorization.scope import Scope
@@ -54,3 +58,39 @@ async def get_quiz_attempt(
     session: AsyncSession = Depends(get_session),
 ) -> AttemptResult:
     return await service.get_attempt(session, scope, attempt_id)
+
+
+@router.get("/subjects/{subject_id}/feedback", response_model=SubjectFeedbackDashboard)
+async def get_subject_feedback(
+    subject_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> SubjectFeedbackDashboard:
+    return await feedback_service.get_subject_feedback(session, scope, subject_id)
+
+
+@router.get("/me/feedback-highlights", response_model=FeedbackHighlights)
+async def get_feedback_highlights(
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackHighlights:
+    return await feedback_service.get_feedback_highlights(session, scope)
+
+
+@router.put("/subtopics/{subtopic_id}/goal", response_model=GoalOut)
+async def put_subtopic_goal(
+    subtopic_id: UUID,
+    payload: SetGoalRequest,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> GoalOut:
+    return await goals_service.set_goal(session, scope, subtopic_id, payload)
+
+
+@router.delete("/subtopics/{subtopic_id}/goal", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_subtopic_goal(
+    subtopic_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    await goals_service.delete_goal(session, scope, subtopic_id)

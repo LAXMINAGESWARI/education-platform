@@ -376,3 +376,25 @@ class AttemptAnswer(UUIDTimestampMixin, Base):
     selected_mapping: Mapped[dict[str, Any] | None] = mapped_column(JsonDict, nullable=True)
     is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     marks_awarded: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
+
+
+class StudentSubtopicGoal(UUIDTimestampMixin, Base):
+    """A student-set target percent + due date for one subtopic. Status (on track / achieved /
+    missed) is computed live from current feedback data, not stored — it would otherwise need
+    a background job to stay in sync as new attempts come in."""
+
+    __tablename__ = "student_subtopic_goals"
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id", "subtopic_id", name="uq_student_subtopic_goals_student_subtopic"
+        ),
+        CheckConstraint(
+            "target_percent >= 0 AND target_percent <= 100",
+            name="ck_student_subtopic_goals_target_percent",
+        ),
+    )
+
+    student_id: Mapped[UUID] = mapped_column(ForeignKey("student_profiles.id"), index=True)
+    subtopic_id: Mapped[UUID] = mapped_column(ForeignKey("subtopics.id"), index=True)
+    target_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -131,6 +131,11 @@ export function ResultPage() {
               <Link to={`/quizzes/${result.quiz_id}`} className="btn btn--sm">
                 Retake quiz
               </Link>
+              {path?.subjectId && (
+                <Link to={`/subjects/${path.subjectId}/feedback`} className="btn btn--sm">
+                  See full feedback
+                </Link>
+              )}
             </div>
           </header>
 

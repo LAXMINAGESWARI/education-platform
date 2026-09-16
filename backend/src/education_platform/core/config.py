@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     access_token_minutes: int = 60
     refresh_token_days: int = 14
     mastery_pass_percent: float = 70.0
+    feedback_weak_threshold_percent: float = 70.0
+    feedback_relative_sd: float = 1.0
+    feedback_min_class_n: int = 5
+    feedback_min_student_n: int = 3
     demo_student_email: str = "student@demo.school"
     demo_student_password: str = "demo1234"
     demo_admin_email: str = "admin@demo.school"

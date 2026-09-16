@@ -8,12 +8,14 @@ import { AdminShell } from "./components/AdminShell";
 import { AppShell } from "./components/AppShell";
 import { TeacherShell } from "./components/TeacherShell";
 import { EnrollPage } from "./pages/EnrollPage";
+import { FeedbackSubjectPickerPage } from "./pages/FeedbackSubjectPickerPage";
 import { HomePage } from "./pages/HomePage";
 import { LessonPage } from "./pages/LessonPage";
 import { LessonSlidesPage } from "./pages/LessonSlidesPage";
 import { QuizHistoryPage } from "./pages/QuizHistoryPage";
 import { QuizPage } from "./pages/QuizPage";
 import { ResultPage } from "./pages/ResultPage";
+import { SubjectFeedbackPage } from "./pages/SubjectFeedbackPage";
 import { TopicLessonPage } from "./pages/TopicLessonPage";
 import { TopicPageRedirect } from "./pages/TopicPageRedirect";
 import { WelcomePage } from "./pages/WelcomePage";
@@ -134,6 +136,8 @@ export function App() {
         />
         <Route path="quizzes/:quizId" element={<QuizPage />} />
         <Route path="attempts/:attemptId" element={<ResultPage />} />
+        <Route path="feedback" element={<FeedbackSubjectPickerPage />} />
+        <Route path="subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
