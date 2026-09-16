@@ -17,6 +17,166 @@ function pct(value: string | number | null): number | null {
   return typeof value === "string" ? Number(value) : value;
 }
 
+// ─── NEW: Compute overall score (best score per subtopic, averaged) ───────────
+function computeOverallScore(subtopics: SubtopicFeedback[]): number | null {
+  const scores: number[] = [];
+  for (const s of subtopics) {
+    if (s.attempts.length === 0) continue;
+    const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
+    scores.push(best);
+  }
+  if (scores.length === 0) return null;
+  return scores.reduce((a, b) => a + b, 0) / scores.length;
+}
+
+// ─── NEW: Overall Score Hero ──────────────────────────────────────────────────
+function ScoreHero({
+  dashboard,
+}: {
+  dashboard: SubjectFeedbackDashboard;
+}) {
+  const overallScore = computeOverallScore(dashboard.subtopics);
+
+  // Use best score + attempt count to determine strong/needed effort/weak in the hero
+  const PASS_THRESHOLD = 70;
+  const EASY_ATTEMPTS = 2;
+  const subtopicStatus = (s: SubtopicFeedback) => {
+    if (s.attempts.length === 0) return "no-data";
+    const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
+    if (best < PASS_THRESHOLD) return "weak";
+    if (s.attempts.length <= EASY_ATTEMPTS) return "strong";
+    return "effort"; // passed but took multiple tries
+  };
+  const strongCount = dashboard.subtopics.filter((s) => subtopicStatus(s) === "strong").length;
+  const effortCount = dashboard.subtopics.filter((s) => subtopicStatus(s) === "effort").length;
+  const weakCount = dashboard.subtopics.filter((s) => subtopicStatus(s) === "weak").length;
+  const noDataCount = dashboard.subtopics.filter((s) => subtopicStatus(s) === "no-data").length;
+
+  const scoreColor =
+    overallScore === null
+      ? "var(--ink-muted)"
+      : overallScore >= 70
+        ? "var(--success-border)"
+        : "var(--danger-border)";
+
+  const message =
+    overallScore === null
+      ? "Keep going — more attempts unlock your score."
+      : overallScore >= 80
+        ? "Great work! You're performing well overall."
+        : overallScore >= 60
+          ? "You're making progress — focus on weak areas to level up."
+          : "Keep pushing — review the focus areas below to improve.";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: "1.5rem",
+        alignItems: "center",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: "12px",
+        padding: "1.25rem 1.5rem",
+        marginBottom: "1.25rem",
+        flexWrap: "wrap",
+      }}
+    >
+      {/* Big score circle */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "90px",
+          height: "90px",
+          borderRadius: "50%",
+          border: `4px solid ${scoreColor}`,
+          flexShrink: 0,
+        }}
+      >
+        <span style={{ fontSize: "1.6rem", fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
+          {overallScore !== null ? `${Math.round(overallScore)}%` : "—"}
+        </span>
+        <span style={{ fontSize: "0.6rem", color: "var(--ink-muted)", marginTop: "2px" }}>
+          avg score
+        </span>
+      </div>
+
+      {/* Stats + message */}
+      <div style={{ flex: 1, minWidth: "180px" }}>
+        <p style={{ margin: "0 0 6px 0", fontWeight: 600, fontSize: "0.95rem" }}>{message}</p>
+        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+          {strongCount > 0 && (
+            <span style={{ fontSize: "0.82rem", color: "var(--success-border)", fontWeight: 600 }}>
+              ✓ {strongCount} strong
+            </span>
+          )}
+          {effortCount > 0 && (
+            <span style={{ fontSize: "0.82rem", color: "#b45309", fontWeight: 600 }}>
+              ⟳ {effortCount} needed effort
+            </span>
+          )}
+          {weakCount > 0 && (
+            <span style={{ fontSize: "0.82rem", color: "var(--danger-border)", fontWeight: 600 }}>
+              ✗ {weakCount} needs work
+            </span>
+          )}
+          {noDataCount > 0 && (
+            <span style={{ fontSize: "0.82rem", color: "var(--ink-muted)" }}>
+              · {noDataCount} no data yet
+            </span>
+          )}
+        </div>
+        <p style={{ margin: "6px 0 0 0", fontSize: "0.8rem", color: "var(--ink-muted)" }}>
+          {dashboard.attempt_count === 1
+            ? "1 attempt so far"
+            : `Achieved in ${dashboard.attempt_count} attempts`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── NEW: Focus Banner ────────────────────────────────────────────────────────
+function FocusBanner({ weakSubtopics }: { weakSubtopics: SubtopicFeedback[] }) {
+  if (weakSubtopics.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        background: "var(--danger-bg)",
+        border: "1px solid var(--danger-border)",
+        borderRadius: "10px",
+        padding: "0.9rem 1.1rem",
+        marginBottom: "1.25rem",
+      }}
+    >
+      <p style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: "0.9rem", color: "var(--danger-border)" }}>
+        🎯 Focus on these first
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+        {weakSubtopics.map((s) => (
+          <span
+            key={s.subtopic_id}
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--danger-border)",
+              borderRadius: "6px",
+              padding: "3px 10px",
+              fontSize: "0.82rem",
+              fontWeight: 500,
+            }}
+          >
+            {s.subtopic_name}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AttemptChip({
   attempt,
   previousPercent,
@@ -111,14 +271,22 @@ function GoalSection({
   }
 
   if (goal) {
+    // Override status if latest attempt already meets the target
+    const latestScore =
+      subtopic.attempts.length > 0
+        ? (pct(subtopic.attempts[subtopic.attempts.length - 1].percent) ?? 0)
+        : 0;
+    const effectiveStatus =
+      latestScore >= (pct(goal.target_percent) ?? 0) ? "achieved" : goal.status;
+
     const badgeClass =
-      goal.status === "achieved"
+      effectiveStatus === "achieved"
         ? "badge--ok"
-        : goal.status === "missed"
+        : effectiveStatus === "missed"
           ? "badge--warn"
           : "badge--info";
     const statusLabel =
-      goal.status === "achieved" ? "Achieved" : goal.status === "missed" ? "Missed" : "On track";
+      effectiveStatus === "achieved" ? "Achieved ✓" : effectiveStatus === "missed" ? "Missed" : "On track";
     return (
       <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
@@ -211,13 +379,26 @@ function SubtopicCard({
   regression: RegressionOut | undefined;
   onGoalChange: (subtopicId: string, goal: GoalOut | null) => void;
 }) {
-  const badgeClass =
-    subtopic.is_weak === true ? "badge--warn" : subtopic.is_weak === false ? "badge--ok" : "badge--info";
-  const status =
-    subtopic.is_weak === true ? "Focus area" : subtopic.is_weak === false ? "Strong" : "Not enough data";
+  const attempts = subtopic.attempts;
   const delta = pct(subtopic.delta);
   const remediation = subtopic.remediation;
-  const attempts = subtopic.attempts;
+
+  const PASS_THRESHOLD = 70;
+  const EASY_ATTEMPTS = 2;
+  const bestScore = attempts.length > 0 ? Math.max(...attempts.map((a) => pct(a.percent) ?? 0)) : null;
+  const cardStatus =
+    bestScore === null
+      ? "no-data"
+      : bestScore < PASS_THRESHOLD
+        ? "weak"
+        : attempts.length <= EASY_ATTEMPTS
+          ? "strong"
+          : "effort";
+
+  const badgeClass =
+    cardStatus === "strong" ? "badge--ok" : cardStatus === "effort" ? "badge--info" : cardStatus === "weak" ? "badge--warn" : "badge--info";
+  const status =
+    cardStatus === "strong" ? "Strong" : cardStatus === "effort" ? "Needed effort" : cardStatus === "weak" ? "Needs work" : "Not enough data";
   const lastIndex = attempts.length - 1;
 
   return (
@@ -332,6 +513,17 @@ export function SubjectFeedbackPage() {
     );
   }
 
+  // ─── NEW: Sort weak subtopics first ────────────────────────────────────────
+  const sortedSubtopics = dashboard
+    ? [...dashboard.subtopics].sort((a, b) => {
+        const rank = (s: SubtopicFeedback) =>
+          s.is_weak === true ? 0 : s.is_weak === false ? 2 : 1;
+        return rank(a) - rank(b);
+      })
+    : [];
+
+  const weakSubtopics = sortedSubtopics.filter((s) => s.is_weak === true);
+
   return (
     <>
       <Crumbs
@@ -368,16 +560,15 @@ export function SubjectFeedbackPage() {
             </div>
           ) : (
             <>
-              <div className="alert alert--info">
-                <p className="score-hero__status">{dashboard.summary}</p>
-                <p className="score-hero__meta">
-                  Across {dashboard.attempt_count} scored attempt
-                  {dashboard.attempt_count === 1 ? "" : "s"}
-                </p>
-              </div>
+              {/* ─── NEW: Score Hero ──────────────────────────────────────── */}
+              <ScoreHero dashboard={dashboard} />
 
+              {/* ─── NEW: Focus Banner ───────────────────────────────────── */}
+              <FocusBanner weakSubtopics={weakSubtopics} />
+
+              {/* ─── Subtopic grid (weak first) ──────────────────────────── */}
               <div className="grid grid--2" style={{ marginTop: "1rem" }}>
-                {dashboard.subtopics.map((s) => (
+                {sortedSubtopics.map((s) => (
                   <SubtopicCard
                     key={s.subtopic_id}
                     subtopic={s}
