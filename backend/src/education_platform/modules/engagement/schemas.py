@@ -30,3 +30,17 @@ class SubtopicEngagementSummary(BaseModel):
 
     subtopic_id: UUID
     slides: list[SlideEngagementSummary]
+
+
+class EngagementRateOut(BaseModel):
+    """Engagement rate for one student on one subtopic (lesson).
+
+    rate = engaged_slides / total_slides, where a slide counts as "engaged"
+    if the student spent at least ENGAGED_THRESHOLD_SECONDS on it.
+    rate is None when the lesson has no slides (can't divide).
+    """
+
+    subtopic_id: UUID
+    engaged_slides: int
+    total_slides: int
+    engagement_rate: float | None

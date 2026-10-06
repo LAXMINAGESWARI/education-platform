@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { deleteSubtopicGoal, getSubjectFeedback, setSubtopicGoal } from "../api/feedback";
+import { getEngagementRate, type EngagementRate } from "../api/engagement";
 import type {
   GoalOut,
   RegressionOut,
@@ -69,10 +70,23 @@ function computeOverallScore(subtopics: SubtopicFeedback[]): number | null {
 // ─── NEW: Overall Score Hero ──────────────────────────────────────────────────
 function ScoreHero({
   dashboard,
+  engagementBySubtopic,
 }: {
   dashboard: SubjectFeedbackDashboard;
+  engagementBySubtopic: Map<string, EngagementRate>;
 }) {
   const overallScore = computeOverallScore(dashboard.subtopics);
+
+  // Subject-level engagement = average of available subtopic engagement rates.
+  const engagementRates: number[] = [];
+  for (const s of dashboard.subtopics) {
+    const e = engagementBySubtopic.get(s.subtopic_id);
+    if (e && e.engagement_rate !== null) engagementRates.push(e.engagement_rate);
+  }
+  const subjectEngagement =
+    engagementRates.length > 0
+      ? Math.round((engagementRates.reduce((a, b) => a + b, 0) / engagementRates.length) * 100)
+      : null;
 
   const weakCount = dashboard.subtopics.filter((s) => {
     if (s.attempts.length === 0) return false;
@@ -139,6 +153,12 @@ function ScoreHero({
       {/* Stats + message */}
       <div style={{ flex: 1, minWidth: "180px" }}>
         <p style={{ margin: "0 0 6px 0", fontWeight: 600, fontSize: "0.95rem" }}>{message}</p>
+        {subjectEngagement !== null && (
+          <p style={{ margin: "0 0 6px 0", fontSize: "0.82rem", color: "var(--ink-muted)" }}>
+            📖 Lesson engagement across this subject:{" "}
+            <strong style={{ color: "var(--ink)" }}>{subjectEngagement}%</strong>
+          </p>
+        )}
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
           {passedSubtopics.map((s) => {
             const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
@@ -441,15 +461,70 @@ function GoalSection({
   );
 }
 
+// ─── NEW: Engagement badge (constructive, never punitive) ────────────────────
+function EngagementBadge({ engagement }: { engagement: EngagementRate | undefined }) {
+  // No data yet (never opened the lesson, or lesson has no slides) — show nothing.
+  if (!engagement || engagement.engagement_rate === null || engagement.total_slides === 0) {
+    return null;
+  }
+
+  const rate = engagement.engagement_rate; // 0.0–1.0
+  const pctValue = Math.round(rate * 100);
+
+  // Soft, encouraging palette — no red. Low engagement is a nudge, not a failure.
+  const tier =
+    rate >= 0.7
+      ? { label: "Focused", color: "#0f766e", bg: "#f0fdfa", border: "#0d9488", icon: "📖" }
+      : rate >= 0.4
+        ? { label: "Skimmed", color: "#b45309", bg: "#fffbeb", border: "#d97706", icon: "📖" }
+        : { label: "Quick pass", color: "#1e40af", bg: "#eff6ff", border: "#3b82f6", icon: "📖" };
+
+  const hint =
+    rate >= 0.7
+      ? "You spent good time with the material."
+      : rate >= 0.4
+        ? "You moved through some slides quickly — a revisit could help."
+        : "You moved through fast — worth slowing down next time.";
+
+  return (
+    <div
+      style={{
+        marginTop: "10px",
+        padding: "8px 10px",
+        borderRadius: "8px",
+        background: tier.bg,
+        border: `1px solid ${tier.border}`,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 700, fontSize: "0.85rem", color: tier.color }}>
+          {tier.icon} Engagement: {pctValue}%
+        </span>
+        <span style={{ fontSize: "0.72rem", color: tier.color, fontWeight: 600 }}>
+          · {tier.label}
+        </span>
+        <span style={{ fontSize: "0.72rem", color: "var(--ink-muted)" }}>
+          ({engagement.engaged_slides}/{engagement.total_slides} slides)
+        </span>
+      </div>
+      <p style={{ margin: "4px 0 0 0", fontSize: "0.72rem", color: "var(--ink-muted)" }}>
+        {hint}
+      </p>
+    </div>
+  );
+}
+
 function SubtopicCard({
   subtopic,
   subjectId,
   regression,
+  engagement,
   onGoalChange,
 }: {
   subtopic: SubtopicFeedback;
   subjectId: string;
   regression: RegressionOut | undefined;
+  engagement: EngagementRate | undefined;
   onGoalChange: (subtopicId: string, goal: GoalOut | null) => void;
 }) {
   const attempts = subtopic.attempts;
@@ -529,6 +604,8 @@ function SubtopicCard({
         </div>
       )}
 
+      <EngagementBadge engagement={engagement} />
+
       <GoalSection subtopic={subtopic} onGoalChange={onGoalChange} />
     </div>
   );
@@ -538,6 +615,9 @@ export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
   const [dashboard, setDashboard] = useState<SubjectFeedbackDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [engagementBySubtopic, setEngagementBySubtopic] = useState<Map<string, EngagementRate>>(
+    new Map(),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -557,6 +637,29 @@ export function SubjectFeedbackPage() {
       cancelled = true;
     };
   }, [subjectId]);
+
+  // ─── NEW: fetch engagement rate for each subtopic once the dashboard loads ──
+  useEffect(() => {
+    if (!dashboard) return;
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        dashboard.subtopics.map(async (s) => {
+          const rate = await getEngagementRate(s.subtopic_id);
+          return [s.subtopic_id, rate] as const;
+        }),
+      );
+      if (cancelled) return;
+      const map = new Map<string, EngagementRate>();
+      for (const [id, rate] of entries) {
+        if (rate) map.set(id, rate);
+      }
+      setEngagementBySubtopic(map);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboard]);
 
   const regressionsBySubtopic = new Map(
     (dashboard?.regressions ?? []).map((r) => [r.subtopic_id, r]),
@@ -637,7 +740,7 @@ export function SubjectFeedbackPage() {
           ) : (
             <>
               {/* ─── NEW: Score Hero ──────────────────────────────────────── */}
-              <ScoreHero dashboard={dashboard} />
+              <ScoreHero dashboard={dashboard} engagementBySubtopic={engagementBySubtopic} />
 
               {/* ─── NEW: Focus / Achievement Banner ────────────────────── */}
               <FocusBanner weakSubtopics={weakSubtopics} overallScore={overallScore} />
@@ -650,6 +753,7 @@ export function SubjectFeedbackPage() {
                     subtopic={s}
                     subjectId={subjectId}
                     regression={regressionsBySubtopic.get(s.subtopic_id)}
+                    engagement={engagementBySubtopic.get(s.subtopic_id)}
                     onGoalChange={handleGoalChange}
                   />
                 ))}

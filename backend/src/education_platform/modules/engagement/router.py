@@ -2,11 +2,12 @@
 
 POST /api/v1/me/lessons/{subtopic_id}/engagement
   Records active seconds a student spent on a single lesson slide.
-  Called by LessonSlidesPage.tsx on slide change and unmount.
 
 GET  /api/v1/me/lessons/{subtopic_id}/engagement
-  Returns per-slide active time totals for the current student.
-  Used by the student dashboard to surface engagement signals.
+  Per-slide active time totals for the current student.
+
+GET  /api/v1/me/lessons/{subtopic_id}/engagement-rate
+  Engagement rate % (engaged slides / total slides) for the feedback page.
 """
 
 from uuid import UUID
@@ -19,6 +20,7 @@ from education_platform.db.session import get_session
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.engagement import service
 from education_platform.modules.engagement.schemas import (
+    EngagementRateOut,
     SlideEngagementIn,
     SlideEngagementOut,
     SubtopicEngagementSummary,
@@ -45,12 +47,25 @@ async def post_slide_engagement(
 @router.get(
     "/me/lessons/{subtopic_id}/engagement",
     response_model=SubtopicEngagementSummary,
-    summary="Get slide engagement summary",
+    summary="Get per-slide engagement totals",
 )
 async def get_slide_engagement(
     subtopic_id: UUID,
     scope: Scope = Depends(get_scope),
     session: AsyncSession = Depends(get_session),
 ) -> SubtopicEngagementSummary:
-    """Returns per-slide active time totals for the student dashboard."""
     return await service.get_subtopic_engagement_summary(session, scope, subtopic_id)
+
+
+@router.get(
+    "/me/lessons/{subtopic_id}/engagement-rate",
+    response_model=EngagementRateOut,
+    summary="Get engagement rate for a subtopic",
+)
+async def get_slide_engagement_rate(
+    subtopic_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> EngagementRateOut:
+    """Engagement % for the student feedback page — engaged slides / total slides."""
+    return await service.get_subtopic_engagement_rate(session, scope, subtopic_id)
