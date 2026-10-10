@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { deleteSubtopicGoal, getSubjectFeedback, setSubtopicGoal } from "../api/feedback";
 import { getEngagementRate, type EngagementRate } from "../api/engagement";
+import { useAuth } from "../auth/AuthContext";
 import type {
   GoalOut,
   RegressionOut,
@@ -711,8 +712,149 @@ function SubtopicCard({
   );
 }
 
+// ─── NEW: Report card (inline + print to PDF) ─────────────────────────────────
+function ReportCard({
+  dashboard,
+  engagementBySubtopic,
+  studentName,
+}: {
+  dashboard: SubjectFeedbackDashboard;
+  engagementBySubtopic: Map<string, EngagementRate>;
+  studentName: string;
+}) {
+  const overallScore = computeOverallScore(dashboard.subtopics);
+
+  const engagementRates: number[] = [];
+  for (const s of dashboard.subtopics) {
+    const e = engagementBySubtopic.get(s.subtopic_id);
+    if (e && e.engagement_rate !== null) engagementRates.push(e.engagement_rate);
+  }
+  const subjectEngagement =
+    engagementRates.length > 0
+      ? Math.round((engagementRates.reduce((a, b) => a + b, 0) / engagementRates.length) * 100)
+      : null;
+
+  const today = new Date().toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  return (
+    <div className="report-card-print" style={{ marginTop: "2rem" }}>
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          .report-card-print, .report-card-print * { visibility: visible !important; }
+          .report-card-print { position: absolute; top: 0; left: 0; width: 100%; padding: 0 !important; }
+          .report-card-no-print { display: none !important; }
+        }
+      `}</style>
+
+      <div
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "12px",
+          padding: "1.5rem",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: "12px",
+            flexWrap: "wrap",
+            borderBottom: "2px solid var(--border)",
+            paddingBottom: "12px",
+            marginBottom: "16px",
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, fontSize: "1.2rem", fontWeight: 800 }}>Report Card</p>
+            <p style={{ margin: "2px 0 0 0", fontSize: "0.9rem", color: "var(--ink-muted)" }}>
+              {studentName} · {dashboard.subject_name}
+            </p>
+            <p style={{ margin: "2px 0 0 0", fontSize: "0.78rem", color: "var(--ink-muted)" }}>
+              {today}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn--sm report-card-no-print"
+            onClick={() => window.print()}
+          >
+            Download / Print
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "16px" }}>
+          <div>
+            <p style={{ margin: 0, fontSize: "1.6rem", fontWeight: 800 }}>
+              {overallScore !== null ? `${Math.round(overallScore)}%` : "—"}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--ink-muted)" }}>overall best score</p>
+          </div>
+          <div>
+            <p style={{ margin: 0, fontSize: "1.6rem", fontWeight: 800 }}>
+              {subjectEngagement !== null ? `${subjectEngagement}%` : "—"}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--ink-muted)" }}>lesson engagement</p>
+          </div>
+        </div>
+
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border)" }}>
+              <th style={{ padding: "6px 8px" }}>Subtopic</th>
+              <th style={{ padding: "6px 8px" }}>Best</th>
+              <th style={{ padding: "6px 8px" }}>Attempts</th>
+              <th style={{ padding: "6px 8px" }}>Engagement</th>
+              <th style={{ padding: "6px 8px" }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dashboard.subtopics.map((s) => {
+              const best =
+                s.attempts.length > 0
+                  ? Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0))
+                  : null;
+              const passed = best !== null && best >= PASS_THRESHOLD;
+              const t = passed && best !== null ? attemptTitle(s.attempts.length, best) : null;
+              const e = engagementBySubtopic.get(s.subtopic_id);
+              const eng =
+                e && e.engagement_rate !== null ? `${Math.round(e.engagement_rate * 100)}%` : "—";
+              const statusLabel = passed
+                ? `${t!.emoji} ${t!.label}`
+                : best === null
+                  ? "No data yet"
+                  : "Keep going";
+              return (
+                <tr key={s.subtopic_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td style={{ padding: "6px 8px" }}>{s.subtopic_name}</td>
+                  <td style={{ padding: "6px 8px" }}>{best !== null ? `${Math.round(best)}%` : "—"}</td>
+                  <td style={{ padding: "6px 8px" }}>{s.attempts.length}</td>
+                  <td style={{ padding: "6px 8px" }}>{eng}</td>
+                  <td style={{ padding: "6px 8px" }}>{statusLabel}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        <p style={{ margin: "16px 0 0 0", fontSize: "0.72rem", color: "var(--ink-muted)" }}>
+          Engagement reflects active time spent on lesson slides before the quiz. Scores show the
+          best result per subtopic.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
+  const { user } = useAuth();
   const [dashboard, setDashboard] = useState<SubjectFeedbackDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [engagementBySubtopic, setEngagementBySubtopic] = useState<Map<string, EngagementRate>>(
@@ -861,6 +1003,13 @@ export function SubjectFeedbackPage() {
                   />
                 ))}
               </div>
+
+              {/* ─── NEW: Report card (inline + print to PDF) ─────────────── */}
+              <ReportCard
+                dashboard={dashboard}
+                engagementBySubtopic={engagementBySubtopic}
+                studentName={user?.full_name ?? "Student"}
+              />
             </>
           )}
         </div>
