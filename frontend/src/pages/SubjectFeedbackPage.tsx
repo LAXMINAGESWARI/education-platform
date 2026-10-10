@@ -109,10 +109,27 @@ function ScoreHero({
     overallScore === null
       ? "Keep going — more attempts unlock your score."
       : overallScore >= 80
-        ? "Great work! You're performing well overall."
+        ? "You're on a strong run in this subject."
         : overallScore >= 60
-          ? "You're making progress — focus on weak areas to level up."
-          : "Keep pushing — review the focus areas below to improve.";
+          ? "You're making real progress — keep it going."
+          : "Every attempt is moving you forward.";
+
+  // Milestone: how many subtopics mastered (passed) out of those attempted.
+  const attemptedCount = dashboard.subtopics.filter((s) => s.attempts.length > 0).length;
+  const masteredCount = passedSubtopics.length;
+
+  // Momentum: average improvement from first to latest attempt across subtopics.
+  const improvements: number[] = [];
+  for (const s of dashboard.subtopics) {
+    if (s.attempts.length < 2) continue;
+    const first = pct(s.attempts[0].percent) ?? 0;
+    const latest = pct(s.attempts[s.attempts.length - 1].percent) ?? 0;
+    improvements.push(latest - first);
+  }
+  const avgImprovement =
+    improvements.length > 0
+      ? Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length)
+      : null;
 
   return (
     <div
@@ -152,13 +169,24 @@ function ScoreHero({
 
       {/* Stats + message */}
       <div style={{ flex: 1, minWidth: "180px" }}>
-        <p style={{ margin: "0 0 6px 0", fontWeight: 600, fontSize: "0.95rem" }}>{message}</p>
-        {subjectEngagement !== null && (
-          <p style={{ margin: "0 0 6px 0", fontSize: "0.82rem", color: "var(--ink-muted)" }}>
-            📖 Lesson engagement across this subject:{" "}
-            <strong style={{ color: "var(--ink)" }}>{subjectEngagement}%</strong>
-          </p>
-        )}
+        <p style={{ margin: "0 0 8px 0", fontWeight: 600, fontSize: "0.95rem" }}>{message}</p>
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" }}>
+          {avgImprovement !== null && avgImprovement > 0 && (
+            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: "999px", padding: "3px 10px" }}>
+              ↑ up {avgImprovement}% since you started
+            </span>
+          )}
+          {attemptedCount > 0 && (
+            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: "999px", padding: "3px 10px" }}>
+              🏅 {masteredCount} of {attemptedCount} mastered
+            </span>
+          )}
+          {subjectEngagement !== null && (
+            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "999px", padding: "3px 10px" }}>
+              📖 {subjectEngagement}% lesson engagement
+            </span>
+          )}
+        </div>
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
           {passedSubtopics.map((s) => {
             const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
@@ -191,6 +219,64 @@ function ScoreHero({
 }
 
 
+// ─── NEW: Your next step callout ──────────────────────────────────────────────
+function NextStepCallout({
+  subtopics,
+  subjectId,
+}: {
+  subtopics: SubtopicFeedback[];
+  subjectId: string;
+}) {
+  // Pick the single most useful next action: the weakest subtopic that has data.
+  const withData = subtopics.filter((s) => s.attempts.length > 0);
+  if (withData.length === 0) return null;
+
+  const scored = withData.map((s) => ({
+    s,
+    best: Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)),
+  }));
+  const target = scored.sort((a, b) => a.best - b.best)[0];
+
+  // If everything is already strong, no nudge needed.
+  if (target.best >= 90) return null;
+
+  const goalPct = target.s.goal ? (pct(target.s.goal.target_percent) ?? PASS_THRESHOLD) : PASS_THRESHOLD;
+  const gap = Math.max(0, Math.round(goalPct - target.best));
+  const gapText =
+    gap > 0 ? `You're just ${gap}% from your goal here.` : "A quick review will lock this in.";
+
+  return (
+    <div
+      style={{
+        background: "#eff6ff",
+        border: "1px solid #bfdbfe",
+        borderRadius: "10px",
+        padding: "0.9rem 1.1rem",
+        marginBottom: "1.25rem",
+        display: "flex",
+        gap: "12px",
+        alignItems: "flex-start",
+      }}
+    >
+      <span style={{ fontSize: "1.4rem", lineHeight: 1 }}>🎯</span>
+      <div style={{ flex: 1 }}>
+        <p style={{ margin: "0 0 2px 0", fontWeight: 700, fontSize: "0.9rem", color: "#1e40af" }}>
+          Your next step
+        </p>
+        <p style={{ margin: "0 0 8px 0", fontSize: "0.85rem", color: "#1e3a8a" }}>
+          Revisit <strong>{target.s.subtopic_name}</strong>. {gapText}
+        </p>
+        <Link
+          to={`/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`}
+          className="btn btn--sm"
+        >
+          Review lesson
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 // ─── NEW: Focus / Achievement Banner ─────────────────────────────────────────
 function FocusBanner({
   weakSubtopics,
@@ -204,27 +290,28 @@ function FocusBanner({
     return (
       <div
         style={{
-          background: "var(--danger-bg)",
-          border: "1px solid var(--danger-border)",
+          background: "#fffbeb",
+          border: "1px solid #fcd34d",
           borderRadius: "10px",
           padding: "0.9rem 1.1rem",
           marginBottom: "1.25rem",
         }}
       >
-        <p style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: "0.9rem", color: "var(--danger-border)" }}>
-          🎯 Focus on these first
+        <p style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: "0.9rem", color: "#92400e" }}>
+          🌱 Areas to grow
         </p>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
           {weakSubtopics.map((s) => (
             <span
               key={s.subtopic_id}
               style={{
-                background: "var(--surface)",
-                border: "1px solid var(--danger-border)",
+                background: "#ffffff",
+                border: "1px solid #fcd34d",
                 borderRadius: "6px",
                 padding: "3px 10px",
                 fontSize: "0.82rem",
                 fontWeight: 500,
+                color: "#92400e",
               }}
             >
               {s.subtopic_name}
@@ -535,8 +622,9 @@ function SubtopicCard({
   const passed = bestScore !== null && bestScore >= PASS_THRESHOLD;
   const title = passed && bestScore !== null ? attemptTitle(attempts.length, bestScore) : null;
   const badgeClass = passed ? "badge--ok" : bestScore === null ? "badge--info" : "badge--warn";
-  const status = passed ? `${title!.emoji} ${title!.label}` : bestScore === null ? "No data yet" : "Needs work";
+  const status = passed ? `${title!.emoji} ${title!.label}` : bestScore === null ? "No data yet" : "Keep going";
   const lastIndex = attempts.length - 1;
+  const barColor = passed ? "#1D9E75" : bestScore === null ? "#cbd5e1" : "#378ADD";
 
   return (
     <div className="card" style={{ cursor: "default" }}>
@@ -544,6 +632,18 @@ function SubtopicCard({
         <h2>{subtopic.subtopic_name}</h2>
         <span className={`badge ${badgeClass}`}>{status}</span>
       </div>
+
+      {bestScore !== null && (
+        <div style={{ marginTop: "10px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
+            <span style={{ fontSize: "1.3rem", fontWeight: 700 }}>{Math.round(bestScore)}%</span>
+            <span style={{ fontSize: "0.72rem", color: "var(--ink-muted)" }}>best score</span>
+          </div>
+          <div style={{ height: "6px", background: "#eef2f7", borderRadius: "999px", overflow: "hidden" }}>
+            <div style={{ width: `${Math.round(bestScore)}%`, height: "100%", background: barColor }} />
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
         {attempts.map((attempt, index) => {
@@ -741,6 +841,9 @@ export function SubjectFeedbackPage() {
             <>
               {/* ─── NEW: Score Hero ──────────────────────────────────────── */}
               <ScoreHero dashboard={dashboard} engagementBySubtopic={engagementBySubtopic} />
+
+              {/* ─── NEW: Your next step callout ──────────────────────────── */}
+              <NextStepCallout subtopics={sortedSubtopics} subjectId={subjectId} />
 
               {/* ─── NEW: Focus / Achievement Banner ────────────────────── */}
               <FocusBanner weakSubtopics={weakSubtopics} overallScore={overallScore} />
