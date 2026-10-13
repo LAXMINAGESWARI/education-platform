@@ -79,9 +79,10 @@ async def test_approved_formerly_signoff_gated_templates_now_route_successfully(
     just silencing the flag.
     """
     operation = "count" if intent == "students_meeting_performance_bar" else "list"
+    parameters = {} if intent == "students_meeting_performance_bar" else {"shape": "list"}
     _mock_classifier(
         monkeypatch,
-        {"intent": intent, "confidence": 0.99, "parameters": {}, "operation": operation},
+        {"intent": intent, "confidence": 0.99, "parameters": parameters, "operation": operation},
     )
 
     result = await _MODULE.intent_router(_state())
@@ -90,6 +91,35 @@ async def test_approved_formerly_signoff_gated_templates_now_route_successfully(
     assert result["intent"] == intent
     assert result["query_source"] == "template"
     assert result["generated_sql"]
+
+
+@pytest.mark.asyncio
+async def test_at_risk_count_question_routes_to_students_needing_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "At risk" is treated as a synonym for students_needing_support's approved
+    "struggling" definition (mastery < 60 OR attendance < 80), not a separate template —
+    see that template's description. "How many students are at risk?" is a count
+    question, so this also covers the template's sql_count/shape="count" path (the
+    template was list-only before; this is the mirror of
+    test_question_grounded_attendance_match_still_routes_to_template for this intent).
+    """
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_needing_support",
+            "confidence": 0.95,
+            "parameters": {"shape": "count"},
+            "operation": "count",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("How many students are at risk?"))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == "students_needing_support"
+    assert result["query_source"] == "template"
+    assert "COUNT" in (result["generated_sql"] or "")
 
 
 @pytest.mark.asyncio

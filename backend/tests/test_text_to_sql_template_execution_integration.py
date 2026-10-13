@@ -695,8 +695,9 @@ async def test_students_meeting_performance_bar_sql_is_correctly_scoped(seeded: 
     assert teacher2_result["query_result"][0]["students_doing_well"] == 1
 
 
-# --- 12. students_needing_support ("struggling" -- approved: mastery < 60 OR ---------------
-# --- attendance < 80, matching at_risk.engine.DEFAULT_THRESHOLDS) --------------------------
+# --- 12. students_needing_support ("struggling"/"at risk" -- approved: mastery < 60 OR -----
+# --- attendance < 80, matching at_risk.engine.DEFAULT_THRESHOLDS; both sql_list and --------
+# --- sql_count shapes) ----------------------------------------------------------------------
 
 
 async def test_students_needing_support_sql_is_correctly_scoped(seeded: _Fixture) -> None:
@@ -707,6 +708,8 @@ async def test_students_needing_support_sql_is_correctly_scoped(seeded: _Fixture
         "students_needing_support",
         user_id=seeded.teacher_user_id,
         institution_id=seeded.institution_id,
+        parameters={"shape": "list"},
+        sql_key="sql_list",
     )
     assert teacher_result["result_row_count"] == 0
 
@@ -716,8 +719,35 @@ async def test_students_needing_support_sql_is_correctly_scoped(seeded: _Fixture
         "students_needing_support",
         user_id=seeded.teacher2_user_id,
         institution_id=seeded.institution_id,
+        parameters={"shape": "list"},
+        sql_key="sql_list",
     )
     assert {row["full_name"] for row in teacher2_result["query_result"]} == {"stu-b-math"}
+
+
+async def test_students_needing_support_count_shape_matches_list_shape(
+    seeded: _Fixture,
+) -> None:
+    list_result = await _run_template(
+        "students_needing_support",
+        user_id=seeded.teacher2_user_id,
+        institution_id=seeded.institution_id,
+        parameters={"shape": "list"},
+        sql_key="sql_list",
+    )
+    count_result = await _run_template(
+        "students_needing_support",
+        user_id=seeded.teacher2_user_id,
+        institution_id=seeded.institution_id,
+        parameters={"shape": "count"},
+        sql_key="sql_count",
+    )
+    # Same Finding 1 regression-pair discipline as students_below_attendance_threshold:
+    # list and count shapes must agree on the same underlying fact. b_math is the one
+    # qualifying (student, subject) row, so the DISTINCT student count is 1.
+    assert count_result["query_result"][0]["student_count"] == len(
+        {row["full_name"] for row in list_result["query_result"]}
+    )
 
 
 # --- 13. students_below_attendance_threshold (both sql_list and sql_count shapes) ---------
