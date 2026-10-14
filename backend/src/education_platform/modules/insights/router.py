@@ -12,6 +12,7 @@ from education_platform.core.errors import DomainError
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.insights import service
 from education_platform.modules.insights.schemas import (
+    DashboardSummaryOut,
     StudentDetailOut,
     StudentSummaryOut,
     StudentSummaryPage,
@@ -33,6 +34,18 @@ def _describe(scope: Scope) -> str:
         f"{students} student{'s' if students != 1 else ''} across "
         f"{assignments} assignment{'s' if assignments != 1 else ''}"
     )
+
+
+@router.get("/insights/dashboard", response_model=DashboardSummaryOut)
+async def get_dashboard_summary(
+    request: ScopedRequest = Depends(scoped("insights.dashboard")),
+) -> DashboardSummaryOut:
+    """Headline numbers for the admin dashboard, narrowed to what the caller may see."""
+    summary = await service.dashboard_summary(request.session, request.scope)
+
+    await request.record_rows(len(summary.subjects), detail="dashboard")
+
+    return DashboardSummaryOut(scope_description=_describe(request.scope), **asdict(summary))
 
 
 @router.get("/insights/students", response_model=StudentSummaryPage)

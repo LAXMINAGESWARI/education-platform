@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Select, select
+from sqlalchemy import ColumnElement, Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.modules.assessments.models import (
@@ -71,6 +71,29 @@ class AttemptRow:
 class AbsenceRow:
     on_date: date
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectSummary:
+    """One grade's subject, summarised for the admin dashboard."""
+
+    grade: str
+    subject: str
+    students: int
+    #: Students with at least one quiz attempt -- only they count towards the mastery average.
+    students_attempted: int
+    average_mastery: float | None
+    quizzes_taken: int
+    quizzes_passed: int
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSummary:
+    total_students: int
+    average_attendance: float | None
+    average_mastery: float | None
+    #: Weakest first: lowest average mastery, subjects with no attempts yet at the end.
+    subjects: list[SubjectSummary]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +175,94 @@ async def query_student_360(
         )
         for row in result.mappings().all()
     ]
+
+
+def _round(value: Any) -> float | None:
+    return None if value is None else round(float(value), 1)
+
+
+async def dashboard_summary(session: AsyncSession, scope: Scope) -> DashboardSummary:
+    """Headline numbers and per-subject standing, aggregated in the database.
+
+    Everything goes through the same `scope_predicate` as the register, so an administrator
+    gets the institution, a teacher their own classes and a student themselves -- this adds
+    no second definition of who may see what.
+
+    Mastery only counts rows with ``quizzes_taken > 0``: `student_360` reports a never-quizzed
+    subject as 0%, and averaging those in would drag every number down (the same trap PR #134
+    fixed in the at-risk engine).
+    """
+    attempted = student_360.c.quizzes_taken > 0
+
+    # Attendance is whole-day, so it repeats on every subject row of a student: collapse to
+    # one value per student before averaging, or students taking more subjects weigh more.
+    per_student = (
+        select(
+            student_360.c.student_id,
+            func.max(student_360.c.attendance_percent).label("attendance_percent"),
+        )
+        .where(scope_predicate(scope))
+        .group_by(student_360.c.student_id)
+        .subquery()
+    )
+    headline = (
+        await session.execute(
+            select(
+                func.count(per_student.c.student_id),
+                func.avg(per_student.c.attendance_percent),
+            )
+        )
+    ).one()
+
+    overall_mastery = (
+        await session.execute(
+            select(func.avg(student_360.c.mastery_percent).filter(attempted)).where(
+                scope_predicate(scope)
+            )
+        )
+    ).scalar_one()
+
+    subject_mastery = func.avg(student_360.c.mastery_percent).filter(attempted)
+    subject_rows = (
+        await session.execute(
+            select(
+                student_360.c.grade,
+                student_360.c.subject,
+                func.count(student_360.c.student_id.distinct()).label("students"),
+                func.count(student_360.c.student_id.distinct())
+                .filter(attempted)
+                .label("students_attempted"),
+                subject_mastery.label("average_mastery"),
+                func.coalesce(func.sum(student_360.c.quizzes_taken), 0).label("quizzes_taken"),
+                func.coalesce(func.sum(student_360.c.quizzes_passed), 0).label("quizzes_passed"),
+            )
+            .where(scope_predicate(scope))
+            .group_by(student_360.c.grade, student_360.c.subject)
+            .order_by(
+                subject_mastery.asc().nulls_last(),
+                student_360.c.grade.asc(),
+                student_360.c.subject.asc(),
+            )
+        )
+    ).mappings()
+
+    return DashboardSummary(
+        total_students=int(headline[0] or 0),
+        average_attendance=_round(headline[1]),
+        average_mastery=_round(overall_mastery),
+        subjects=[
+            SubjectSummary(
+                grade=row["grade"],
+                subject=row["subject"],
+                students=int(row["students"]),
+                students_attempted=int(row["students_attempted"]),
+                average_mastery=_round(row["average_mastery"]),
+                quizzes_taken=int(row["quizzes_taken"]),
+                quizzes_passed=int(row["quizzes_passed"]),
+            )
+            for row in subject_rows
+        ],
+    )
 
 
 async def student_detail(

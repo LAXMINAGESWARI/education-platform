@@ -67,3 +67,21 @@ class StudentDetailOut(BaseModel):
     days_counted: int
     attendance_percent: float | None
     absences: list[AbsenceOut]
+
+
+class SubjectSummaryOut(BaseModel):
+    grade: str
+    subject: str
+    students: int
+    students_attempted: int
+    average_mastery: float | None
+    quizzes_taken: int
+    quizzes_passed: int
+
+
+class DashboardSummaryOut(BaseModel):
+    scope_description: str
+    total_students: int
+    average_attendance: float | None
+    average_mastery: float | None
+    subjects: list[SubjectSummaryOut]

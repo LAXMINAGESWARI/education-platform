@@ -18,6 +18,7 @@ import { TopicLessonPage } from "./pages/TopicLessonPage";
 import { TopicPageRedirect } from "./pages/TopicPageRedirect";
 import { WelcomePage } from "./pages/WelcomePage";
 import { AdminAtRiskPage } from "./pages/admin/AdminAtRiskPage";
+import { AdminDashboardPage } from "./pages/admin/AdminDashboardPage";
 import { AdminDocumentsPage } from "./pages/admin/AdminDocumentsPage";
 import { AdminMaterialsGradesPage } from "./pages/admin/AdminMaterialsGradesPage";
 import { AdminMaterialsSubjectsPage } from "./pages/admin/AdminMaterialsSubjectsPage";
@@ -60,7 +61,8 @@ export function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<Navigate to="materials" replace />} />
+        <Route index element={<Navigate to="dashboard" replace />} />
+        <Route path="dashboard" element={<AdminDashboardPage />} />
         <Route path="materials" element={<AdminMaterialsGradesPage />} />
         <Route path="materials/grades/:gradeKey" element={<AdminMaterialsSubjectsPage />} />
         <Route

@@ -124,6 +124,25 @@ _BLOCKED_FUNCTIONS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _is_in_recursive_union_term(table_node: exp.Table, cte: exp.CTE) -> bool:
+    """True when `table_node` sits in the recursive (right) arm of `cte`'s top-level UNION.
+
+    Postgres `WITH RECURSIVE` name resolution: the CTE name is *not* in scope in the
+    non-recursive (left) term, so an unqualified same-named `FROM t` there binds to the
+    real table. Only the recursive (right) term's self-reference binds to the CTE.
+    """
+    query = cte.this
+    if not isinstance(query, exp.Union):
+        return False
+    node: exp.Expr | None = table_node
+    while node is not None and node is not query:
+        parent = node.parent
+        if parent is query:
+            return node is query.expression
+        node = parent
+    return False
+
+
 def is_cte_or_derived_table_ref(table_node: exp.Table, local_aliases: set[str]) -> bool:
     """True when `table_node` names a CTE or derived-table alias, not a real schema table.
 
@@ -131,8 +150,12 @@ def is_cte_or_derived_table_ref(table_node: exp.Table, local_aliases: set[str]) 
     (`WITH student_profiles AS (SELECT … FROM student_profiles) …`) binds the *inner*
     `FROM student_profiles` to the base table in Postgres. Treating that inner ref as a
     CTE alias would skip whitelist / role-scope checks on the real table — the exact
-    gap a same-named CTE can use to defeat apply_role_scope. Recursive CTE self-refs
-    remain CTE refs (Postgres binds them to the CTE).
+    gap a same-named CTE can use to defeat apply_role_scope.
+
+    Recursive CTEs have a second gap: only the *recursive term* (right arm of the
+    top-level UNION) may self-reference the CTE. In the non-recursive (base) term the
+    CTE name is not yet in scope, so an unqualified same-named `FROM student_profiles`
+    is a real base-table scan — same as the schema-qualified form PR #139 closed.
 
     Schema-/catalog-qualified names (`public.student_profiles`, `pg_catalog.pg_roles`)
     are never CTE refs — Postgres resolves them to the real relation even inside a
@@ -149,7 +172,10 @@ def is_cte_or_derived_table_ref(table_node: exp.Table, local_aliases: set[str]) 
     while parent is not None:
         if isinstance(parent, exp.CTE) and (parent.alias or "").lower() == name:
             with_node = parent.parent
-            return bool(isinstance(with_node, exp.With) and with_node.args.get("recursive"))
+            if not (isinstance(with_node, exp.With) and with_node.args.get("recursive")):
+                return False  # non-RECURSIVE same-named CTE body → real table
+            # RECURSIVE: only the recursive-term self-ref is a CTE alias.
+            return _is_in_recursive_union_term(table_node, parent)
         parent = parent.parent
     return True
 

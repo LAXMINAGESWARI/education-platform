@@ -1,0 +1,176 @@
+/* Admin dashboard. Panels, badges, banners, progress bars and the heatmap table are the
+   shared classes from app.css, so the page looks like the rest of the app; this file adds
+   only what the dashboard needs on top. */
+
+.admin-dashboard__section {
+  margin-bottom: 1.75rem;
+}
+
+.admin-dashboard__title {
+  margin: 0 0 0.6rem;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.admin-dashboard__attention {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.admin-dashboard__lead {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.admin-dashboard__link {
+  justify-self: start;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.admin-dashboard__link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.admin-dashboard__weakest {
+  display: grid;
+  gap: 0.9rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-dashboard__weakest .meta-row {
+  margin-top: 0.3rem;
+}
+
+.admin-dashboard__weakest .progress-label {
+  margin: 0;
+}
+
+.admin-dashboard__footnote {
+  margin: 0.9rem 0 0;
+}
+
+/* Headline numbers. Not `.card`: that class is for clickable cards (hover lift, pointer). */
+.admin-dashboard__stats {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.admin-dashboard__stat {
+  display: grid;
+  gap: 0.3rem;
+  align-content: start;
+  padding: 1rem 1.05rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-dashboard__stat-label,
+.admin-dashboard__stat-note {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.admin-dashboard__stat-label {
+  font-size: 0.9rem;
+}
+
+.admin-dashboard__stat-value {
+  margin: 0;
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.admin-dashboard__stat-note {
+  font-size: 0.8rem;
+}
+
+/* Good news: a green tick, so "nothing to do" never looks like a warning. */
+.admin-dashboard__ok {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.75rem 0.9rem;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+.admin-dashboard__ok p {
+  margin: 0;
+}
+
+.admin-dashboard__ok .admin-dashboard__link {
+  display: inline-block;
+  margin-top: 0.25rem;
+  color: var(--success);
+}
+
+.admin-dashboard__ok-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--success);
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+/* Curriculum coverage: one grade x subject table, reusing the teacher heatmap's look. */
+.admin-dashboard__coverage {
+  margin-top: 0.75rem;
+}
+
+.heatmap.admin-coverage td {
+  padding: 0;
+}
+
+.heatmap.admin-coverage td > a {
+  display: block;
+  padding: 0.45rem 0.7rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.heatmap.admin-coverage td > a:hover {
+  text-decoration: underline;
+}
+
+.admin-coverage__topics {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.heatmap.admin-coverage td.admin-coverage__empty {
+  background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-border);
+}
+
+.heatmap.admin-coverage td.admin-coverage__empty > a {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.heatmap.admin-coverage td.admin-coverage__none {
+  padding: 0.45rem 0.7rem;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.admin-coverage__gap {
+  color: var(--warning);
+}

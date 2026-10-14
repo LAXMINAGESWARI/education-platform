@@ -547,6 +547,19 @@ async def test_topic_stats_use_the_latest_released_topic_mastery_quiz(
     assert second_report.items[0].flags == []
 
 
+def _poc_admin_headers(client: TestClient) -> dict[str, str]:
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "admin@demo.school",
+            "password": "demo1234",
+            "institution_name": "POC Demo School",
+        },
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
 def test_item_stats_route_is_admin_only(
     client: TestClient,
     seeded_db: Session,
@@ -564,19 +577,7 @@ def test_item_stats_route_is_admin_only(
     student = client.get(url, headers=enrolled_student_headers)
     assert student.status_code == 403
 
-    login = client.post(
-        "/api/v1/auth/login",
-        json={
-            "email": "admin@demo.school",
-            "password": "demo1234",
-            "institution_name": "POC Demo School",
-        },
-    )
-    assert login.status_code == 200, login.text
-    admin = client.get(
-        url,
-        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
-    )
+    admin = client.get(url, headers=_poc_admin_headers(client))
     assert admin.status_code == 200, admin.text
     body = admin.json()
     assert body["topic_id"] == str(quiz.topic_id)
@@ -609,3 +610,45 @@ def test_item_stats_route_is_admin_only(
                 "top_group_pick_rate",
                 "bottom_group_pick_rate",
             }
+
+
+def test_item_stats_route_hides_other_institution_topics(
+    client: TestClient,
+    seeded_db: Session,
+) -> None:
+    """Administrators must not read answer keys for another tenant's topic UUID."""
+    institution = Institution(name=f"Foreign Stats {uuid4().hex[:8]}")
+    seeded_db.add(institution)
+    seeded_db.flush()
+    period = AcademicPeriod(
+        institution_id=institution.id,
+        name="2026-27",
+        start_date=date(2026, 6, 1),
+        end_date=date(2027, 3, 31),
+        status=AcademicPeriodStatus.ACTIVE,
+    )
+    grade = Grade(institution_id=institution.id, name="Grade 8", sort_order=8)
+    subject = Subject(institution_id=institution.id, name="Mathematics", code="MATH")
+    seeded_db.add_all([period, grade, subject])
+    seeded_db.flush()
+    period_grade = PeriodGrade(academic_period_id=period.id, grade_id=grade.id)
+    seeded_db.add(period_grade)
+    seeded_db.flush()
+    offering = GradeSubjectOffering(period_grade_id=period_grade.id, subject_id=subject.id)
+    seeded_db.add(offering)
+    seeded_db.flush()
+    topic = Topic(
+        grade_subject_offering_id=offering.id,
+        name="Foreign Numbers",
+        slug="foreign-numbers",
+        sequence=1,
+    )
+    seeded_db.add(topic)
+    seeded_db.commit()
+
+    response = client.get(
+        f"/api/v1/admin/topics/{topic.id}/item-stats",
+        headers=_poc_admin_headers(client),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "That topic does not exist."

@@ -124,6 +124,7 @@ folder trees or auto-discovered routers.
 | `GET` | `/api/v1/admin/knowledge-documents` | Admin: list knowledge docs |
 | `GET` | `/api/v1/admin/knowledge-documents/{id}` | Admin: doc detail + versions |
 | `GET` | `/api/v1/admin/knowledge-document-versions/{id}` | Admin: knowledge ingest status |
+| `GET` | `/api/v1/insights/dashboard` | Headline numbers + per-subject mastery, narrowed by `Scope` |
 | `GET` | `/api/v1/chats` | Admin: list policy conversations |
 | `POST` | `/api/v1/chats` | Admin: create conversation |
 | `GET` | `/api/v1/chats/{id}` | Admin: conversation + messages + context % |

@@ -10,6 +10,7 @@ See the [documentation hub](../docs/README.md) for product vision and implementa
 | Route | Role | Data source |
 | --- | --- | --- |
 | `/`, `/subjects/...`, `/quizzes/...` | Student | Live API + enrollment gate |
+| `/admin/dashboard` | Admin | Live `GET /insights/dashboard` + at-risk flags + learning directory (admin home) |
 | `/admin/materials/...` | Admin | Live `GET /me/learning-directory` + curriculum PDF ingest |
 | `/admin/documents` | Admin | Live knowledge-document upload/list (ingest status) |
 | `/admin/policy` | Admin | Live chats API (`src/api/chats.ts`) |

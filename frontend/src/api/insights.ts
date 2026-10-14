@@ -95,3 +95,33 @@ export type StudentDetail = {
 export async function fetchStudentDetail(studentId: string): Promise<StudentDetail> {
   return apiRequest<StudentDetail>(`/insights/students/${studentId}`);
 }
+
+/** One grade's subject on the admin dashboard. */
+export type SubjectSummary = {
+  grade: string;
+  subject: string;
+  students: number;
+  /** Students with at least one quiz attempt -- only they count towards `average_mastery`. */
+  students_attempted: number;
+  /** Null until someone in this subject has taken a quiz. */
+  average_mastery: number | null;
+  quizzes_taken: number;
+  quizzes_passed: number;
+};
+
+export type DashboardSummary = {
+  scope_description: string;
+  total_students: number;
+  average_attendance: number | null;
+  average_mastery: number | null;
+  /** Weakest first; subjects with no attempts yet come last. */
+  subjects: SubjectSummary[];
+};
+
+/**
+ * Headline numbers for the admin dashboard, aggregated server-side through the same scope as
+ * the register -- an administrator gets the institution, a teacher only their classes.
+ */
+export async function fetchDashboardSummary(): Promise<DashboardSummary> {
+  return apiRequest<DashboardSummary>("/insights/dashboard");
+}

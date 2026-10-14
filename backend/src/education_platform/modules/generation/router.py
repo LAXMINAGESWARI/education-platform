@@ -94,9 +94,12 @@ async def delete_topic(
 )
 async def topic_item_stats(
     topic_id: UUID,
-    _principal: Principal = Depends(require_administrator),
+    principal: Principal = Depends(require_administrator),
     session: AsyncSession = Depends(get_session),
 ) -> TopicItemStats:
+    # Same institution/offering gate as sibling admin topic routes — without it an
+    # administrator who knows another tenant's topic UUID receives answer keys.
+    await service._authorised_topic(session, await scope_for(session, principal), topic_id)
     return await item_stats_for_topic(session, topic_id)
 
 

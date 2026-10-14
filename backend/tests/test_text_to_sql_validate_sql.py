@@ -369,6 +369,20 @@ async def test_recursive_same_named_cte_schema_qualified_still_whitelists() -> N
     assert "ingest_jobs" in error
 
 
+async def test_recursive_same_named_cte_unqualified_base_still_whitelists() -> None:
+    # Unqualified base-term FROM ingest_jobs inside WITH RECURSIVE ingest_jobs AS (…)
+    # also binds to the real table in Postgres (CTE name is not in scope there).
+    # Must remain whitelist-checked — not skipped as a recursive self-ref.
+    error = await _rejected(
+        "WITH RECURSIVE ingest_jobs AS ("
+        " SELECT id FROM ingest_jobs"
+        " UNION ALL"
+        " SELECT id FROM ingest_jobs WHERE false"
+        ") SELECT id FROM ingest_jobs"
+    )
+    assert "ingest_jobs" in error
+
+
 def test_default_row_limit_matches_insights_module_precedent() -> None:
     # Not testing insights.service directly (out of this module's business), just
     # documenting that the chosen cap isn't an arbitrary new number.

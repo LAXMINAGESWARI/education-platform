@@ -1685,3 +1685,25 @@ async def test_recursive_same_named_cte_schema_qualified_still_gets_institution_
         "teaching_assignments" in validated.lower()
         or "student_subject_enrollments" in validated.lower()
     )
+
+
+async def test_recursive_same_named_cte_unqualified_base_still_gets_institution_scope() -> None:
+    """Unqualified base-term scan inside WITH RECURSIVE <same table> AS (…) must still
+    receive institution/taught predicates. Postgres binds that FROM to the real table
+    (CTE name is out of scope in the non-recursive term); treating it as a CTE self-ref
+    would skip apply_role_scope entirely.
+    """
+    sql = (
+        "WITH RECURSIVE student_profiles AS ("
+        " SELECT id, full_name, institution_id FROM student_profiles"
+        " UNION ALL"
+        " SELECT id, full_name, institution_id FROM student_profiles WHERE false"
+        ") "
+        "SELECT id, full_name, institution_id FROM student_profiles"
+    )
+    validated = await _scoped(sql, role="teacher", user_id="teacher-1", institution_id="inst-1")
+    assert "institution_id = 'inst-1'" in validated
+    assert (
+        "teaching_assignments" in validated.lower()
+        or "student_subject_enrollments" in validated.lower()
+    )
