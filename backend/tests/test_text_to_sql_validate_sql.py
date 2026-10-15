@@ -342,6 +342,43 @@ async def test_pg_advisory_lock_is_rejected() -> None:
     assert "pg_advisory_lock" in error.lower()
 
 
+async def test_query_to_xml_with_inner_set_config_is_rejected() -> None:
+    # query_to_xml's argument is an opaque string — inner set_config never appears
+    # in the AST. Blocking the outer call is what stops the RLS GUC rewrite.
+    error = await _rejected(
+        "SELECT query_to_xml($$"
+        "WITH x AS ("
+        " SELECT set_config('app.current_institution_id',"
+        " '00000000-0000-0000-0000-000000000099', true) AS c"
+        ") "
+        "SELECT u.email FROM users u CROSS JOIN x"
+        "$$, true, true, '')"
+    )
+    assert "query_to_xml" in error.lower()
+
+
+async def test_schema_qualified_quoted_query_to_xml_is_rejected() -> None:
+    error = await _rejected("SELECT pg_catalog.\"query_to_xml\"($$SELECT 1$$, true, true, '')")
+    assert "query_to_xml" in error.lower()
+
+
+async def test_query_to_xmlschema_is_rejected() -> None:
+    error = await _rejected("SELECT query_to_xmlschema($$SELECT 1$$, true, true, '')")
+    assert "query_to_xmlschema" in error.lower()
+
+
+async def test_query_to_xml_and_xmlschema_is_rejected() -> None:
+    error = await _rejected("SELECT query_to_xml_and_xmlschema($$SELECT 1$$, true, true, '')")
+    assert "query_to_xml_and_xmlschema" in error.lower()
+
+
+async def test_cursor_to_xml_is_rejected() -> None:
+    error = await _rejected(
+        "SELECT cursor_to_xml('c'::refcursor, 10, true, true, '') FROM subjects"
+    )
+    assert "cursor_to_xml" in error.lower()
+
+
 async def test_select_into_is_rejected() -> None:
     error = await _rejected("SELECT id, name INTO subjects FROM grades")
     assert "into" in error.lower()

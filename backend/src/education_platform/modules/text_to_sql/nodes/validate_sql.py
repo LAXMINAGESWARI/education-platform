@@ -108,6 +108,14 @@ _SHAPE_HINTS: Final[dict[type[exp.Expr], str]] = {
 
 # Session mutators / non-read helpers that can defeat RLS, poison the connection pool,
 # or hang the statement — even inside an otherwise-valid SELECT or CTE.
+#
+# `query_to_xml` / `query_to_xmlschema` / `cursor_to_xml*` are blocked because their
+# string (or cursor) argument is opaque to the AST walker: an inner `set_config(...)`
+# never appears as `exp.Anonymous`, so the blocklist below would otherwise miss it.
+# Confirmed live: `text_to_sql_reader` has EXECUTE on these by default (PUBLIC), and
+# `query_to_xml($$SELECT set_config('app.current_institution_id', …) …$$, …)` rewrites
+# RLS GUCs mid-statement and returns cross-tenant rows. Blocking the outer call closes
+# that channel; a companion migration also REVOKEs EXECUTE as a DB-level backstop.
 _BLOCKED_FUNCTIONS: Final[frozenset[str]] = frozenset(
     {
         "set_config",
@@ -120,6 +128,11 @@ _BLOCKED_FUNCTIONS: Final[frozenset[str]] = frozenset(
         "pg_cancel_backend",
         "lo_import",
         "lo_export",
+        "query_to_xml",
+        "query_to_xmlschema",
+        "query_to_xml_and_xmlschema",
+        "cursor_to_xml",
+        "cursor_to_xmlschema",
     }
 )
 
