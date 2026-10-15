@@ -97,15 +97,20 @@ async def test_zero_valued_sum_also_downgrades_to_medium() -> None:
     assert _triggers(result)[0].startswith("zero_valued_aggregate:")
 
 
-async def test_null_valued_aggregate_is_not_flagged_by_zero_valued_aggregate() -> None:
-    # Task 9's existing "no data available" case (AVG over zero matching rows returns SQL
-    # NULL, not 0) must keep going through compose_answer's separate null-value path,
-    # completely untouched by this new check — regression-tested explicitly, not assumed.
+async def test_null_valued_aggregate_is_flagged_by_zero_valued_aggregate() -> None:
+    # NULL fires the same zero_valued_aggregate trigger a literal 0 does — an AVG()-shaped
+    # query that legitimately matches zero rows returns one row with a NULL value, not
+    # zero rows, so zero_rows can never catch this shape. Previously nothing downgraded
+    # confidence for it at all (a real, confirmed-live bug — see the module docstring's
+    # "Zero-valued aggregate" entry). compose_answer's separate null-value text path still
+    # renders "No <label> data is available for that."; this only affects confidence.
     result = await sanity_check(
         _state(question="what is the average score?", query_result=[{"average_score": None}])
     )
-    assert result["confidence"] == "high"
-    assert _triggers(result) == []
+    assert result["confidence"] == "medium"
+    triggers = _triggers(result)
+    assert len(triggers) == 1
+    assert triggers[0].startswith("zero_valued_aggregate:")
 
 
 async def test_nonzero_count_is_not_flagged_by_zero_valued_aggregate() -> None:
@@ -167,15 +172,21 @@ async def test_aggregate_out_of_bounds_downgrades_to_low() -> None:
 
 async def test_aggregate_out_of_bounds_ignores_null_percentage_values() -> None:
     # attendance_percent is legitimately NULL when there's no attendance data yet —
-    # schema_catalog.md is explicit this must never be treated as 0% or flagged.
+    # schema_catalog.md is explicit this must never be treated as an out-of-range value by
+    # THIS check specifically. It's still a single-scalar NULL result though, so
+    # zero_valued_aggregate now correctly downgrades confidence for the "no data" vs.
+    # "silently excluded" ambiguity — this test only asserts aggregate_out_of_bounds
+    # itself stays silent, not that nothing fires at all.
     result = await sanity_check(
         _state(
             question="what is this student's attendance percent?",
             query_result=[{"attendance_percent": None}],
         )
     )
-    assert result["confidence"] == "high"
-    assert _triggers(result) == []
+    assert result["confidence"] == "medium"
+    triggers = _triggers(result)
+    assert len(triggers) == 1
+    assert triggers[0].startswith("zero_valued_aggregate:")
 
 
 async def test_aggregate_out_of_bounds_ignores_unrelated_columns() -> None:

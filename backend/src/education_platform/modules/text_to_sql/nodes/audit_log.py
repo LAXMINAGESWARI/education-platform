@@ -33,9 +33,17 @@ before link_schema existed on a given code path) — retrieval-trace logging, th
 practice a RAG pipeline's context-selection step would get, since it's the direct answer
 to "why did/didn't the model know about table X for this question" that neither
 `generated_sql` nor `validated_sql` alone can show; `result_row_count`, `confidence`, the
-full `sanity_check_triggers` list, `retry_count`, and `outcome` ("answered"/"refused") plus, if
-refused, both the formatted error *category* (`error_category(error)`) and the raw error
-text (`error_detail`) — every node in this pipeline now formats `state["error"]` via
+full `sanity_check_triggers` list; `apply_role_scope`'s own `role_scope_applied`
+("rewritten" or "template_builtin") and `scoped_by_user_id`, so an auditor can see whether
+row scoping actually ran for a given query rather than only inferring it from the SQL text;
+`execute_sql`'s `execution_error_type`/`execution_error_detail`/`execution_error_cause`/
+`execution_dbapi_type`/`execution_dbapi_detail` on a genuine execution failure, and
+`row_cap_truncated` when a result had to be cut to `ROW_CAP` — all of these were already
+computed into `state["audit_entry"]` by the nodes that own them, specifically so this node
+could persist them, and previously were not; `retry_count`, and `outcome`
+("answered"/"refused") plus, if refused, both the formatted error *category*
+(`error_category(error)`) and the raw error text (`error_detail`) — every node in this
+pipeline now formats `state["error"]` via
 `format_error()` (load_schema's SCHEMA_ERROR closed the last gap, where its own
 unformatted string used to make `error_category()` come back `None` for it specifically),
 but `error_detail` is kept regardless, for every category, not as a fallback for an
@@ -130,6 +138,17 @@ def _build_payload(state: TextToSQLState) -> dict[str, Any]:
         "question": state.get("question"),
         "user_role": state.get("user_role"),
         "query_source": state.get("query_source"),
+        # intent_router's own classification — which named template matched (`None` on
+        # the free-form path), its confidence, and, critically for a template match, the
+        # actual bound parameter values. A template's `validated_sql` only ever contains
+        # unbound `:subject`/`:threshold`/... placeholders (apply_role_scope's
+        # "template_builtin" branch never rewrites it — see that module's own docstring),
+        # so without these three fields an auditor looking at a template-sourced audit
+        # row could see the query shape but never what data it actually touched. Computed
+        # by intent_router on every path, previously never persisted.
+        "intent": state.get("intent"),
+        "intent_confidence": state.get("intent_confidence"),
+        "intent_parameters": state.get("intent_parameters"),
         "generated_sql": state.get("generated_sql"),
         "validated_sql": state.get("validated_sql"),
         # None here is itself meaningful (link_schema fell back to the full, unnarrowed
@@ -140,6 +159,27 @@ def _build_payload(state: TextToSQLState) -> dict[str, Any]:
         "result_row_count": state.get("result_row_count"),
         "confidence": state.get("confidence"),
         "sanity_check_triggers": audit_entry.get("sanity_check_triggers", []),
+        # apply_role_scope's own record of what it did to this query — "rewritten" (the
+        # full row/institution predicate splice) or "template_builtin" (skipped, trusting
+        # the template's own hand-authored scoping) — and which user_id it scoped by.
+        # Previously computed but silently dropped before reaching audit_events; an
+        # auditor investigating a role-scope decision had nothing to check it against.
+        "role_scope_applied": audit_entry.get("role_scope_applied"),
+        "scoped_by_user_id": audit_entry.get("scoped_by_user_id"),
+        # execute_sql's real exception detail, per that module's own docstring ("goes to
+        # logger and to state['audit_entry'] only") — was computed for exactly this audit
+        # record and then never actually reached it.
+        "execution_error_type": audit_entry.get("execution_error_type"),
+        "execution_error_detail": audit_entry.get("execution_error_detail"),
+        "execution_error_cause": audit_entry.get("execution_error_cause"),
+        "execution_dbapi_type": audit_entry.get("execution_dbapi_type"),
+        "execution_dbapi_detail": audit_entry.get("execution_dbapi_detail"),
+        # Whether execute_sql had to truncate to ROW_CAP — a known-incomplete-by-
+        # construction result, not merely uncertain (see sanity_check.py's own severity
+        # note for this trigger). False, not None, is the right "didn't happen" default:
+        # execute_sql only ever sets this key to True, so its absence always means no
+        # truncation occurred, never "unknown."
+        "row_cap_truncated": audit_entry.get("row_cap_truncated", False),
         "retry_count": state.get("retry_count", 0),
         "outcome": "refused" if error else "answered",
         "error_category": error_category(error),

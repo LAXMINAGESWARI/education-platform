@@ -170,6 +170,39 @@ def _admin_state(
     )
 
 
+# --- Missing-identity guard (DB-free) --------------------------------------------------
+#
+# Unlike every other test in this file, these three don't need Postgres at all: the
+# identity guard at the top of execute_sql returns before get_text_to_sql_session_factory
+# is ever called, so a state missing user_id/user_role/institution_id never reaches the
+# DB layer. Without the guard, these would raise an uncaught KeyError instead of
+# producing a controlled EXECUTION_ERROR.
+
+
+async def test_missing_user_id_fails_closed_instead_of_crashing() -> None:
+    state = _state("SELECT 1", user_role="admin", institution_id="inst-1")
+    result = await execute_sql(state)
+    assert result["query_result"] is None
+    assert result["result_row_count"] is None
+    assert error_category(result["error"]) == EXECUTION_ERROR
+
+
+async def test_missing_user_role_fails_closed_instead_of_crashing() -> None:
+    state = _state("SELECT 1", user_id="u-1", institution_id="inst-1")
+    result = await execute_sql(state)
+    assert result["query_result"] is None
+    assert result["result_row_count"] is None
+    assert error_category(result["error"]) == EXECUTION_ERROR
+
+
+async def test_missing_institution_id_fails_closed_instead_of_crashing() -> None:
+    state = _state("SELECT 1", user_id="u-1", user_role="admin")
+    result = await execute_sql(state)
+    assert result["query_result"] is None
+    assert result["result_row_count"] is None
+    assert error_category(result["error"]) == EXECUTION_ERROR
+
+
 # --- Success path ----------------------------------------------------------------------
 
 

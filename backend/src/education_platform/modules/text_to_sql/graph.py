@@ -32,13 +32,22 @@ stage here — it always proceeds straight to generate_sql.
 honest_refusal is reached from six independent failure branches, none of which loop back
 into generate_sql's retry path: injection_guard's INJECTION_BLOCKED, question_validator's
 OFF_TOPIC_REJECTED, load_schema's "error", validate_sql's "refuse" once retries are
-exhausted, apply_role_scope's ROLE_VIOLATION, and execute_sql's EXECUTION_ERROR. Only
-validate_sql's own "retry" edge
-goes back to generate_sql (not to
-link_schema — a retry reuses the same narrowed schema_context from the first pass rather
-than re-narrowing), and only while retry_count < MAX_RETRIES — see `_route_after_validate`
-and `MAX_RETRIES`. honest_refusal itself then also feeds into audit_log, same as
-compose_answer, so refusals get logged too.
+exhausted, apply_role_scope's ROLE_VIOLATION, and execute_sql's EXECUTION_ERROR. validate_sql's
+"retry" edge goes back to generate_sql directly (not to link_schema — a retry reuses the
+same narrowed schema_context from the first pass rather than re-narrowing) whenever
+schema_context is already populated, and only while retry_count < MAX_RETRIES — see
+`_route_after_validate` and `MAX_RETRIES`. A rejected *template* match (intent_router's
+fast path skips load_schema/link_schema entirely, so schema_context is still "" at this
+point) instead takes the "retry_needs_schema" edge back to load_schema first — reusing the
+existing load_schema -> link_schema -> generate_sql edges below rather than needing new
+ones — so that retry has a real schema to generate against instead of being asked to
+write SQL against nothing. state["error"] is deliberately left untouched by that detour,
+so generate_sql still sees it as a retry (increments retry_count, folds the rejection
+reason into its prompt) exactly as the direct "retry" edge would; only
+`_route_after_load_schema` needed to change (checking state["error"]'s *category* rather
+than its raw presence) so that this stale, pre-existing error doesn't get misread as a
+load_schema failure once load_schema itself succeeds. honest_refusal itself then also
+feeds into audit_log, same as compose_answer, so refusals get logged too.
 
 Most nodes in `modules/text_to_sql/nodes/` are still pass-through placeholders (see that
 package's docstring); `load_schema`, `generate_sql`, `validate_sql`, `apply_role_scope`,
@@ -78,7 +87,12 @@ from education_platform.modules.text_to_sql.nodes import (
     sanity_check,
     validate_sql,
 )
-from education_platform.modules.text_to_sql.state import MAX_RETRIES, TextToSQLState
+from education_platform.modules.text_to_sql.state import (
+    MAX_RETRIES,
+    SCHEMA_ERROR,
+    TextToSQLState,
+    error_category,
+)
 
 
 def _route_after_injection_guard(state: TextToSQLState) -> Literal["ok", "blocked"]:
@@ -102,14 +116,33 @@ def _route_after_intent_router(state: TextToSQLState) -> Literal["template", "fr
 def _route_after_load_schema(state: TextToSQLState) -> Literal["ok", "error"]:
     # load_schema sets state["error"] (not raise) when schema_catalog.md is missing or
     # the excluded-content filter fails its own post-check — never proceed to
-    # generate_sql with a broken/absent schema_context.
-    return "error" if state.get("error") else "ok"
+    # generate_sql with a broken/absent schema_context. Checked by *category*, not raw
+    # truthiness: this node can also be reached via _route_after_validate's
+    # "retry_needs_schema" edge below, with a stale VALIDATION_ERROR still sitting in
+    # state["error"] from the validate_sql rejection that triggered the redirect. That
+    # value is deliberately left in place (generate_sql's retry-prompt/retry_count
+    # logic still needs it), so a load_schema success in that case must not be
+    # misread as a load_schema failure just because *some* error is present.
+    # SCHEMA_ERROR is raised by load_schema and only by load_schema (state.py).
+    return "error" if error_category(state.get("error")) == SCHEMA_ERROR else "ok"
 
 
-def _route_after_validate(state: TextToSQLState) -> Literal["retry", "refuse", "valid"]:
+def _route_after_validate(
+    state: TextToSQLState,
+) -> Literal["retry", "retry_needs_schema", "refuse", "valid"]:
     if state.get("validated_sql"):
         return "valid"
     if state.get("retry_count", 0) < MAX_RETRIES:
+        # The template fast-path (intent_router -> validate_sql) never runs
+        # load_schema/link_schema, so schema_context is still "" here if a template's
+        # hand-authored SQL failed validation. Retrying generate_sql straight away
+        # would run it with no schema at all — its prompt forbids inventing tables/
+        # columns not shown in the schema, so every remaining retry would be all but
+        # guaranteed to fail too. Detour through load_schema (-> link_schema ->
+        # generate_sql, the existing free-form edges) once instead, so the retry has
+        # a real schema to work from.
+        if not state.get("schema_context"):
+            return "retry_needs_schema"
         return "retry"
     return "refuse"
 
@@ -199,6 +232,7 @@ def build_text_to_sql_graph() -> CompiledStateGraph[TextToSQLState, None, TextTo
         _route_after_validate,
         {
             "retry": "generate_sql",
+            "retry_needs_schema": "load_schema",
             "refuse": "honest_refusal",
             "valid": "apply_role_scope",
         },

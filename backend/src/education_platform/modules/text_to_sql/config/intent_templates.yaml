@@ -170,15 +170,17 @@ templates:
       - "Who took the last quiz in Maths?"
       - "Who took the last quiz in Sci?"
       - "Who took the last quiz in Eng?"
-      - "Who took the last quiz in Phy?"
       - "Who took the latest Science quiz?"
       - "Who took the most recent English quiz?"
-      - "Who was the most recent student to take a quiz in Physics?"
       - "What was the score of the student who took the last quiz?"
     parameters:
       subject:
         type: enum
-        values: [Mathematics, Science, English, Social Studies, Arabic, Physics]
+        # Physics deliberately excluded — no Physics subject exists in this schema yet
+        # (confirmed live), same reason it's excluded from average_mastery_by_subject /
+        # list_students_below_score_in_subject / top_students_by_subject below. This
+        # enum previously still listed it; fixed for consistency with those three.
+        values: [Mathematics, Science, English, Social Studies, Arabic]
         required: false
         default: null
     requires_signoff: false
@@ -191,10 +193,8 @@ templates:
         - Who took the last quiz in Maths?
         - Who took the last quiz in Sci?
         - Who took the last quiz in Eng?
-        - Who took the last quiz in Phy?
         - Who took the latest Science quiz?
         - Who took the most recent English quiz?
-        - Who was the most recent student to take a quiz in Physics?
         - What was the score of the student who took the last quiz?
         negative_examples:
         - What is the average quiz score?
@@ -316,7 +316,9 @@ templates:
       SELECT AVG(s.mastery_percent) AS average_score
       FROM student_360 s
       JOIN subjects sub ON sub.id = s.subject_id
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE sub.name = :subject
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -355,7 +357,9 @@ templates:
     sql: |
       SELECT AVG(s.attendance_percent) AS average_attendance
       FROM student_360 s
-      WHERE s.student_id IN (
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
+      WHERE ap.status = 'active'
+        AND s.student_id IN (
         SELECT sse.student_id
         FROM student_subject_enrollments sse
         JOIN teaching_assignments ta
@@ -397,18 +401,21 @@ templates:
         - section_name
 
     sql: |
-      SELECT DISTINCT sp.full_name
+      SELECT sp.full_name
       FROM student_profiles sp
-      JOIN student_subject_enrollments sse ON sse.student_id = sp.id
-      JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
-      JOIN teaching_assignments ta
-        ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
-      JOIN sections sec ON sec.id = sge.section_id
-      WHERE sec.name = :section_name
-        AND ta.teacher_user_id = :current_user_id
-        AND ta.status = 'active'
-        AND sse.status = 'active'
-        AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
+      WHERE sp.id IN (
+        SELECT sse.student_id
+        FROM student_subject_enrollments sse
+        JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
+        JOIN teaching_assignments ta
+          ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
+        JOIN sections sec ON sec.id = sge.section_id
+        WHERE sec.name = :section_name
+          AND ta.teacher_user_id = :current_user_id
+          AND ta.status = 'active'
+          AND sse.status = 'active'
+          AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
+      )
       ORDER BY sp.full_name
 
   # ---------------------------------------------------------------------------
@@ -443,19 +450,26 @@ templates:
         negative_examples:
         - Which students are struggling in Mathematics?
         - What is the average score in Mathematics?
+        - Which of my students have attendance below 40%?
         supported_operations:
         - list
         required_parameters:
         - subject
         - threshold
+        requires_keywords:
+        - score
+        - scored
+        - mastery
 
     sql: |
       SELECT sp.full_name, s.mastery_percent
       FROM student_360 s
       JOIN student_profiles sp ON sp.id = s.student_id
       JOIN subjects sub ON sub.id = s.subject_id
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE sub.name = :subject
         AND s.mastery_percent < :threshold
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -508,7 +522,9 @@ templates:
       FROM student_360 s
       JOIN student_profiles sp ON sp.id = s.student_id
       JOIN subjects sub ON sub.id = s.subject_id
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE sub.name = :subject
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -627,22 +643,23 @@ templates:
       ORDER BY sub.name
 
   # ---------------------------------------------------------------------------
-  # 10. "DOING WELL"  ⚠ REQUIRES SIGN-OFF  (golden eval row 29 — Finding 3)
+  # 10. "DOING WELL"  ✅ APPROVED  (golden eval row 29 — Finding 3)
   # ---------------------------------------------------------------------------
   - name: students_meeting_performance_bar
     description: >
       Count of the requesting teacher's students who meet the institution's
       defined performance bar. This template exists specifically because
-      "doing well" has NO definition anywhere in the schema — free-form
-      generation was observed inventing an undisclosed 70% threshold and
-      reporting the result at High confidence with no indication a judgment
-      had been made. The point of this template is that the definition
-      becomes a reviewed, stable, institutional decision.
+      "doing well" originally had NO definition anywhere in the schema —
+      free-form generation was once observed inventing an undisclosed 70%
+      threshold and reporting the result at High confidence with no
+      indication a judgment had been made. The definition below (mastery of
+      85% or above, with at least one quiz passed) is now a reviewed,
+      approved, institutional decision rather than a model-invented guess.
     example_questions:
       - "How many of my students are doing well?"
       - "How many students are performing well?"
     parameters: {}
-    requires_signoff: true
+    requires_signoff: false
     router:
         intent_group: performance_policy
         positive_examples:
@@ -654,24 +671,27 @@ templates:
         supported_operations:
         - count
         required_parameters: []
-        requires_approved_policy: true
 
-    signoff_note: >
-      ⚠ THRESHOLD NOT YET APPROVED. The values below (mastery >= 70 AND at
-      least one quiz passed) are a plausible default for review, NOT an
-      authoritative school policy. Confirm with the client before use. Whatever
-      is agreed should also be added to schema_catalog.md §6 so the free-form
-      fallback has the same definition available when this template doesn't match.
+    approved_note: >
+      ✅ APPROVED. mastery >= 85 AND quizzes_passed >= 1, chosen directly by
+      the client rather than derived from the at_risk engine (at_risk/engine.py
+      has no equivalent "doing well" driver to cross-check against — it only
+      scores risk, not positive performance). For reference, 85% sits close to
+      the symmetric mirror of at_risk's own calibration method: the engine's
+      60% "struggling" mastery floor is ~1.5 SD below the synthetic school's
+      mean of 71.3% (SD 8.5); 1.5 SD *above* that same mean is ~84.05%.
     answer_note: >
       compose_answer should surface the definition alongside the number, e.g.
-      "12 students are doing well (mastery of 70% or above, with at least one
+      "12 students are doing well (mastery of 85% or above, with at least one
       quiz passed)." — never a bare count, since the criterion is a policy
       choice the teacher deserves to see.
     sql: |
       SELECT COUNT(DISTINCT s.student_id) AS students_doing_well
       FROM student_360 s
-      WHERE s.mastery_percent >= 70.00      -- ⚠ REQUIRES SIGN-OFF
-        AND s.quizzes_passed > 0            -- ⚠ REQUIRES SIGN-OFF
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
+      WHERE s.mastery_percent >= 85.00      -- ✅ APPROVED
+        AND s.quizzes_passed >= 1           -- ✅ APPROVED
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -684,52 +704,84 @@ templates:
         )
 
   # ---------------------------------------------------------------------------
-  # 11. "STRUGGLING"  ⚠ REQUIRES SIGN-OFF  (golden eval row 30 — Finding 3)
+  # 11. "STRUGGLING"  ✅ APPROVED  (golden eval row 30 — Finding 3)
   # ---------------------------------------------------------------------------
   - name: students_needing_support
     description: >
-      Named list of the requesting teacher's students who fall below the
-      institution's defined support threshold. Same rationale as
-      students_meeting_performance_bar — "struggling" has no schema
-      definition, and free-form generation was observed inventing an
-      undisclosed <50% threshold.
+      The requesting teacher's students who fall below the institution's
+      defined support threshold — named list or count, depending on
+      phrasing. Same rationale as students_meeting_performance_bar —
+      "struggling" originally had no schema definition, and free-form
+      generation was once observed inventing an undisclosed <50% threshold.
+      The definition below (mastery below 60% or attendance below 80%) is
+      now approved and matches at_risk/engine.py's own calibrated
+      "struggling" level thresholds. "At risk" is treated as a synonym for
+      this same definition, not a separate template — at_risk/engine.py's
+      own dashboard flags add a mastery-trend-decline driver this template
+      deliberately omits (see approved_note), so this is the narrower,
+      current-snapshot-only reading of "at risk" a teacher asking in chat
+      gets, not the dashboard's full flag set.
     example_questions:
       - "Show me the struggling students."
       - "Which of my students need extra support?"
       - "Who is falling behind?"
-    parameters: {}
-    requires_signoff: true
+      - "How many students are at risk?"
+      - "How many of my students are struggling?"
+    parameters:
+      shape:
+        type: enum
+        values: [list, count]
+        required: true
+        note: >
+          Router determines this from question phrasing ("show me"/"who" →
+          list, "how many" → count). Both shapes must produce consistent
+          confidence for the same underlying fact (same pattern as
+          students_below_attendance_threshold's shape parameter).
+    requires_signoff: false
     router:
         intent_group: support_policy
         positive_examples:
         - Show me the struggling students.
         - Which of my students need extra support?
         - Who is falling behind?
+        - How many students are at risk?
+        - How many of my students are struggling?
         negative_examples:
         - Which students scored below 40%?
         - Which students have attendance below 40%?
         supported_operations:
         - list
-        required_parameters: []
-        requires_approved_policy: true
+        - count
+        required_parameters:
+        - shape
 
-    signoff_note: >
-      ⚠ THRESHOLD NOT YET APPROVED. The values below (mastery < 50 OR
-      attendance < 75) are a plausible default for review. Note the attendance
-      component uses the 75% figure already documented in schema_catalog.md §6
-      as the POC attendance-eligibility rule — reusing an existing documented
-      threshold rather than inventing a second one. The mastery component has
-      no existing precedent and is a fresh proposal. Confirm both.
+    approved_note: >
+      ✅ APPROVED. mastery < 60 OR attendance < 80, matching
+      at_risk.engine.DEFAULT_THRESHOLDS (mastery_level=60.0,
+      attendance_level=80.0) — calibrated against the synthetic school's
+      mastery distribution (mean 71.3%, SD 8.5; 60% is ~1.5 SD below the
+      mean) and attendance distribution (80% sits at the natural gap between
+      a 70% cluster and the next at 86%), rather than the previous, unrelated
+      75% "attendance-eligible" figure or an unprecedented 50% guess. Note
+      this template intentionally does NOT reproduce at_risk's
+      mastery-trend-decline driver — student_360 has no per-attempt series
+      to compute a trend from, only a single current mastery_percent reading.
+      This is also why a chat "how many students are at risk" count can
+      legitimately differ from the at-risk dashboard's own flag count: the
+      dashboard additionally flags students on trend decline alone, which
+      this level-only definition cannot see.
     answer_note: >
-      compose_answer should state the criterion alongside the list, and should
-      be worded supportively — this output names specific children as
-      struggling, and how it is phrased matters.
-    sql: |
+      compose_answer should state the criterion alongside the list/count, and
+      should be worded supportively — this output names (or counts) specific
+      children as struggling, and how it is phrased matters.
+    sql_list: |
       SELECT DISTINCT sp.full_name, s.mastery_percent, s.attendance_percent
       FROM student_360 s
       JOIN student_profiles sp ON sp.id = s.student_id
-      WHERE (s.mastery_percent < 50.00        -- ⚠ REQUIRES SIGN-OFF
-             OR s.attendance_percent < 75.00) -- ⚠ REQUIRES SIGN-OFF (matches §6 POC rule)
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
+      WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
+             OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -741,6 +793,23 @@ templates:
             AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
         )
       ORDER BY s.mastery_percent ASC
+    sql_count: |
+      SELECT COUNT(DISTINCT s.student_id) AS student_count
+      FROM student_360 s
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
+      WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
+             OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
+        AND ap.status = 'active'
+        AND s.student_id IN (
+          SELECT sse.student_id
+          FROM student_subject_enrollments sse
+          JOIN teaching_assignments ta
+            ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
+          LEFT JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
+          WHERE ta.teacher_user_id = :current_user_id
+            AND ta.status = 'active'
+            AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
+        )
 
   # ---------------------------------------------------------------------------
   # 12. LOW ATTENDANCE  (golden eval rows 23/24 — Finding 1 regression pair)
@@ -781,18 +850,24 @@ templates:
         negative_examples:
         - Which students have poor attendance?
         - What is the average attendance rate?
+        - Do any of my students have a mastery score of exactly 0?
+        - Which of my students scored below 40% in Mathematics?
         supported_operations:
         - list
         - count
         required_parameters:
         - threshold
         - shape
+        requires_keywords:
+        - attend
 
     sql_list: |
       SELECT sp.full_name, s.attendance_percent
       FROM student_360 s
       JOIN student_profiles sp ON sp.id = s.student_id
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE s.attendance_percent < :threshold
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
@@ -807,7 +882,9 @@ templates:
     sql_count: |
       SELECT COUNT(DISTINCT s.student_id) AS student_count
       FROM student_360 s
+      JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE s.attendance_percent < :threshold
+        AND ap.status = 'active'
         AND s.student_id IN (
           SELECT sse.student_id
           FROM student_subject_enrollments sse
