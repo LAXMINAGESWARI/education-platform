@@ -1558,6 +1558,92 @@ async def test_institution_scoped_identity_columns_are_deliberately_reviewed() -
 # the Postgres fixtures this file deliberately does not.
 
 
+# --- Reserved-alias-collision fix ----------------------------------------------------
+#
+# _ALIAS_PREFIX ("__ars_") is reserved for aliases this module's own predicate builders
+# inject inside their correlated EXISTS subqueries. If the *outer* table being scoped is
+# itself aliased with that same reserved prefix, the predicate builder's inner FROM
+# (which reuses the same literal alias) shadows the outer correlation instead of
+# referencing it, collapsing the injected predicate into a self-tautology. These tests
+# confirm that's refused outright rather than silently producing unscoped-in-effect SQL.
+
+
+async def test_taught_offering_alias_collision_is_rejected_not_silently_tautologized() -> None:
+    # Without the fix, aliasing the outer table __ars_ta makes _taught_offering_exists's
+    # own inner "FROM teaching_assignments __ars_ta" shadow this alias, turning
+    # "__ars_ta.grade_subject_offering_id = __ars_ta.grade_subject_offering_id" into an
+    # always-true tautology — any teacher with one active assignment could then read
+    # every student_360 row in their institution, not just their own taught students.
+    error = await _rejected(
+        "SELECT __ars_ta.id FROM student_360 __ars_ta",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "__ars_ta" in error
+    assert "reserved" in error.lower()
+
+
+async def test_taught_period_grade_alias_collision_is_rejected() -> None:
+    # Same shape, via _taught_period_grade_exists's reserved "__ars_gso" alias.
+    error = await _rejected(
+        "SELECT __ars_gso.id FROM student_grade_enrollments __ars_gso",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "__ars_gso" in error
+    assert "reserved" in error.lower()
+
+
+async def test_reserved_alias_collision_rejected_regardless_of_role() -> None:
+    # Not teacher-specific: the collision risk is in the AST rewrite itself, so this
+    # must be refused for every role that reaches the free-form rewrite, not just the
+    # one role a given predicate builder happens to serve.
+    error = await _rejected(
+        "SELECT __ars_sp.id FROM student_profiles __ars_sp",
+        role="student",
+        user_id="student-1",
+    )
+    assert "__ars_sp" in error
+
+
+async def test_reserved_alias_collision_rejected_case_insensitively() -> None:
+    error = await _rejected(
+        "SELECT __ARS_TA.id FROM student_360 __ARS_TA",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "reserved" in error.lower()
+
+
+async def test_reserved_alias_collision_rejected_on_subquery_alias() -> None:
+    error = await _rejected(
+        "SELECT x.id FROM (SELECT id FROM student_360) __ars_x, subjects x",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "reserved" in error.lower()
+
+
+async def test_reserved_alias_collision_rejected_on_cte_alias() -> None:
+    error = await _rejected(
+        "WITH __ars_cte AS (SELECT id FROM student_360) SELECT * FROM __ars_cte",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "reserved" in error.lower()
+
+
+async def test_ordinary_aliases_are_unaffected_by_the_collision_check() -> None:
+    # Control: a normal, non-reserved alias must still scope successfully — this fix
+    # must not reject legitimate queries that happen to use short table aliases.
+    validated = await _scoped(
+        "SELECT ta.id FROM student_360 ta",
+        role="teacher",
+        user_id="teacher-1",
+    )
+    assert "EXISTS" in validated
+
+
 async def test_same_named_cte_inner_base_table_still_gets_institution_scope() -> None:
     """A CTE whose alias collides with a real table must not skip scoping on the
     inner base-table reference — otherwise apply_role_scope emits unscoped SQL and

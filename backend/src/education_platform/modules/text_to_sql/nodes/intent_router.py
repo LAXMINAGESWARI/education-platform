@@ -1,4 +1,30 @@
-"""Routes approved in-domain questions to governed YAML templates or free-form SQL."""
+"""Routes approved in-domain questions to governed YAML templates or free-form SQL.
+
+Role gate on template matching, enforced in code, not just in the router prompt:
+every one of `intent_templates.yaml`'s templates hand-authors its own row-scoping
+predicate against a *teacher* identity (`ta.teacher_user_id = :current_user_id`, or —
+for `list_school_subjects` — no per-user predicate at all, deliberately treated as
+teacher-only anyway per the API's own charter: see `router.py`'s module docstring on why
+student/admin/parent access is a separate, not-yet-made decision). `decision_rules` in
+the YAML already tells the classifier "Admin-, Student-, and Parent-scoped questions
+remain free_form," but that was, until now, the *only* enforcement of it — an LLM
+instruction, not a structural check. Today's sole caller (`router.py`'s `/text-to-sql/ask`
+endpoint) already hardcodes `state["user_role"] = "teacher"` and gates on
+`require_role("teacher")` before the graph even runs, so this has never been reachable
+with a different role in production — but `intent_router` is a pure function of `state`,
+not of who happens to call it today, and nothing stopped a future second caller (another
+endpoint reusing `build_text_to_sql_graph()`) from invoking it with `user_role` set to
+`"admin"`/`"student"`/`"parent"` and getting a template match anyway. The wrong role's
+`user_id` simply not matching any `teaching_assignments.teacher_user_id` row would still
+mean an empty result rather than a data leak — this was never a live vulnerability — but
+that safety is incidental to the schema, not a designed guarantee, unlike every other
+role boundary in this pipeline (`apply_role_scope`'s allowlists, `_ROLE_FORBIDDEN_TABLES`),
+which are all enforced in code. The check below closes that gap the same way: template
+matching is skipped entirely — falling through to `_free_form`, the same fallback an
+off-topic or ambiguous question already takes — for any role other than `"teacher"`,
+before the classifier LLM call even runs (a free efficiency win for a role that could
+never validly match anyway, not just a correctness fix).
+"""
 
 from __future__ import annotations
 
@@ -65,6 +91,28 @@ def _normalize_parameters(parameters: dict[str, Any], catalog: dict[str, Any]) -
     return normalized
 
 
+def _matches_required_keywords(template: dict[str, Any], question: str) -> bool:
+    """A live incident (golden-eval row 25) showed the classifier can match a question to
+    a template whose own domain the question never mentions at all: "Do any of my students
+    have a mastery score of exactly 0?" was matched to `students_below_attendance_threshold`
+    at 0.9 confidence — a fabricated wrong-template match, not just a fabricated parameter
+    value (the number "0" genuinely appears in the question, so a numeric-presence check
+    alone would not have caught this; the mismatch is which *metric* that number belongs
+    to). `router.requires_keywords`, when a template declares it, is a small, explicit,
+    human-reviewed list of words the template's own domain is expected to be named by
+    (e.g. "attendance" for the attendance-threshold template) — at least one must appear
+    in the raw question, case-insensitively, or the match is refused here, before
+    confidence/parameter checks even run. Templates that don't declare this list are
+    unaffected (returns True) — this is an opt-in, additive safety net, not a retroactive
+    requirement on every template.
+    """
+    keywords = template.get("router", {}).get("requires_keywords")
+    if not keywords:
+        return True
+    lowered = question.lower()
+    return any(keyword.lower() in lowered for keyword in keywords)
+
+
 def _valid_parameters(template: dict[str, Any], parameters: dict[str, Any]) -> bool:
     definitions = template.get("parameters", {})
     router = template.get("router", {})
@@ -97,8 +145,21 @@ def _valid_parameters(template: dict[str, Any], parameters: dict[str, Any]) -> b
     return True
 
 
+def template_route_min_confidence() -> float:
+    """The configured confidence floor a template match must clear (`_select_template`'s
+    own threshold, exposed here so other nodes — `sanity_check`, to flag a borderline
+    match — read the same live value from `intent_templates.yaml` rather than a second,
+    driftable copy of the literal 0.90 default)."""
+    catalog = _load_catalog()
+    routing_policy = catalog.get("intent_router", {}).get("routing_policy", {})
+    threshold = routing_policy.get("template_route_min_confidence", 0.90)
+    if not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
+        return 0.90
+    return float(threshold)
+
+
 def _select_template(
-    decision: _RouterDecision, catalog: dict[str, Any]
+    decision: _RouterDecision, catalog: dict[str, Any], question: str
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     routing_policy = catalog.get("intent_router", {}).get("routing_policy", {})
     threshold = routing_policy.get("template_route_min_confidence", 0.90)
@@ -117,6 +178,8 @@ def _select_template(
         if template.get("requires_signoff") or router.get("requires_approved_policy"):
             return None
         if decision.operation not in router.get("supported_operations", []):
+            return None
+        if not _matches_required_keywords(template, question):
             return None
         parameters = _normalize_parameters(decision.parameters, catalog)
         if not _valid_parameters(template, parameters):
@@ -137,6 +200,11 @@ def _free_form(state: TextToSQLState, decision: _RouterDecision | None = None) -
 
 
 async def intent_router(state: TextToSQLState) -> TextToSQLState:
+    # Every template is teacher-shaped by construction (see module docstring) — no
+    # non-teacher role can ever validly match one, so skip template matching (and the
+    # classifier call it would otherwise cost) entirely for any other role.
+    if state.get("user_role") != "teacher":
+        return _free_form(state)
     try:
         catalog = _load_catalog()
         settings = get_settings()
@@ -162,7 +230,7 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
     except (OSError, ValueError, OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
         return _free_form(state)
 
-    selected = _select_template(decision, catalog)
+    selected = _select_template(decision, catalog, state.get("question") or "")
     if selected is None:
         return _free_form(state, decision)
 
@@ -184,4 +252,4 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
     }
 
 
-__all__ = ["intent_router"]
+__all__ = ["intent_router", "template_route_min_confidence"]

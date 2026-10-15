@@ -49,10 +49,22 @@ shapes are fully deterministic and get templated phrasing with no model call at 
   genuinely attribute-shaped, not assume the cap/shape checks alone are sufficient — they
   were never the safety mechanism here, the column name is.
 
-Everything else — a multi-row result with more than one column, a single-column list
-past the enumeration cap, or a single-column list whose column isn't `name` (a student
-roster, a bare list of scores, ...) — goes through an LLM call (same OpenRouter
-client/pattern as generate_sql) to turn the rows into readable prose, since summarizing or
+* **A roster with one attribute value per person** (`full_name` plus exactly one other
+  scalar column, up to `_ROSTER_ATTRIBUTE_ROW_CAP` rows — e.g. "list my students below
+  60% and their marks" returning `[{"full_name": "...", "mastery_percent": 47.45}, ...]`).
+  Added after a live failure: asked to summarize an 8-row result of exactly this shape,
+  the LLM path below stated a wrong headline count ("There are five students...") over
+  data that was already fully correct — `result_row_count` is always the real, exact
+  count, so nothing here ever needed a model to (mis)count it. Unlike the single-column
+  list above, this path never deduplicates — see `_roster_with_attribute_shape`'s own
+  docstring for why merging roster entries is unsafe in a way merging attribute values
+  isn't.
+
+Everything else — a multi-row result with more than one column not matching the roster
+shape just above, a single-column list past the enumeration cap, or a single-column list
+whose column isn't `name` (a bare list of scores, ...) — goes through an LLM call (same
+OpenRouter client/pattern as generate_sql) to turn the rows into readable prose, since
+summarizing or
 describing a larger, richer, or entity-identifying result well is exactly the kind of task
 templating handles badly (or unsafely) and language models handle well. The prompt
 instructs the model to use only the values it's
@@ -225,6 +237,61 @@ def _enumerated_list_answer(column: str, rows: list[dict[str, Any]]) -> str:
     return f"{label}: {_english_join(list(seen))}."
 
 
+# A roster (`full_name`) alongside one attribute value per person (a score, a mastery
+# percent, an attendance percent, a count) — e.g. "list my students below 60% and their
+# marks" — is a materially larger, class-sized result than the bare-category lists
+# `_ENUMERABLE_LIST_ROW_CAP` was sized for, so it gets its own, more generous cap rather
+# than reusing that constant. Past this, `_llm_answer` is still the fallback (a genuine
+# prose summary reads better than a 40-item sentence anyway).
+_ROSTER_ATTRIBUTE_ROW_CAP: Final[int] = 40
+
+
+def _roster_with_attribute_shape(rows: list[dict[str, Any]], row_count: int) -> str | None:
+    """The attribute column name if every row in `rows` has exactly two columns — the
+    schema's own person-identifying `full_name` convention (see `_single_column_list_shape`'s
+    docstring for why that's the naming line this pipeline already draws) plus exactly one
+    other scalar column describing that person — and the list is short enough to enumerate
+    directly; `None` if this isn't that shape at all.
+
+    This exists because the multi-column path below (`_llm_answer`) has a confirmed,
+    live failure mode for exactly this shape: asked to summarize an 8-row
+    `(full_name, mastery_percent)` result, the model wrote "There are five students... "
+    then separately named two more by name afterward — a wrong headline count over data
+    that was already fully correct (`result_row_count` is always the real, exact count;
+    nothing here needed the model to count anything). This is the same
+    "a number that is already correct could come out wrong" risk Task 9's single-scalar
+    path and the module docstring's single-column-list fix both exist to prevent, just for
+    a two-column roster instead of a bare scalar or a one-column list — the fix is the same
+    shape: never ask a model to restate a count or transcribe a list of real values when the
+    real values are already sitting in `rows`.
+
+    Deliberately NOT deduplicated, unlike `_enumerated_list_answer`: two rows sharing a
+    `full_name` here are two roster entries, each with its own attribute value that might
+    differ — collapsing them could hide a real duplicate-row bug or silently drop a
+    genuinely distinct person who happens to share a name, exactly the risk
+    `_single_column_list_shape`'s docstring already flags for roster data. Every row is
+    rendered exactly as returned.
+    """
+    if not (1 <= row_count <= _ROSTER_ATTRIBUTE_ROW_CAP) or len(rows) != row_count:
+        return None
+    columns = {frozenset(row.keys()) for row in rows}
+    if len(columns) != 1:
+        return None
+    (only_columns,) = columns
+    if len(only_columns) != 2 or "full_name" not in only_columns:
+        return None
+    (attribute_column,) = only_columns - {"full_name"}
+    return attribute_column
+
+
+def _roster_with_attribute_answer(column: str, rows: list[dict[str, Any]]) -> str:
+    suffix = "%" if column.lower() in PERCENTAGE_COLUMNS else ""
+    entries = [f"{row['full_name']} ({row[column]}{suffix})" for row in rows]
+    count = len(rows)
+    noun = "record" if count == 1 else "records"
+    return f"Found {count} matching {noun}: {_english_join(entries)}."
+
+
 def _serialize_rows_for_prompt(rows: list[dict[str, Any]]) -> str:
     shown = rows[:_MAX_ROWS_IN_PROMPT]
     lines = [json.dumps(row, default=str) for row in shown]
@@ -271,6 +338,9 @@ async def _compose_core_answer(question: str, rows: list[dict[str, Any]], row_co
     list_column = _single_column_list_shape(rows, row_count)
     if list_column is not None:
         return _enumerated_list_answer(list_column, rows)
+    roster_column = _roster_with_attribute_shape(rows, row_count)
+    if roster_column is not None:
+        return _roster_with_attribute_answer(roster_column, rows)
     return await _llm_answer(question, rows)
 
 

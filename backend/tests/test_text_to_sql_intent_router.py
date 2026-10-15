@@ -15,9 +15,9 @@ from education_platform.modules.text_to_sql.state import TextToSQLState
 _MODULE = importlib.import_module("education_platform.modules.text_to_sql.nodes.intent_router")
 
 
-def _state() -> TextToSQLState:
+def _state(question: str = "How many students do I teach?") -> TextToSQLState:
     return {
-        "question": "How many students do I teach?",
+        "question": question,
         "user_id": "user-1",
         "user_role": "teacher",
         "institution_id": "institution-1",
@@ -60,6 +60,167 @@ async def test_high_confidence_template_match(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "intent",
+    ["students_meeting_performance_bar", "students_needing_support"],
+)
+async def test_approved_formerly_signoff_gated_templates_now_route_successfully(
+    monkeypatch: pytest.MonkeyPatch,
+    intent: str,
+) -> None:
+    """`students_meeting_performance_bar` ("doing well") and `students_needing_support`
+    ("struggling") were both `requires_signoff: true` — permanently unselectable — until
+    the client approved their thresholds (mastery >= 85 AND quizzes_passed >= 1 for the
+    former; mastery < 60 OR attendance < 80, matching at_risk.engine.DEFAULT_THRESHOLDS,
+    for the latter). This is the mirror of the removed case in
+    test_invalid_or_ambiguous_decisions_fall_back_to_free_form — before approval, an
+    otherwise-perfect decision for either intent still fell back to free_form solely
+    because of the signoff flag; now it must route to template like any other approved
+    one, proving `requires_signoff: false` actually re-enables selection rather than
+    just silencing the flag.
+    """
+    operation = "count" if intent == "students_meeting_performance_bar" else "list"
+    parameters = {} if intent == "students_meeting_performance_bar" else {"shape": "list"}
+    _mock_classifier(
+        monkeypatch,
+        {"intent": intent, "confidence": 0.99, "parameters": parameters, "operation": operation},
+    )
+
+    result = await _MODULE.intent_router(_state())
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == intent
+    assert result["query_source"] == "template"
+    assert result["generated_sql"]
+
+
+@pytest.mark.asyncio
+async def test_at_risk_count_question_routes_to_students_needing_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "At risk" is treated as a synonym for students_needing_support's approved
+    "struggling" definition (mastery < 60 OR attendance < 80), not a separate template —
+    see that template's description. "How many students are at risk?" is a count
+    question, so this also covers the template's sql_count/shape="count" path (the
+    template was list-only before; this is the mirror of
+    test_question_grounded_attendance_match_still_routes_to_template for this intent).
+    """
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_needing_support",
+            "confidence": 0.95,
+            "parameters": {"shape": "count"},
+            "operation": "count",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("How many students are at risk?"))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == "students_needing_support"
+    assert result["query_source"] == "template"
+    assert "COUNT" in (result["generated_sql"] or "")
+
+
+@pytest.mark.asyncio
+async def test_requires_signoff_flag_still_blocks_routing_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No real template in intent_templates.yaml is `requires_signoff: true` any more
+    (both formerly-gated templates were approved), which would otherwise leave the gate
+    itself — `_select_template`'s `template.get("requires_signoff") or
+    router.get("requires_approved_policy")` check — completely untested. Monkeypatches a
+    synthetic one-template catalog so this code path stays covered for whenever a future
+    template needs the same treatment.
+    """
+    fake_catalog = {
+        "intent_router": {"routing_policy": {"template_route_min_confidence": 0.90}},
+        "templates": [
+            {
+                "name": "fake_gated_template",
+                "parameters": {},
+                "requires_signoff": True,
+                "router": {"required_parameters": [], "supported_operations": ["count"]},
+                "sql": "SELECT 1",
+            }
+        ],
+    }
+    monkeypatch.setattr(_MODULE, "_load_catalog", lambda: fake_catalog)
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "fake_gated_template",
+            "confidence": 0.99,
+            "parameters": {},
+            "operation": "count",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state())
+
+    assert result["intent_route"] == "free_form"
+    assert result.get("query_source") is None
+
+
+@pytest.mark.asyncio
+async def test_wrong_template_match_refused_when_question_lacks_required_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces a live incident (golden-eval row 25): the classifier matched "Do any of
+    my students have a mastery score of exactly 0?" to students_below_attendance_threshold
+    at 0.9 confidence -- a fabricated wrong-template match, since the question never
+    mentions attendance at all. students_below_attendance_threshold now declares
+    router.requires_keywords: [attend] in intent_templates.yaml; _matches_required_keywords
+    must refuse this match before parameter validation even runs, forcing free_form instead
+    of the wrong template silently answering the wrong question.
+    """
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_below_attendance_threshold",
+            "confidence": 0.9,
+            "parameters": {"threshold": 0, "shape": "list"},
+            "operation": "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(
+        _state("Do any of my students have a mastery score of exactly 0? Name them if so.")
+    )
+
+    assert result["intent_route"] == "free_form"
+    assert result.get("query_source") is None
+    assert result.get("generated_sql") is None
+
+
+@pytest.mark.asyncio
+async def test_question_grounded_attendance_match_still_routes_to_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror of the case above: a question that genuinely does name attendance must
+    still route normally -- the new requires_keywords check must not over-refuse a
+    legitimate match just because it exists.
+    """
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_below_attendance_threshold",
+            "confidence": 0.95,
+            "parameters": {"threshold": 40, "shape": "count"},
+            "operation": "count",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("How many students have attendance less than 40%?"))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == "students_below_attendance_threshold"
+    assert result["query_source"] == "template"
+    assert result["generated_sql"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("subject", "canonical"),
     [
         ("Math", "Mathematics"),
@@ -68,7 +229,10 @@ async def test_high_confidence_template_match(monkeypatch: pytest.MonkeyPatch) -
         ("Sci", "Science"),
         ("Science", "Science"),
         ("Eng", "English"),
-        ("Phy", "Physics"),
+        # Physics deliberately not a valid value for this template's `subject` enum —
+        # no Physics subject exists in this schema (see intent_templates.yaml's own
+        # note on this and the sibling templates it matches for consistency); a "Phy"
+        # alias must fall through to free_form here, not match this template.
     ],
 )
 async def test_latest_quiz_attempt_subject_alias_is_normalized(
@@ -92,6 +256,32 @@ async def test_latest_quiz_attempt_subject_alias_is_normalized(
     assert result["intent"] == "latest_quiz_attempt"
     assert result["intent_parameters"] == {"subject": canonical}
     assert ":subject" in (result["generated_sql"] or "")
+
+
+@pytest.mark.asyncio
+async def test_latest_quiz_attempt_physics_falls_back_to_free_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Physics is not a valid `subject` value for this template — no Physics subject
+    exists in this schema (see intent_templates.yaml's own note, shared with the three
+    sibling templates that already exclude it). A classifier match naming Physics must
+    fail validation and fall through to free_form, never silently accept a subject that
+    can never return data.
+    """
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "latest_quiz_attempt",
+            "confidence": 0.95,
+            "parameters": {"subject": "Physics"},
+            "operation": "last",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state())
+
+    assert result["intent_route"] == "free_form"
+    assert result["query_source"] is None
 
 
 @pytest.mark.asyncio
@@ -138,12 +328,6 @@ async def test_latest_quiz_attempt_without_subject_uses_null_parameter(
             "parameters": {},
             "operation": "list",
             "ambiguous": True,
-        },
-        {
-            "intent": "students_meeting_performance_bar",
-            "confidence": 0.99,
-            "parameters": {},
-            "operation": "count",
         },
         {"intent": "unknown_intent", "confidence": 0.99, "parameters": {}, "operation": "count"},
     ],

@@ -256,13 +256,14 @@ async def test_zero_valued_count_and_zero_row_list_get_matching_confidence_throu
     assert count_result["confidence"] == list_result["confidence"]
 
 
-async def test_zero_valued_count_regression_does_not_affect_null_valued_aggregate(
+async def test_null_valued_aggregate_downgrades_confidence_end_to_end(
     monkeypatch: pytest.MonkeyPatch, seeded_institution: UUID, seeded_admin_user_id: UUID
 ) -> None:
-    # Task 9's existing NULL-valued-aggregate case (AVG over zero matching rows) must
-    # keep reading as "high" confidence through the full graph, completely unaffected by
-    # this new check — regression-tested end to end, not just at the sanity_check-unit
-    # level above.
+    # NULL-valued-aggregate (AVG over zero matching rows) now downgrades to "medium"
+    # through the full graph, same as a literal zero would — a real, confirmed-live bug
+    # fixed here (confidence used to stay "high" for a legitimately-empty AVG() result,
+    # with nothing anywhere flagging the uncertainty except the answer text itself).
+    # Regression-tested end to end, not just at the sanity_check-unit level above.
     async def _fake_generate_sql(state: TextToSQLState) -> TextToSQLState:
         return {
             **state,
@@ -279,8 +280,10 @@ async def test_zero_valued_count_regression_does_not_affect_null_valued_aggregat
     assert result["error"] is None
     assert result["result_row_count"] == 1
     assert result["query_result"] == [{"n": None}]
-    assert result["confidence"] == "high"
-    assert result["audit_entry"]["sanity_check_triggers"] == []
+    assert result["confidence"] == "medium"
+    triggers = result["audit_entry"]["sanity_check_triggers"]
+    assert len(triggers) == 1
+    assert triggers[0].startswith("zero_valued_aggregate:")
 
 
 # --- row-cap truncation, chained from a real execute_sql truncation --------------------

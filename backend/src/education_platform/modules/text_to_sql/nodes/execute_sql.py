@@ -55,7 +55,14 @@ Four more layers enforced here, at the database connection itself rather than in
   otherwise a fine answer into a user-facing refusal. Logged as a warning either way, since
   it means validate_sql's own guarantee didn't hold.
 
-Failure handling: any `SQLAlchemyError` here (timeout, connection failure, an unexpected
+Failure handling: `state["user_id"]`/`state["user_role"]`/`state["institution_id"]` are
+subscripted directly (not `.get()`) since a missing value must never silently fall
+through to an unscoped query — but that means a genuinely missing field raises
+`KeyError`, which is guarded for explicitly right at the top of this function (same
+fail-closed shape as audit_log.py's own guard on the same fields) rather than left to
+propagate uncaught if the graph's identity-always-populated invariant is ever violated.
+
+Any `SQLAlchemyError` here (timeout, connection failure, an unexpected
 constraint violation) is a genuine execution failure, not a correctness or authorization
 one — the SQL was already proven valid and authorized by the time it reaches this node.
 `state["error"]` is always the same generic, user-safe text; the real exception (which can
@@ -111,6 +118,27 @@ async def execute_sql(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(EXECUTION_ERROR, "execute_sql: no validated_sql to run"),
         }
 
+    try:
+        user_id = state["user_id"]
+        user_role = state["user_role"]
+        institution_id = state["institution_id"]
+    except KeyError as exc:
+        # These three are documented as always populated from the verified JWT by the
+        # time the graph runs, and every node up to this one already trusts them as
+        # opaque strings without re-checking that -- but they're subscripted directly
+        # below, inside a try that only catches SQLAlchemyError, so a missing value
+        # here would otherwise be an uncaught KeyError instead of a controlled failure
+        # (audit_log.py guards the same fields explicitly, for the same reason -- see
+        # its own docstring). Fail closed the same way: no query is run at all.
+        return {
+            **state,
+            "query_result": None,
+            "result_row_count": None,
+            "error": format_error(
+                EXECUTION_ERROR, f"execute_sql: state is missing required field {exc}"
+            ),
+        }
+
     session_factory = get_text_to_sql_session_factory()
     try:
         async with session_factory() as session:
@@ -126,9 +154,9 @@ async def execute_sql(state: TextToSQLState) -> TextToSQLState:
                     "set_config('app.current_institution_id', :institution_id, true)"
                 ),
                 {
-                    "user_id": state["user_id"],
-                    "user_role": state["user_role"],
-                    "institution_id": state["institution_id"],
+                    "user_id": user_id,
+                    "user_role": user_role,
+                    "institution_id": institution_id,
                 },
             )
             await session.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
@@ -139,8 +167,8 @@ async def execute_sql(state: TextToSQLState) -> TextToSQLState:
             await session.execute(text("SET TRANSACTION READ ONLY"))
             parameters = {
                 **(state.get("intent_parameters") or {}),
-                "current_user_id": state["user_id"],
-                "current_institution_id": state["institution_id"],
+                "current_user_id": user_id,
+                "current_institution_id": institution_id,
             }
             unbound_statement = text(sql)
             required_parameters = {
