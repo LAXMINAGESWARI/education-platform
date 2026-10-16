@@ -76,6 +76,24 @@ describe("lessonSlides", () => {
     ]);
   });
 
+  it("splits a JSON lesson section and hides the grade-voice line", () => {
+    const markdown = [
+      "# Lesson",
+      "",
+      "Write for Grade 8 students studying hello. Use plain language.",
+      "",
+      "## Introduction",
+      "Already taught.",
+      "",
+      '{"lesson_markdown": "## Solving\\n\\nBoth sides stay balanced."}',
+    ].join("\n");
+    const slides = slidesFromMarkdown(markdown, "Lesson");
+    expect(slides.map((slide) => slide.title)).toEqual(["Introduction", "Solving"]);
+    expect(slides[0]?.content).not.toContain("hello");
+    expect(slides[1]?.content).toContain("balanced");
+    expect(slides[1]?.content).not.toContain("lesson_markdown");
+  });
+
   it("unwraps a wrapping markdown fence before splitting slides", () => {
     const slides = slidesFromMarkdown(
       ["```markdown", "# Fractions", "", "Two halves make one.", "```"].join("\n"),

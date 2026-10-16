@@ -19,6 +19,8 @@ from education_platform.modules.generation.adk import (
     LessonSectionSpec,
     instructional_designer_instruction,
     live_lesson_runner,
+    markdown_from_lesson_draft,
+    repair_latex_controls,
     stitch_agent_instruction,
 )
 from education_platform.modules.generation.blueprint import section_source_length_error
@@ -214,11 +216,21 @@ def extract_recap(markdown: str, heading: str) -> str:
     return heading
 
 
+def coerce_lesson_markdown(raw: str) -> str:
+    """Turn a model JSON envelope into student markdown and restore LaTeX commands."""
+    stripped = raw.strip()
+    if stripped.startswith("{") or stripped.startswith("```"):
+        extracted = markdown_from_lesson_draft(stripped).strip()
+        if extracted:
+            stripped = extracted
+    return repair_latex_controls(stripped)
+
+
 def section_from_chunks(request: LessonSectionRequest) -> str:
     """Heuristic narrative rewrite grounded in this node's excerpts only."""
     excerpt = _snippet(" ".join(request.chunk_texts), 400)
     idea_line = (
-        f"In {request.grade_voice}, {request.heading} means this: {excerpt}"
+        f"{request.heading} means this: {excerpt}"
         if request.pass_kind is not SectionPass.EXAMPLES
         else f"Keep the idea of {request.heading} and look at the source numbers."
     )
@@ -243,7 +255,9 @@ def stitch_sections(request: StitchRequest) -> str:
     """Short narrative transitions and one topic recap. Does not rewrite the teaching."""
     if not request.sections:
         raise ValueError("cannot stitch an empty lesson")
-    parts: list[str] = [f"# Lesson\n\n{request.grade_voice}"]
+    # grade_voice is a model instruction ("Write for Grade 8 students studying …").
+    # It is not part of the lesson students read.
+    parts: list[str] = ["# Lesson"]
     titles = [section.heading for section in request.sections]
     for index, section in enumerate(request.sections):
         if index > 0:
@@ -251,7 +265,7 @@ def stitch_sections(request: StitchRequest) -> str:
             parts.append(
                 f"You just saw {previous}. Now we use that to understand {section.heading}."
             )
-        parts.append(section.markdown.strip())
+        parts.append(coerce_lesson_markdown(section.markdown))
     recap_bits = "; ".join(titles)
     parts.append(f"**Topic recap.** This lesson taught {recap_bits}.")
     return "\n\n".join(parts).strip() + "\n"
@@ -433,9 +447,8 @@ def _render_section(request: LessonSectionRequest, writer: SectionWriter | None)
 
 
 def _produce_section(request: LessonSectionRequest, writer: SectionWriter | None) -> str:
-    if writer is not None:
-        return writer(request)
-    return section_from_chunks(request)
+    raw = writer(request) if writer is not None else section_from_chunks(request)
+    return coerce_lesson_markdown(raw)
 
 
 def _merge_glossary(

@@ -55,6 +55,38 @@ describe("normalizeMarkdownMath", () => {
     expect(normalized.startsWith("```markdown")).toBe(false);
   });
 
+  it("unwraps lesson json and drops the grade-voice instruction", () => {
+    const source = [
+      "# Lesson",
+      "",
+      "Write for Grade 8 students studying hello. Use plain language.",
+      "",
+      "## Introduction",
+      "Already taught.",
+      "",
+      '{"lesson_markdown": "## Solving\\n\\nUse \\(2x - 3 = 7\\)."}',
+    ].join("\n");
+    const normalized = normalizeMarkdownMath(source);
+    expect(normalized).toContain("## Solving");
+    expect(normalized).toContain("$2x - 3 = 7$");
+    expect(normalized).not.toContain("lesson_markdown");
+    expect(normalized).not.toContain("studying hello");
+  });
+
+  it("restores JSON-eaten LaTeX commands and collapses quadruple dollars", () => {
+    const normalized = normalizeMarkdownMath("Area $2 \\\u000crac{5}{4}$ and $$$$x + 2 = 10$$$$.");
+    expect(normalized).toContain("$2 \\frac{5}{4}$");
+    expect(normalized).toContain("$$x + 2 = 10$$");
+    expect(normalized).not.toContain("\u000c");
+  });
+
+  it("moves an align environment onto its own line and restores row breaks", () => {
+    const source = "$$\\begin{align*}\n2x - 3 &= 4 \\\n\\end{align*}$$";
+    const normalized = normalizeMarkdownMath(source);
+    expect(normalized).toContain("$$\n\\begin{align*}");
+    expect(normalized).toContain("2x - 3 &= 4 \\\\\n");
+  });
+
   it("strips undecoded Docling formula comments", () => {
     expect(normalizeMarkdownMath("Solve <!-- formula-not-decoded --> next.")).toBe("Solve  next.");
   });

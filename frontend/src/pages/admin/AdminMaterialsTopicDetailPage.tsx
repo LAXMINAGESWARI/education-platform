@@ -6,10 +6,12 @@ import { getSubtopicMaterial, getTopicMaterial } from "../../api/materials";
 import type { GenerationQaItem, GenerationRun, LessonMaterial, LessonSlide } from "../../api/types";
 import { Crumbs, type Crumb } from "../../components/Crumbs";
 import { LessonSlideFrame } from "../../components/LessonSlideFrame";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 import { TopicGenerationUpload } from "../../components/TopicGenerationUpload";
 import { TopicItemStats } from "../../components/TopicItemStats";
 import { findSummarySlide, slidesForLessonView } from "../../lib/lessonSlides";
+import { presentQuizText } from "../../lib/quizText";
 import { useAdminDirectory } from "../../lib/useAdminDirectory";
 
 type TabId = "upload" | "published";
@@ -81,7 +83,8 @@ function AdminPublishedQuiz({
           {sorted.map((item) => (
             <li key={item.question_id} className="admin-published-quiz__item">
               <p className="admin-published-quiz__prompt">
-                <strong>Q{item.sequence}.</strong> {item.prompt}
+                <strong>Q{item.sequence}.</strong>{" "}
+                <MarkdownContent inline>{presentQuizText(item.prompt)}</MarkdownContent>
               </p>
               <ul className="draft-options">
                 {optionEntries(item.options).map(([label, text]) => (
@@ -92,7 +95,9 @@ function AdminPublishedQuiz({
                     }
                   >
                     <span className="draft-option__label">{label}</span>
-                    <span>{text}</span>
+                    <span>
+                      <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
+                    </span>
                   </li>
                 ))}
               </ul>
