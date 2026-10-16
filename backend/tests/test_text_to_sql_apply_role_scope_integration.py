@@ -78,7 +78,6 @@ from education_platform.modules.assessments.models import (
 from education_platform.modules.attendance.models import AttendanceRecord, AttendanceStatus
 from education_platform.modules.auth.models import (
     Institution,
-    RefreshSession,
     RoleName,
     StudentProfile,
     User,
@@ -97,6 +96,7 @@ from education_platform.modules.text_to_sql.graph import build_text_to_sql_graph
 from education_platform.modules.text_to_sql.nodes.apply_role_scope import apply_role_scope
 from education_platform.modules.text_to_sql.state import (
     ROLE_VIOLATION,
+    VALIDATION_ERROR,
     TextToSQLState,
     error_category,
 )
@@ -850,6 +850,43 @@ async def test_teacher_row_scoping_against_real_attendance_data(
     assert seeded.student_b_math_id not in student_ids
 
 
+async def test_teacher_sees_whole_day_attendance_with_null_offering(
+    async_session: AsyncSession, seeded: _Fixture
+) -> None:
+    period_id = (
+        (
+            await async_session.execute(
+                select(AttendanceRecord.academic_period_id).where(
+                    AttendanceRecord.student_id == seeded.student_a_math_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert period_id is not None
+    async_session.add(
+        AttendanceRecord(
+            student_id=seeded.student_a_math_id,
+            academic_period_id=period_id,
+            section_id=seeded.section_a_id,
+            grade_subject_offering_id=None,
+            on_date=date(2026, 3, 2),
+            status=AttendanceStatus.PRESENT,
+        )
+    )
+    await async_session.flush()
+
+    rows = await _run_scoped(
+        async_session,
+        sql=("SELECT student_id FROM attendance_records WHERE grade_subject_offering_id IS NULL"),
+        user_id=seeded.teacher_user_id,
+        role="teacher",
+        institution_id=seeded.institution_id,
+    )
+    assert seeded.student_a_math_id in {row["student_id"] for row in rows}
+
+
 # --- Item 3: cross-check against insights.service.scope_predicate() -------------------
 #
 # apply_role_scope.py could not reuse scope_predicate() directly (see that module's
@@ -1107,30 +1144,31 @@ async def test_attempt_answers_student_sees_only_own_answers(
 # --- not leak across tenants) ----------------------------------------------------------
 
 
-async def test_users_table_institution_pin_hides_other_institutions_users(
+async def test_users_table_is_refused_before_any_email_is_read(
     async_session: AsyncSession, seeded: _Fixture
 ) -> None:
-    # Add a user at the other institution so this test has something to prove hidden.
-    other_inst_user = User(
-        institution_id=seeded.other_institution_id,
-        email="other-inst-user@ars-integration.school",
-        full_name="Other Institution User",
-        password_hash="unused",
-    )
-    async_session.add(other_inst_user)
-    await async_session.flush()
-
-    for role in ("admin", "teacher", "student"):
-        rows = await _run_scoped(
-            async_session,
-            sql="SELECT id, email FROM users",
-            user_id=seeded.teacher_user_id,
-            role=role,
-            institution_id=seeded.institution_id,
-        )
-        emails = {row["email"] for row in rows}
-        assert "other-inst-user@ars-integration.school" not in emails
-        assert "teacher@ars-integration.school" in emails
+    _ = async_session
+    for role, user_id in (
+        ("admin", seeded.admin_user_id),
+        ("teacher", seeded.teacher_user_id),
+        ("student", seeded.student_a_math_user_id),
+    ):
+        state: TextToSQLState = {
+            "question": "list emails",
+            "user_id": str(user_id),
+            "user_role": role,
+            "institution_id": str(seeded.institution_id),
+            "validated_sql": "SELECT id, email FROM users",
+            "error": None,
+            "retry_count": 0,
+            "audit_entry": None,
+        }
+        result = await apply_role_scope(state)
+        assert result["validated_sql"] is None
+        assert result["error"] is not None
+        assert error_category(result["error"]) == ROLE_VIOLATION
+        assert "users" in result["error"]
+        assert "may never be referenced" in result["error"]
 
 
 async def test_subjects_and_grades_pinned_to_institution_for_every_role(
@@ -1242,97 +1280,28 @@ async def test_teaching_assignments_admin_sees_all_teachers_within_institution_r
 # prove narrowing against without further fixture changes.
 
 
-async def test_user_roles_teacher_sees_only_own_role_real_data(
+async def test_user_roles_and_refresh_sessions_are_refused_real_data(
     async_session: AsyncSession, seeded: _Fixture
 ) -> None:
-    rows = await _run_scoped(
-        async_session,
-        sql="SELECT user_id, role FROM user_roles",
-        user_id=seeded.teacher_user_id,
-        role="teacher",
-        institution_id=seeded.institution_id,
-    )
-    assert {row["user_id"] for row in rows} == {seeded.teacher_user_id}
-    assert rows[0]["role"] == "teacher"
-
-
-async def test_user_roles_admin_sees_every_users_role_within_institution_real_data(
-    async_session: AsyncSession, seeded: _Fixture
-) -> None:
-    rows = await _run_scoped(
-        async_session,
-        sql="SELECT user_id FROM user_roles",
-        user_id=seeded.admin_user_id,
-        role="admin",
-        institution_id=seeded.institution_id,
-    )
-    user_ids = {row["user_id"] for row in rows}
-    assert {seeded.teacher_user_id, seeded.teacher2_user_id, seeded.admin_user_id} <= user_ids
-
-
-async def test_refresh_sessions_teacher_sees_only_own_sessions_real_data(
-    async_session: AsyncSession, seeded: _Fixture
-) -> None:
-    # Not seeded by _seed (no login flow simulated there) -- insert two real sessions
-    # directly, one per teacher, so there's genuine cross-user data to prove narrowing
-    # against, same reasoning as reusing _seed's own per-user UserRole rows above.
-    from datetime import UTC, datetime, timedelta
-
-    now = datetime.now(UTC)
-    session_1 = RefreshSession(
-        user_id=seeded.teacher_user_id,
-        token_hash="hash-teacher-1",
-        expires_at=now + timedelta(days=14),
-    )
-    session_2 = RefreshSession(
-        user_id=seeded.teacher2_user_id,
-        token_hash="hash-teacher-2",
-        expires_at=now + timedelta(days=14),
-    )
-    async_session.add_all([session_1, session_2])
-    await async_session.flush()
-
-    rows = await _run_scoped(
-        async_session,
-        sql="SELECT user_id, expires_at FROM refresh_sessions",
-        user_id=seeded.teacher_user_id,
-        role="teacher",
-        institution_id=seeded.institution_id,
-    )
-    assert {row["user_id"] for row in rows} == {seeded.teacher_user_id}
-
-
-async def test_refresh_sessions_admin_sees_every_users_sessions_within_institution_real_data(
-    async_session: AsyncSession, seeded: _Fixture
-) -> None:
-    from datetime import UTC, datetime, timedelta
-
-    now = datetime.now(UTC)
-    async_session.add_all(
-        [
-            RefreshSession(
-                user_id=seeded.teacher_user_id,
-                token_hash="hash-admin-view-1",
-                expires_at=now + timedelta(days=14),
-            ),
-            RefreshSession(
-                user_id=seeded.teacher2_user_id,
-                token_hash="hash-admin-view-2",
-                expires_at=now + timedelta(days=14),
-            ),
-        ]
-    )
-    await async_session.flush()
-
-    rows = await _run_scoped(
-        async_session,
-        sql="SELECT user_id FROM refresh_sessions",
-        user_id=seeded.admin_user_id,
-        role="admin",
-        institution_id=seeded.institution_id,
-    )
-    user_ids = {row["user_id"] for row in rows}
-    assert {seeded.teacher_user_id, seeded.teacher2_user_id} <= user_ids
+    _ = async_session
+    for sql, table in (
+        ("SELECT user_id, role FROM user_roles", "user_roles"),
+        ("SELECT id, expires_at FROM refresh_sessions", "refresh_sessions"),
+    ):
+        state: TextToSQLState = {
+            "question": "account table",
+            "user_id": str(seeded.teacher_user_id),
+            "user_role": "teacher",
+            "institution_id": str(seeded.institution_id),
+            "validated_sql": sql,
+            "error": None,
+            "retry_count": 0,
+            "audit_entry": None,
+        }
+        result = await apply_role_scope(state)
+        assert result["validated_sql"] is None
+        assert result["error"] is not None
+        assert table in result["error"]
 
 
 # --- Batch 1: deferred-curriculum-table scoping project (topics/subtopics/
@@ -2008,15 +1977,18 @@ async def test_question_without_self_reference_is_unaffected_through_full_graph(
     assert str(seeded.teacher_user_id) not in result["validated_sql"]
 
 
-async def test_student_self_reference_also_resolves_through_full_graph(
+async def test_student_self_reference_email_query_is_refused_through_full_graph(
     monkeypatch: pytest.MonkeyPatch, seeded: _Fixture
 ) -> None:
-    # Step 0 finding: this gap is symmetric, not teacher-only -- a student asking "what's
-    # my email" over `users` (also INSTITUTION_SCOPED_TABLES) needs the identical fix.
     async def _fake_generate_sql(state: TextToSQLState) -> TextToSQLState:
+        retry_count = state.get("retry_count", 0)
+        if state.get("error"):
+            retry_count += 1
         return {
             **state,
             "generated_sql": "SELECT email FROM users WHERE id = '__CURRENT_USER_ID__'",
+            "retry_count": retry_count,
+            "query_source": None,
             "error": None,
         }
 
@@ -2039,12 +2011,13 @@ async def test_student_self_reference_also_resolves_through_full_graph(
         "error": None,
         "audit_entry": None,
     }
-    result = await graph.ainvoke(initial, config={"recursion_limit": 15})
+    result = await graph.ainvoke(initial, config={"recursion_limit": 25})
 
-    assert result["error"] is None
-    assert result["query_result"] == [{"email": "stu-a-math@ars-integration.school"}]
-    assert str(seeded.student_a_math_user_id) in result["validated_sql"]
-    assert "__CURRENT_USER_ID__" not in result["validated_sql"]
+    assert error_category(result["error"]) == VALIDATION_ERROR
+    assert result["query_result"] is None
+    answer = result["natural_answer"] or ""
+    assert "stu-a-math" not in answer
+    assert "@" not in answer
 
 
 # --- Fix (Row 28): identity mismatch, through the full compiled graph -----------------
@@ -2113,9 +2086,16 @@ async def test_role_violation_routes_to_honest_refusal_through_compiled_graph(
     monkeypatch: pytest.MonkeyPatch, seeded: _Fixture
 ) -> None:
     async def _fake_generate_sql(state: TextToSQLState) -> TextToSQLState:
-        # Bypass the real LLM call: hand validate_sql a query that will pass validation
-        # but that apply_role_scope must reject on blocklist grounds.
-        return {**state, "generated_sql": "SELECT password_hash FROM users", "error": None}
+        # Bypass the real LLM call: hand validate_sql a query that passes the
+        # whitelist, then apply_role_scope rejects it (a student has no teaching
+        # assignments). Account tables never reach this node through the graph
+        # anymore — validate_sql rejects them first — so this uses a still-valid
+        # table to prove ROLE_VIOLATION does not retry.
+        return {
+            **state,
+            "generated_sql": "SELECT teacher_user_id FROM teaching_assignments",
+            "error": None,
+        }
 
     # graph.py did `from ...nodes import generate_sql`, binding its own module-level
     # name — patching the nodes submodule's attribute (like generate_sql's own test
@@ -2126,8 +2106,8 @@ async def test_role_violation_routes_to_honest_refusal_through_compiled_graph(
     graph = build_text_to_sql_graph()
     initial: TextToSQLState = {
         "question": "irrelevant",
-        "user_id": str(seeded.admin_user_id),
-        "user_role": "admin",
+        "user_id": str(seeded.student_a_math_user_id),
+        "user_role": "student",
         "institution_id": str(seeded.institution_id),
         "schema_context": "",
         "generated_sql": None,

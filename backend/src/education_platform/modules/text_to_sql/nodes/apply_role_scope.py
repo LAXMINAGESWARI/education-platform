@@ -142,25 +142,18 @@ need it too (see `_apply_row_scoping`'s docstring for why that changed: a teache
 "show all teaching assignments" question, with no self-filter to resolve, returned the
 whole school's staff roster) — it's now narrowed the same silent way as
 `STUDENT_SCOPED_TABLES`, despite still being classified under `INSTITUTION_SCOPED_TABLES`
-for the fail-closed table-coverage check. `user_roles`/`refresh_sessions` followed the
-same path shortly after — found by the drift-guard extension
-(`test_institution_scoped_identity_columns_are_deliberately_reviewed`) rather than
-another live leak, and now silently self-narrowed via `_SELF_USER_ID_SCOPED_TABLES`
-(both teacher and student, unlike teaching_assignments' teacher-only narrowing, since
-both roles have a legitimate "what's my own role/session" reading here). The rest of
-`INSTITUTION_SCOPED_TABLES` still only gets the institution pin (deliberately — see that
-constant's own docstring), so a question like "what's my email" (users) genuinely needs a
-`<owner column> = <the asking user>` filter that only the model can write, and
-generate_sql never gives it a real identity value to use. Left unaddressed, the model
-either fabricates a placeholder that matches nothing (the observed
-failure: a literal like `'Your Name Here'`) or drops the self-filter entirely, over-
-returning institution-wide data. generate_sql's prompt instead teaches one fixed, literal
-token; `_resolve_current_user_sentinel` finds and replaces it with the real
-`state["user_id"]` here, before any row/institution scoping runs — the same node, and
-the same identity-sourcing discipline (state only, never the question or model output),
-already used for every other identity-keyed predicate in this file. This runs for every
-role, not just teacher/student: nothing about self-reference is role-specific, and this
-node is not the layer that decides whether a role should be allowed to ask about itself.
+for the fail-closed table-coverage check. Account tables (`users`, `user_roles`,
+`refresh_sessions`) are not scoped at all: they are on `_BLOCKED_TABLE_NAMES`, absent
+from the schema catalog, and revoked from `text_to_sql_reader`. An institution pin is
+not enough — a teacher question for every email in the school returned the whole
+tenant. The rest of `INSTITUTION_SCOPED_TABLES` still only gets the institution pin
+(deliberately — see that constant's own docstring). Where a real self-reference is
+still legitimate (`teaching_assignments.teacher_user_id`, and the student-identity
+columns), generate_sql's prompt teaches one fixed literal token;
+`_resolve_current_user_sentinel` replaces it with `state["user_id"]` before any
+row/institution scoping runs. This runs for every role, not just teacher/student:
+nothing about self-reference is role-specific, and this node is not the layer that
+decides whether a role should be allowed to ask about itself.
 
 If the model needs self-reference but doesn't use the token — a still-fabricated literal,
 or a subquery guessing at identity — this is deliberately *not* caught by a dedicated
@@ -235,9 +228,6 @@ STUDENT_SCOPED_TABLES: Final[frozenset[str]] = frozenset(
 INSTITUTION_SCOPED_TABLES: Final[frozenset[str]] = frozenset(
     {
         "institutions",
-        "users",
-        "user_roles",
-        "refresh_sessions",
         "grades",
         "subjects",
         "academic_periods",
@@ -278,7 +268,12 @@ INSTITUTION_SCOPED_TABLES: Final[frozenset[str]] = frozenset(
 # confirms `password_hash` and `token_hash` each appear on exactly one table in the whole
 # schema, so an unqualified name match is unambiguous.
 _BLOCKED_COLUMN_NAMES: Final[frozenset[str]] = frozenset({"password_hash", "token_hash"})
-_BLOCKED_TABLE_NAMES: Final[frozenset[str]] = frozenset({"question_answer_keys"})
+# Account tables are refused outright, for every role including admin. An institution
+# pin still returned every login in the caller's school (names and emails). Column
+# grants that omitted password_hash were not a boundary: the rest of `users` is the leak.
+_BLOCKED_TABLE_NAMES: Final[frozenset[str]] = frozenset(
+    {"question_answer_keys", "users", "user_roles", "refresh_sessions"}
+)
 
 # Which table each `_BLOCKED_COLUMN_NAMES` entry actually lives on -- needed only for the
 # `SELECT *`/`alias.*` case below, where there is no explicit `exp.Column` node to check
@@ -510,9 +505,10 @@ def _resolve_current_user_sentinel(tree: exp.Expr, user_id: str) -> None:
 
 
 def _find_blocklist_violation(tree: exp.Expr) -> str | None:
-    for table_node in tree.find_all(exp.Table):
-        if table_node.name.lower() in _BLOCKED_TABLE_NAMES:
-            return f"table `{table_node.name}` may never be referenced by a text-to-SQL query"
+    # Columns before tables so an explicit password_hash/token_hash reference still
+    # names the column. Stars before tables so `SELECT *` from an account table still
+    # reports the blocked-column expansion. Any other reference to those tables
+    # (email, role, session metadata) is refused as the table itself.
     for col in tree.find_all(exp.Column):
         if col.name.lower() in _BLOCKED_COLUMN_NAMES:
             qualifier = f"{col.table}." if col.table else ""
@@ -547,6 +543,9 @@ def _find_blocklist_violation(tree: exp.Expr) -> str | None:
                     "scoped safely against a table with a blocked column and cannot be "
                     "queried by the text-to-SQL assistant"
                 )
+    for table_node in tree.find_all(exp.Table):
+        if table_node.name.lower() in _BLOCKED_TABLE_NAMES:
+            return f"table `{table_node.name}` may never be referenced by a text-to-SQL query"
     return None
 
 
@@ -993,11 +992,36 @@ def _self_predicate_sql(table: str, alias: str, user_id_literal: str) -> str:
     raise AssertionError(f"unhandled sensitive table {table!r}")
 
 
+def _taught_attendance_exists(user_id_literal: str, alias: str) -> str:
+    """Teacher visibility for `attendance_records`, matching RLS migration f7a8b9c0d1e2.
+
+    Whole-day rows leave `grade_subject_offering_id` NULL, so an offering-equality
+    predicate matches nothing. Match the section's period grade and the assignment's
+    section (NULL assignment section means every section), and keep offering equality
+    only when the attendance row itself names an offering. The section OR is first so
+    the structural test that inspects the first `exp.Or` still sees that rule.
+    """
+    p = _ALIAS_PREFIX
+    return (
+        f"EXISTS (SELECT 1 FROM teaching_assignments {p}ta "
+        f"JOIN grade_subject_offerings {p}gso ON {p}gso.id = {p}ta.grade_subject_offering_id "
+        f"WHERE {p}ta.teacher_user_id = {user_id_literal} "
+        f"AND {p}ta.status = 'active' "
+        f"AND {p}gso.period_grade_id = (SELECT {p}sec.period_grade_id FROM sections {p}sec "
+        f"WHERE {p}sec.id = {alias}.section_id) "
+        f"AND ({p}ta.section_id IS NULL OR {p}ta.section_id = {alias}.section_id) "
+        f"AND ({alias}.grade_subject_offering_id IS NULL "
+        f"OR {alias}.grade_subject_offering_id = {p}ta.grade_subject_offering_id))"
+    )
+
+
 def _taught_predicate_sql(table: str, alias: str, user_id_literal: str) -> str:
     p = _ALIAS_PREFIX
     if table == "student_profiles":
         return f"{alias}.id IN {_taught_student_ids_subquery(user_id_literal)}"
-    if table in ("student_360", "attendance_records"):
+    if table == "attendance_records":
+        return _taught_attendance_exists(user_id_literal, alias)
+    if table == "student_360":
         return _taught_offering_exists(
             user_id_literal, f"{alias}.grade_subject_offering_id", f"{alias}.section_id"
         )

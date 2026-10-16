@@ -473,6 +473,18 @@ async def test_reader_role_cannot_read_password_hash_column(clean_db: str) -> No
     await _expect_permission_denied("SELECT password_hash FROM users")
 
 
+async def test_reader_role_cannot_read_user_emails(clean_db: str) -> None:
+    await _expect_permission_denied("SELECT email, full_name FROM users")
+
+
+async def test_reader_role_cannot_read_user_roles(clean_db: str) -> None:
+    await _expect_permission_denied("SELECT role FROM user_roles")
+
+
+async def test_reader_role_cannot_read_refresh_sessions(clean_db: str) -> None:
+    await _expect_permission_denied("SELECT id FROM refresh_sessions")
+
+
 async def test_reader_role_cannot_read_token_hash_column(clean_db: str) -> None:
     await _expect_permission_denied("SELECT token_hash FROM refresh_sessions")
 

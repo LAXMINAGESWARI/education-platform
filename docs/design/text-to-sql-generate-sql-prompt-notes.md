@@ -52,16 +52,14 @@ For tables `apply_role_scope` scopes down to *exactly* the asking user's own row
 write a self-filter at all — `apply_role_scope` adds it silently. (`teaching_assignments`
 joined that list after a live incident: a teacher's "show all teaching assignments"
 question, with no self-filter for the model to write, returned the whole school's staff
-roster.) But for a table it only institution-pins (`users`, ...), a question like "what's
-my email" genuinely needs a `<owner column> = <me>` filter only the model can write, and
-this node never gives the model a real identity value (no user_id, no name, no email — by
-design). Observed failure without this rule: the model fabricates a placeholder literal
-(e.g. `'Your Name Here'`) that matches nothing, producing a confidently-wrong empty answer
-for a real, answerable question. The prompt teaches one fixed literal token for every
-table, `teaching_assignments` included — writing it there now is harmless and redundant
-(`apply_role_scope`'s own predicate is authoritative regardless) rather than required, but
-gives the model one consistent rule instead of a per-table exception to remember. The
-token is never a name/guess/subquery; `apply_role_scope` resolves it to the real
+roster.) Account tables (`users`, `user_roles`, `refresh_sessions`) are not an
+institution-pin case. A live teacher question for every email in the school returned
+the whole tenant, so those tables are removed from the catalog, rejected by the
+whitelist and `apply_role_scope`, and revoked from `text_to_sql_reader`. The prompt
+tells the model not to query them; that sentence is not the boundary. The sentinel
+remains for legitimate self-reference on tables that are still in scope
+(`teaching_assignments.teacher_user_id` and the student-identity columns). The token
+is never a name/guess/subquery; `apply_role_scope` resolves it to the real
 `state["user_id"]` before execution.
 
 ## Multi-row-per-entity joins (DISTINCT/EXISTS)

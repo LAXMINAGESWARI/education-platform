@@ -252,7 +252,15 @@ async def test_teacher_role_restricted_to_own_teaching_assignments_including_nul
     # table alias, not some other table or a hardcoded value. A loose substring match
     # ("section_id is null" appears somewhere) would pass even if this were OR'd into
     # the wrong place, AND'd instead of OR'd, or compared against the wrong column.
-    or_node = next(iter(inner_select.find_all(exp.Or)))
+    # Two ORs: section match, then nullable offering match. Find the section one
+    # rather than assuming walk order — sqlglot does not yield them in source order.
+    or_node = next(
+        node
+        for node in inner_select.find_all(exp.Or)
+        if isinstance(node.this, exp.Is)
+        and isinstance(node.this.this, exp.Column)
+        and node.this.this.name.lower() == "section_id"
+    )
     operands = [or_node.this, or_node.expression]
 
     is_null_ops = [op for op in operands if isinstance(op, exp.Is)]
@@ -380,23 +388,31 @@ async def test_current_user_sentinel_resolved_to_real_user_id() -> None:
 
 
 async def test_current_user_sentinel_resolved_for_every_role() -> None:
-    for role in ("admin", "teacher", "student"):
-        validated = await _scoped(
-            "SELECT id FROM users WHERE id = '__CURRENT_USER_ID__'",
-            role=role,
-            user_id="the-real-user",
-            institution_id="inst-1",
-        )
+    # Account tables are blocked, so each role resolves the sentinel against a column
+    # that role is actually allowed to compare with its own identity.
+    cases = (
+        (
+            "teacher",
+            "SELECT id FROM teaching_assignments WHERE teacher_user_id = '__CURRENT_USER_ID__'",
+        ),
+        (
+            "student",
+            "SELECT id FROM student_profiles WHERE user_id = '__CURRENT_USER_ID__'",
+        ),
+        (
+            "admin",
+            "SELECT id FROM teaching_assignments WHERE teacher_user_id = '__CURRENT_USER_ID__'",
+        ),
+    )
+    for role, sql in cases:
+        validated = await _scoped(sql, role=role, user_id="the-real-user", institution_id="inst-1")
         assert "the-real-user" in validated
         assert "__CURRENT_USER_ID__" not in validated
 
 
 async def test_current_user_sentinel_resolved_for_student_self_reference_too() -> None:
-    # Step 0 finding: the gap isn't teacher-only — a student asking "what's my email"
-    # over `users` (INSTITUTION_SCOPED_TABLES, institution-pin only, no self-narrowing)
-    # needs the identical resolution.
     validated = await _scoped(
-        "SELECT email FROM users WHERE id = '__CURRENT_USER_ID__'",
+        "SELECT full_name FROM student_profiles WHERE user_id = '__CURRENT_USER_ID__'",
         role="student",
         user_id="student-real-id",
         institution_id="inst-1",
@@ -406,14 +422,10 @@ async def test_current_user_sentinel_resolved_for_student_self_reference_too() -
 
 
 async def test_query_without_sentinel_is_unaffected() -> None:
-    # users is INSTITUTION_SCOPED_TABLES (institution pin only, no self/taught row
-    # predicate -- unlike teaching_assignments, which gained one after a later incident;
-    # see test_teaching_assignments_teacher_restricted_to_own_rows), so the real user_id
-    # has no other reason to appear here at all -- confirms this fix doesn't leak identity
-    # into a query that never asked for it.
-    sql = "SELECT id, status FROM users WHERE status = 'active'"
+    # subjects is institution-pin only, so the asking user id has no reason to appear.
+    sql = "SELECT id, name FROM subjects WHERE name = 'Mathematics'"
     validated = await _scoped(sql, role="teacher", user_id="teacher-1", institution_id="inst-1")
-    assert "active" in validated
+    assert "Mathematics" in validated
     assert "teacher-1" not in validated
 
 
@@ -421,7 +433,7 @@ async def test_sentinel_does_not_match_a_similar_but_different_literal() -> None
     # Only the exact sentinel string is resolved -- a literal that merely contains it as
     # a substring, or differs in case, must be left completely untouched.
     validated = await _scoped(
-        "SELECT id, status FROM users WHERE status = '__current_user_id__'",
+        "SELECT id, name FROM subjects WHERE name = '__current_user_id__'",
         role="teacher",
         user_id="teacher-1",
         institution_id="inst-1",
@@ -432,14 +444,16 @@ async def test_sentinel_does_not_match_a_similar_but_different_literal() -> None
 
 async def test_multiple_sentinel_occurrences_all_resolved() -> None:
     sql = (
-        "SELECT u.id FROM users u "
-        "WHERE u.id = '__CURRENT_USER_ID__' "
-        "OR u.id IN "
-        "(SELECT id FROM users WHERE id = "
+        "SELECT ta.id FROM teaching_assignments ta "
+        "WHERE ta.teacher_user_id = '__CURRENT_USER_ID__' "
+        "OR ta.teacher_user_id IN "
+        "(SELECT teacher_user_id FROM teaching_assignments WHERE teacher_user_id = "
         "'__CURRENT_USER_ID__')"
     )
     validated = await _scoped(sql, role="teacher", user_id="teacher-1", institution_id="inst-1")
-    assert validated.count("teacher-1") == 2
+    # The rewrite also injects teacher_user_id predicates, so the id occurs at least
+    # once per sentinel, and no sentinel text remains.
+    assert validated.count("teacher-1") >= 2
     assert "__CURRENT_USER_ID__" not in validated
 
 
@@ -513,8 +527,9 @@ async def test_reverse_case_student_sentinel_against_recorded_by_rejected() -> N
 
 
 async def test_legitimate_self_reference_cases_are_unaffected() -> None:
-    # Rows 15/16/18's real shapes -- teacher token against teacher_user_id, and the
-    # role-agnostic users.id -- must still resolve and scope normally, not be rejected.
+    # Rows 15/16/18's real shapes -- teacher token against teacher_user_id -- must still
+    # resolve and scope normally, not be rejected. Account-table self-reference is
+    # refused below; it is not a legitimate reading anymore.
     validated = await _scoped(
         "SELECT s.name FROM teaching_assignments ta "
         "JOIN grade_subject_offerings gso ON gso.id = ta.grade_subject_offering_id "
@@ -536,13 +551,14 @@ async def test_legitimate_self_reference_cases_are_unaffected() -> None:
     )
     assert "teacher-1" in validated2
 
-    validated3 = await _scoped(
+    error = await _rejected(
         "SELECT email FROM users WHERE id = '__CURRENT_USER_ID__'",
         role="teacher",
         user_id="teacher-1",
         institution_id="inst-1",
     )
-    assert "teacher-1" in validated3
+    assert "users" in error
+    assert "may never be referenced" in error
 
 
 async def test_admin_sentinel_allowed_against_either_identity_shape() -> None:
@@ -717,12 +733,25 @@ async def test_admin_on_newly_scoped_student_tables_is_institution_only() -> Non
 # --- Fail-closed table coverage: INSTITUTION_SCOPED_TABLES and refusal ---------------
 
 
-async def test_users_table_pinned_to_institution_for_every_role() -> None:
-    for role in ("admin", "teacher", "student"):
-        validated = await _scoped(
-            "SELECT full_name, email FROM users u", role=role, user_id="x", institution_id="i-1"
-        )
-        assert "u.institution_id = 'i-1'" in _where_sql(validated)
+async def test_account_tables_refused_for_every_role() -> None:
+    for table in ("users", "user_roles", "refresh_sessions"):
+        for role in ("admin", "teacher", "student"):
+            error = await _rejected(
+                f"SELECT id FROM {table}", role=role, user_id="x", institution_id="i-1"
+            )
+            assert table in error
+            assert "may never be referenced" in error
+
+
+async def test_teacher_school_email_query_is_refused() -> None:
+    error = await _rejected(
+        "SELECT full_name, email FROM users",
+        role="teacher",
+        user_id="teacher-1",
+        institution_id="i-1",
+    )
+    assert "users" in error
+    assert "may never be referenced" in error
 
 
 async def test_teaching_assignments_teacher_restricted_to_own_rows() -> None:
@@ -853,53 +882,28 @@ async def test_teaching_assignments_admin_unrestricted_within_institution() -> N
 # forbidden.
 
 
-async def test_user_roles_teacher_and_student_restricted_to_own_row() -> None:
-    for role, user_id in (("teacher", "teacher-1"), ("student", "student-1")):
-        validated = await _scoped(
+async def test_user_roles_refused_for_teacher_student_and_admin() -> None:
+    for role, user_id in (("teacher", "teacher-1"), ("student", "student-1"), ("admin", "admin-1")):
+        error = await _rejected(
             "SELECT role FROM user_roles ur",
             role=role,
             user_id=user_id,
             institution_id="i-1",
         )
-        where = _where_sql(validated)
-        assert "ur.user_id" in where
-        assert user_id in where
-        assert "i-1" in where
+        assert "user_roles" in error
+        assert "may never be referenced" in error
 
 
-async def test_user_roles_admin_unrestricted_within_institution() -> None:
-    validated = await _scoped(
-        "SELECT role FROM user_roles ur", role="admin", user_id="admin-1", institution_id="i-1"
-    )
-    where = _where_sql(validated)
-    assert "i-1" in where
-    assert "admin-1" not in where
-
-
-async def test_refresh_sessions_teacher_and_student_restricted_to_own_row() -> None:
-    for role, user_id in (("teacher", "teacher-1"), ("student", "student-1")):
-        validated = await _scoped(
+async def test_refresh_sessions_refused_for_teacher_student_and_admin() -> None:
+    for role, user_id in (("teacher", "teacher-1"), ("student", "student-1"), ("admin", "admin-1")):
+        error = await _rejected(
             "SELECT id, expires_at, revoked_at FROM refresh_sessions rs",
             role=role,
             user_id=user_id,
             institution_id="i-1",
         )
-        where = _where_sql(validated)
-        assert "rs.user_id" in where
-        assert user_id in where
-        assert "i-1" in where
-
-
-async def test_refresh_sessions_admin_unrestricted_within_institution() -> None:
-    validated = await _scoped(
-        "SELECT id, expires_at, revoked_at FROM refresh_sessions rs",
-        role="admin",
-        user_id="admin-1",
-        institution_id="i-1",
-    )
-    where = _where_sql(validated)
-    assert "i-1" in where
-    assert "admin-1" not in where
+        assert "refresh_sessions" in error
+        assert "may never be referenced" in error
 
 
 async def test_batch_3_single_fk_tables_pinned_via_one_hop_to_batch_2_parent() -> None:
@@ -1346,9 +1350,6 @@ async def test_institution_scoped_tables_is_the_documented_set() -> None:
         frozenset(
             {
                 "institutions",
-                "users",
-                "user_roles",
-                "refresh_sessions",
                 "grades",
                 "subjects",
                 "academic_periods",
@@ -1412,11 +1413,11 @@ async def test_every_required_table_except_deferred_curriculum_ones_is_classifie
 # Reviewed: INSTITUTION_SCOPED_TABLES table -> the identity-shaped column(s) found on it,
 # each with a documented decision already made. New entries land here only by deliberate
 # review, same posture as `deferred_curriculum_tables` above -- never silently exempted.
-# "reviewed" does not mean "fixed": teaching_assignments is; user_roles/refresh_sessions
-# are flagged, known, and explicitly still deferred (see their own status strings) --
-# distinguishing "somebody looked at this and decided" from "nobody's looked at this
-# yet" is the entire point of this guard, the same distinction
-# deferred_curriculum_tables already draws for whole tables rather than columns.
+# "reviewed" does not mean "fixed": teaching_assignments is self-restricted.
+# users/user_roles/refresh_sessions are not in INSTITUTION_SCOPED_TABLES at all —
+# they are blocked tables, so they are not this guard's job. Distinguishing
+# "somebody looked at this and decided" from "nobody's looked at this yet" is the
+# entire point of this guard.
 _REVIEWED_IDENTITY_COLUMNS: Final[dict[str, dict[str, object]]] = {
     "teaching_assignments": {
         "columns": {"teacher_user_id"},
@@ -1429,31 +1430,11 @@ _REVIEWED_IDENTITY_COLUMNS: Final[dict[str, dict[str, object]]] = {
             "roster."
         ),
     },
-    "user_roles": {
-        "columns": {"user_id"},
-        "status": (
-            "self-restricted: both teacher and student see only their own row "
-            "(user_id = me), admin unrestricted within institution — see "
-            "_apply_row_scoping's _SELF_USER_ID_SCOPED_TABLES case. Unlike "
-            "teaching_assignments, both roles have a legitimate self-reading here "
-            "('what's my role'), so neither is forbidden outright. Found by this "
-            "guard itself, not by another live leak."
-        ),
-    },
-    "refresh_sessions": {
-        "columns": {"user_id"},
-        "status": (
-            "self-restricted, same _SELF_USER_ID_SCOPED_TABLES treatment as "
-            "user_roles above. token_hash itself is separately blocked "
-            "(_BLOCKED_COLUMN_NAMES); session metadata (user_id, timestamps) is now "
-            "also self-restricted rather than institution-wide for teacher/student."
-        ),
-    },
     "quiz_releases": {
         "columns": {"released_by_user_id"},
         "status": (
-            "column-redacted, not row-restricted: unlike teaching_assignments/"
-            "user_roles/refresh_sessions, this table's core content (a release "
+            "column-redacted, not row-restricted: unlike teaching_assignments, "
+            "this table's core content (a release "
             "window/status for an already institution-scoped quiz) has the same "
             "institution-wide legitimate readership as every other curriculum "
             "table — hiding the whole row would also hide release status for "

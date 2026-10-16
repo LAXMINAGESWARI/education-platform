@@ -86,6 +86,12 @@ EXCLUDED_TABLES: tuple[str, ...] = (
     "chunk_embeddings",
     "audit_events",
     "question_answer_keys",
+    # Account tables. `users` is NOT in this word list: foreign-key lines name
+    # `users.id` as a target, and a whole-word scrub would delete those lines.
+    # The users table block is removed explicitly, and lines that describe the
+    # accounts table itself are rewritten in `_scrub_auth_account_lines`.
+    "user_roles",
+    "refresh_sessions",
 )
 
 # Columns that must never appear in schema_context, for any role, ever — the table they
@@ -98,10 +104,7 @@ _EXCLUDED_COLUMNS: tuple[str, ...] = ("password_hash", "token_hash")
 # fail rather than silently ship a gutted context.
 REQUIRED_TABLES: tuple[str, ...] = (
     "institutions",
-    "users",
-    "user_roles",
     "student_profiles",
-    "refresh_sessions",
     "grades",
     "subjects",
     "academic_periods",
@@ -262,6 +265,86 @@ def _scrub_general_bullets(text: str) -> str:
     return text
 
 
+def _scrub_auth_account_lines(text: str) -> str:
+    """Remove the accounts table from the prompt without deleting every `users.id` FK.
+
+    `users` stays out of `EXCLUDED_TABLES` on purpose (see that constant). These
+    rewrites drop the lines that describe the accounts table itself and stop
+    telling the model to join it for email or login.
+    """
+    text = _replace_once(
+        text,
+        "`institution_id` lives directly on `institutions`-adjacent tables (`users`, "
+        "`student_profiles`, `grades`, `subjects`, `academic_periods`)",
+        "`institution_id` lives directly on `institutions`-adjacent tables "
+        "(`student_profiles`, `grades`, `subjects`, `academic_periods`)",
+        label="the multi-tenancy convention bullet",
+    )
+    text = _replace_once(
+        text,
+        "- **`student_profiles` vs `users`**: a student's identity record is "
+        "`student_profiles`, which *optionally* links to a `users` login row "
+        '(`user_id`, nullable). Not every student has a login yet ("provisioned" '
+        "students). Never assume `student_profiles.user_id IS NOT NULL`.\n",
+        "- **Student identity**: a student's identity record is `student_profiles`. "
+        "Login accounts are not available to this assistant. Never assume "
+        "`student_profiles.user_id IS NOT NULL`.\n",
+        label="the student-identity convention bullet",
+    )
+    text = _replace_once(
+        text,
+        "The canonical student identity record — distinct from `users` because a student "
+        "may exist (be enrolled, tracked) before they have login credentials.",
+        "The canonical student identity record. A student may exist (be enrolled, "
+        "tracked) before they have login credentials. Login accounts are not queryable "
+        "here.",
+        label="the student_profiles intro",
+    )
+    text = _replace_once(
+        text,
+        "- **`student_profiles.user_id` is frequently `NULL`** (student provisioned but "
+        "not yet given login credentials) — don't inner-join `users` when the question "
+        "is just about the student profile/roster; use a `LEFT JOIN` if you need login "
+        "info opportunistically.\n",
+        "- **`student_profiles.user_id` is frequently `NULL`** (a student may be "
+        "provisioned before they have login credentials). Roster and name questions are "
+        "answered from `student_profiles` and `student_360`. Login accounts, email "
+        "addresses, passwords, and sessions are not available to this assistant.\n",
+        label="the student_profiles.user_id gotcha",
+    )
+    text = _replace_once(
+        text,
+        "| `user_status` | `users.status` | `provisioned`, `active`, `deactivated`, `archived` |\n",
+        "",
+        label="the user_status enum row",
+    )
+    text = _replace_once(
+        text,
+        "users.institution_id                              references institutions.id\n",
+        "",
+        label="the users.institution_id foreign key line",
+    )
+    text = _replace_once(
+        text,
+        "- **Role model**: a `users` row can hold multiple roles via `user_roles` "
+        "(one row per role: `administrator`, `teacher`, `student`). Role is not a "
+        "column on `users` — always join `user_roles`.\n",
+        "- **Role model**: login roles and sessions are not available to this "
+        "assistant. Answer roster questions from `student_profiles` and enrollments, "
+        "not from an accounts table.\n",
+        label="the role-model convention bullet",
+    )
+    text = _replace_once(
+        text,
+        '| "logged in recently" / "active session" | `refresh_sessions` where '
+        "`revoked_at IS NULL AND expires_at > now()`. |\n",
+        '| "logged in recently" / "active session" | Login sessions are not available '
+        "to this assistant. |\n",
+        label="the active-session glossary row",
+    )
+    return text
+
+
 def _drop_lines_mentioning_excluded(text: str) -> str:
     """Drop every remaining single line that mentions an excluded table by name —
     §1's polymorphic-reference bullet, §3 enum rows and footnotes, §4 FK lines and the
@@ -301,9 +384,11 @@ def _filter_schema_catalog(raw: str) -> str:
     text = _remove_module_section(text, "rag")
     text = _remove_table_block(text, "audit_events")
     text = _remove_table_block(text, "question_answer_keys")
-    text = _remove_column_row(text, "users", "password_hash")
-    text = _remove_column_row(text, "refresh_sessions", "token_hash")
+    text = _remove_table_block(text, "users")
+    text = _remove_table_block(text, "user_roles")
+    text = _remove_table_block(text, "refresh_sessions")
     text = _scrub_general_bullets(text)
+    text = _scrub_auth_account_lines(text)
     text = _drop_lines_mentioning_excluded(text)
     text = _tidy(text)
     _validate_filtered(text)
