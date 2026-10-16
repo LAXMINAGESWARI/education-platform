@@ -89,11 +89,6 @@ function ScoreHero({
       ? Math.round((engagementRates.reduce((a, b) => a + b, 0) / engagementRates.length) * 100)
       : null;
 
-  const weakCount = dashboard.subtopics.filter((s) => {
-    if (s.attempts.length === 0) return false;
-    return Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)) < PASS_THRESHOLD;
-  }).length;
-  const noDataCount = dashboard.subtopics.filter((s) => s.attempts.length === 0).length;
   const passedSubtopics = dashboard.subtopics.filter((s) => {
     if (s.attempts.length === 0) return false;
     return Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)) >= PASS_THRESHOLD;
@@ -188,31 +183,10 @@ function ScoreHero({
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-          {passedSubtopics.map((s) => {
-            const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
-            const t = attemptTitle(s.attempts.length, best);
-            return (
-              <span key={s.subtopic_id} style={{ fontSize: "0.82rem", color: t.color, fontWeight: 600 }}>
-                {t.emoji} {s.subtopic_name}: {t.label}
-              </span>
-            );
-          })}
-          {weakCount > 0 && (
-            <span style={{ fontSize: "0.82rem", color: "var(--danger-border)", fontWeight: 600 }}>
-              ❌ {weakCount} needs work
-            </span>
-          )}
-          {noDataCount > 0 && (
-            <span style={{ fontSize: "0.82rem", color: "var(--ink-muted)" }}>
-              · {noDataCount} no data yet
-            </span>
-          )}
-        </div>
-        <p style={{ margin: "6px 0 0 0", fontSize: "0.8rem", color: "var(--ink-muted)" }}>
+        <p style={{ margin: "0", fontSize: "0.8rem", color: "var(--ink-muted)" }}>
           {dashboard.attempt_count === 1
             ? "1 attempt so far"
-            : `Achieved in ${dashboard.attempt_count} attempts`}
+            : `Across ${dashboard.attempt_count} attempts`}
         </p>
       </div>
     </div>
@@ -249,31 +223,25 @@ function NextStepCallout({
   return (
     <div
       style={{
-        background: "#eff6ff",
-        border: "1px solid #bfdbfe",
-        borderRadius: "10px",
-        padding: "0.9rem 1.1rem",
-        marginBottom: "1.25rem",
         display: "flex",
-        gap: "12px",
-        alignItems: "flex-start",
+        gap: "8px",
+        alignItems: "center",
+        flexWrap: "wrap",
+        fontSize: "0.88rem",
+        color: "var(--ink-muted)",
+        margin: "0 0 1.25rem 2px",
       }}
     >
-      <span style={{ fontSize: "1.4rem", lineHeight: 1 }}>🎯</span>
-      <div style={{ flex: 1 }}>
-        <p style={{ margin: "0 0 2px 0", fontWeight: 700, fontSize: "0.9rem", color: "#1e40af" }}>
-          Your next step
-        </p>
-        <p style={{ margin: "0 0 8px 0", fontSize: "0.85rem", color: "#1e3a8a" }}>
-          Revisit <strong>{target.s.subtopic_name}</strong>. {gapText}
-        </p>
-        <Link
-          to={`/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`}
-          className="btn btn--sm"
-        >
-          Review lesson
-        </Link>
-      </div>
+      <span style={{ color: "#1e40af", fontWeight: 600 }}>→ Next:</span>
+      <span>
+        revisit <strong style={{ color: "var(--ink)" }}>{target.s.subtopic_name}</strong>. {gapText}
+      </span>
+      <Link
+        to={`/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`}
+        style={{ color: "#1e40af", fontWeight: 600, textDecoration: "underline" }}
+      >
+        Review lesson
+      </Link>
     </div>
   );
 }
@@ -286,41 +254,10 @@ function FocusBanner({
   weakSubtopics: SubtopicFeedback[];
   overallScore: number | null;
 }) {
-  // Still has subtopics to work on — show focus list
+  // Weak subtopics are already surfaced by the "next step" line above — don't
+  // repeat them here. The focus banner now only celebrates full completion.
   if (weakSubtopics.length > 0) {
-    return (
-      <div
-        style={{
-          background: "#fffbeb",
-          border: "1px solid #fcd34d",
-          borderRadius: "10px",
-          padding: "0.9rem 1.1rem",
-          marginBottom: "1.25rem",
-        }}
-      >
-        <p style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: "0.9rem", color: "#92400e" }}>
-          🌱 Areas to grow
-        </p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-          {weakSubtopics.map((s) => (
-            <span
-              key={s.subtopic_id}
-              style={{
-                background: "#ffffff",
-                border: "1px solid #fcd34d",
-                borderRadius: "6px",
-                padding: "3px 10px",
-                fontSize: "0.82rem",
-                fontWeight: 500,
-                color: "#92400e",
-              }}
-            >
-              {s.subtopic_name}
-            </span>
-          ))}
-        </div>
-      </div>
-    );
+    return null;
   }
 
   // All subtopics passed — show tiered achievement banner
@@ -855,6 +792,7 @@ function ReportCard({
 export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
   const { user } = useAuth();
+  const [showReport, setShowReport] = useState(false);
   const [dashboard, setDashboard] = useState<SubjectFeedbackDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [engagementBySubtopic, setEngagementBySubtopic] = useState<Map<string, EngagementRate>>(
@@ -1004,12 +942,23 @@ export function SubjectFeedbackPage() {
                 ))}
               </div>
 
-              {/* ─── NEW: Report card (inline + print to PDF) ─────────────── */}
-              <ReportCard
-                dashboard={dashboard}
-                engagementBySubtopic={engagementBySubtopic}
-                studentName={user?.full_name ?? "Student"}
-              />
+              {/* ─── NEW: Report card (collapsed behind a toggle) ─────────── */}
+              <div style={{ marginTop: "1.5rem" }}>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={() => setShowReport((v) => !v)}
+                >
+                  {showReport ? "Hide report card" : "View report card"}
+                </button>
+              </div>
+              {showReport && (
+                <ReportCard
+                  dashboard={dashboard}
+                  engagementBySubtopic={engagementBySubtopic}
+                  studentName={user?.full_name ?? "Student"}
+                />
+              )}
             </>
           )}
         </div>
