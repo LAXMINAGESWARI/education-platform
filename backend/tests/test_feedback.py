@@ -5,9 +5,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from education_platform.modules.academics.models import Subject
 from education_platform.modules.assessments import feedback_service
 from education_platform.modules.assessments.models import QuestionAnswerKey, QuizItem
-from education_platform.modules.academics.models import Subject
 from education_platform.modules.materials.seed import POC_INSTITUTION_NAME, POC_SUBJECT_CODE
 
 
@@ -26,9 +26,7 @@ def _submit_perfect_attempt(
 
     Returns (subject_id, attempt_id).
     """
-    quiz = client.get(
-        "/api/v1/materials/square_numbers_patterns/quiz", headers=headers
-    )
+    quiz = client.get("/api/v1/materials/square_numbers_patterns/quiz", headers=headers)
     assert quiz.status_code == 200
     quiz_id = quiz.json()["id"]
 
