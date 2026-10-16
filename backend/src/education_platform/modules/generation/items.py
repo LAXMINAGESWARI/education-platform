@@ -18,6 +18,7 @@ from education_platform.modules.generation.adk import (
     item_developer_instruction,
     item_kind_for_bloom,
     live_items_runner,
+    repair_latex_controls,
 )
 from education_platform.modules.generation.blueprint import ITEM_BATCH_MAX
 from education_platform.modules.generation.outline import largest_remainder
@@ -25,6 +26,24 @@ from education_platform.modules.generation.types import BloomLevel
 
 OPTION_LABELS = ("A", "B", "C", "D")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+_PRIVATE_USE = re.compile(r"[\uE000-\uF8FF]")
+_DIAGRAM = re.compile(r"\s*\[Diagram\]\s*", re.IGNORECASE)
+_SECTION_LEAD = re.compile(
+    r"^(?:what have we discussed\??|exercise\s+\d+(?:\.\d+)?|\d+\.\d+)\s*",
+    re.IGNORECASE,
+)
+_TITLE_BEFORE_MATH = re.compile(r"^(?:[A-Z][A-Za-z]+(?:\s+[A-Za-z]+){0,10})\s+(?=\$\$)")
+_FALLBACK_PROMPTS = {
+    BloomLevel.REMEMBER: "Which statement is correct?",
+    BloomLevel.UNDERSTAND: "Which explanation is right?",
+    BloomLevel.APPLY: "Which step is a valid way to continue?",
+    BloomLevel.ANALYZE: "Which conclusion follows?",
+}
+_FALLBACK_DISTRACTORS = (
+    "This reverses the correct steps.",
+    "This changes the equation in a way that is not allowed.",
+    "This answer does not follow from the given equation.",
+)
 
 _ITEMS_SYSTEM = item_developer_instruction()
 
@@ -199,47 +218,32 @@ def parse_generated_items(
 
 
 def items_from_chunks(request: NodeItemRequest) -> tuple[GeneratedItem, ...]:
-    """Heuristic fallback: one grounded MCQ per Bloom slot, never a whole-PDF dump."""
+    """Fill missing slots with student questions. Never cite the textbook section."""
     texts = request.chunk_texts or (request.heading,)
     items: list[GeneratedItem] = []
     for index, bloom in enumerate(request.bloom):
         bloom_val = bloom.value if hasattr(bloom, "value") else str(bloom)
         bloom_enum = bloom if isinstance(bloom, BloomLevel) else BloomLevel(bloom_val)
-        snippet = _snippet(texts[index % len(texts)])
-        prompt = (
-            f"Item {index + 1} ({bloom_val}) for {request.heading}: "
-            f"which statement is grounded in this source excerpt: {snippet}?"
-        )
-        correct_text = f"A fact from the {request.heading} excerpt: {snippet}"
+        statement = _student_statement(texts[index % len(texts)])
         correct_label = OPTION_LABELS[index % len(OPTION_LABELS)]
-        raw_distractors = [
-            f"An unrelated claim that contradicts {request.heading}.",
-            f"A common mix-up about {request.heading}.",
-            f"A detail that the {request.heading} excerpt does not support.",
-        ]
         options: dict[str, str] = {}
         distractor_rationales: dict[str, str] = {}
         d_idx = 0
         for label in OPTION_LABELS:
             if label == correct_label:
-                options[label] = correct_text
+                options[label] = statement
             else:
-                dist_text = raw_distractors[d_idx % len(raw_distractors)]
+                options[label] = _FALLBACK_DISTRACTORS[d_idx % len(_FALLBACK_DISTRACTORS)]
                 d_idx += 1
-                options[label] = dist_text
-                distractor_rationales[label] = (
-                    f"This is not supported by the source excerpt for {request.heading}."
-                )
+                distractor_rationales[label] = "This choice does not follow from the equation."
         items.append(
             GeneratedItem(
                 subtopic_id=request.subtopic_id,
                 learning_outcome_ids=request.learning_outcome_ids,
-                prompt=prompt,
+                prompt=_FALLBACK_PROMPTS.get(bloom_enum, "Which statement is correct?"),
                 options=options,
                 correct_label=correct_label,
-                correct_rationale=(
-                    f"The excerpt for {request.heading} supports option {correct_label}."
-                ),
+                correct_rationale=f"Option {correct_label} states the relationship correctly.",
                 distractor_rationales=distractor_rationales,
                 bloom=bloom_enum,
                 item_kind=item_kind_for_bloom(bloom_enum),
@@ -381,8 +385,8 @@ def _generated_from_bank(item: BankItem, request: NodeItemRequest) -> GeneratedI
     return GeneratedItem(
         subtopic_id=request.subtopic_id,
         learning_outcome_ids=request.learning_outcome_ids,
-        prompt=item.prompt,
-        options=item.options,
+        prompt=_clean_glyphs(item.prompt),
+        options={label: _clean_glyphs(text) for label, text in item.options.items()},
         correct_label=item.correct_label,
         correct_rationale=item.explanation,
         distractor_rationales=item.distractor_rationales,
@@ -532,3 +536,25 @@ def _slugify(value: str) -> str:
 def _snippet(text: str) -> str:
     collapsed = " ".join(text.split())
     return collapsed[:120] if collapsed else "the source excerpt"
+
+
+def _clean_glyphs(text: str) -> str:
+    cleaned = repair_latex_controls(text)
+    cleaned = _PRIVATE_USE.sub("", cleaned)
+    return _DIAGRAM.sub(" ", cleaned).strip()
+
+
+def _student_statement(text: str) -> str:
+    """A short claim a student can judge, without the textbook section it came from."""
+    cleaned = repair_latex_controls(text)
+    cleaned = _PRIVATE_USE.sub("", cleaned)
+    cleaned = _DIAGRAM.sub(" ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    for _ in range(3):
+        nxt = _TITLE_BEFORE_MATH.sub("", _SECTION_LEAD.sub("", cleaned)).strip()
+        if nxt == cleaned:
+            break
+        cleaned = nxt
+    if len(cleaned) < 12:
+        return "The same operation on both sides of an equation keeps the two sides equal."
+    return cleaned[:180]

@@ -19,6 +19,15 @@ const MERMAID_FIXTURE = ["Lesson intro", "", "```mermaid", "graph TD", "  A --> 
 );
 
 describe("MarkdownContent", () => {
+  it("renders quiz equations, including fractions JSON turned into control characters", () => {
+    const { rerender } = render(<MarkdownContent>{"What is $2x - 3 = 7$?"}</MarkdownContent>);
+    expect(screen.queryByText(/\$2x/)).not.toBeInTheDocument();
+    expect(document.querySelector(".katex")).not.toBeNull();
+    rerender(<MarkdownContent>{"Simplify $2 \u000crac{1}{2}$."}</MarkdownContent>);
+    expect(document.body.textContent).not.toContain("\u000c");
+    expect(document.querySelector(".katex")).not.toBeNull();
+  });
+
   it("renders LaTeX math instead of raw dollar signs", () => {
     render(<MarkdownContent>{"Area is $n^2$ square units."}</MarkdownContent>);
     expect(screen.queryByText(/\$n\^2\$/)).not.toBeInTheDocument();

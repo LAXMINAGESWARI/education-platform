@@ -621,10 +621,10 @@ def parse_bank_item(raw: object) -> BankItem | str:
         raw.get("misconception_labels") or raw.get("misconceptions"), distractors
     )
     return BankItem(
-        prompt=checked.prompt,
-        options={label: checked.options[label] for label in OPTION_LABELS},
+        prompt=repair_latex_controls(checked.prompt),
+        options={label: repair_latex_controls(checked.options[label]) for label in OPTION_LABELS},
         correct_label=checked.correct_label,
-        explanation=checked.explanation,
+        explanation=repair_latex_controls(checked.explanation),
         difficulty=resolved_difficulty,
         item_kind=kind,
         source_method=method,
@@ -680,6 +680,206 @@ def _sanitize_json_text(text: str) -> str:
     return _repair_json_escapes(_escape_latex_json_collisions(text))
 
 
+# Control characters left behind when a JSON parser treats \f \t \b \r as escapes
+# inside LaTeX commands (\frac, \times, \begin, \right). An optional extra
+# backslash is the double-escaped form of the same collision.
+_LATEX_CONTROL_CHARS = (
+    ("\x0crac", r"\frac"),
+    ("\x08egin", r"\begin"),
+    ("\x08eta", r"\beta"),
+    ("\x08inom", r"\binom"),
+    ("\x09imes", r"\times"),
+    ("\x09ext", r"\text"),
+    ("\x09heta", r"\theta"),
+    ("\x0dight", r"\right"),
+)
+
+
+def repair_latex_controls(text: str) -> str:
+    """Restore LaTeX commands that JSON escaping turned into control characters."""
+    repaired = text
+    for broken, fixed in _LATEX_CONTROL_CHARS:
+        repaired = repaired.replace("\\" + broken, fixed).replace(broken, fixed)
+    return repaired
+
+
+class _LenientJson:
+    """JSON reader that keeps LaTeX backslashes json.loads would reject or eat.
+
+    ``\\(`` stays ``\\(``, ``\\frac`` stays ``\\frac``, and ``\\\\`` is still one
+    backslash. Real ``\\n`` escapes stay newlines. Trailing commas are skipped.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.n = len(text)
+        self.i = 0
+
+    def parse(self) -> object:
+        value = self._value()
+        self._skip()
+        return value
+
+    def _skip(self) -> None:
+        while self.i < self.n and self.text[self.i] in " \t\r\n":
+            self.i += 1
+
+    def _peek(self) -> str:
+        self._skip()
+        if self.i >= self.n:
+            return ""
+        return self.text[self.i]
+
+    def _value(self) -> object:
+        ch = self._peek()
+        if ch == "{":
+            return self._object()
+        if ch == "[":
+            return self._array()
+        if ch == '"':
+            return self._string()
+        if self.text.startswith("true", self.i):
+            self.i += 4
+            return True
+        if self.text.startswith("false", self.i):
+            self.i += 5
+            return False
+        if self.text.startswith("null", self.i):
+            self.i += 4
+            return None
+        if ch == "-" or ch.isdigit():
+            return self._number()
+        raise ValueError("lenient json value")
+
+    def _object(self) -> dict[str, Any]:
+        self.i += 1
+        obj: dict[str, Any] = {}
+        if self._peek() == "}":
+            self.i += 1
+            return obj
+        while self.i < self.n:
+            if self._peek() != '"':
+                raise ValueError("lenient json key")
+            key = self._string()
+            if self._peek() != ":":
+                raise ValueError("lenient json colon")
+            self.i += 1
+            obj[key] = self._value()
+            nxt = self._peek()
+            if nxt == ",":
+                self.i += 1
+                if self._peek() == "}":
+                    self.i += 1
+                    break
+                continue
+            if nxt == "}":
+                self.i += 1
+                break
+            raise ValueError("lenient json object")
+        return obj
+
+    def _array(self) -> list[object]:
+        self.i += 1
+        items: list[object] = []
+        if self._peek() == "]":
+            self.i += 1
+            return items
+        while self.i < self.n:
+            items.append(self._value())
+            nxt = self._peek()
+            if nxt == ",":
+                self.i += 1
+                if self._peek() == "]":
+                    self.i += 1
+                    break
+                continue
+            if nxt == "]":
+                self.i += 1
+                break
+            raise ValueError("lenient json array")
+        return items
+
+    def _string(self) -> str:
+        if self.text[self.i] != '"':
+            raise ValueError("lenient json string")
+        self.i += 1
+        out: list[str] = []
+        while self.i < self.n:
+            ch = self.text[self.i]
+            if ch == '"':
+                self.i += 1
+                return "".join(out)
+            if ch != "\\":
+                out.append(ch)
+                self.i += 1
+                continue
+            if _LATEX_JSON_COLLISION.match(self.text, self.i):
+                out.append("\\")
+                out.append(self.text[self.i + 1])
+                self.i += 2
+                continue
+            if self.i + 1 >= self.n:
+                out.append("\\")
+                break
+            nxt = self.text[self.i + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "r":
+                out.append("\r")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == "b":
+                out.append("\b")
+            elif nxt == "f":
+                out.append("\f")
+            elif nxt == "u":
+                digits = self.text[self.i + 2 : self.i + 6]
+                if len(digits) == 4 and all(ch in "0123456789abcdefABCDEF" for ch in digits):
+                    out.append(chr(int(digits, 16)))
+                    self.i += 6
+                    continue
+                out.append("\\")
+                out.append("u")
+            elif nxt in '"\\/':
+                out.append(nxt)
+            else:
+                out.append("\\")
+                out.append(nxt)
+            self.i += 2
+        raise ValueError("lenient json string")
+
+    def _number(self) -> int | float:
+        start = self.i
+        if self.text[self.i] == "-":
+            self.i += 1
+        if self.i >= self.n or not self.text[self.i].isdigit():
+            raise ValueError("lenient json number")
+        while self.i < self.n and self.text[self.i].isdigit():
+            self.i += 1
+        if self.i < self.n and self.text[self.i] == ".":
+            self.i += 1
+            if self.i >= self.n or not self.text[self.i].isdigit():
+                raise ValueError("lenient json number")
+            while self.i < self.n and self.text[self.i].isdigit():
+                self.i += 1
+        if self.i < self.n and self.text[self.i] in "eE":
+            self.i += 1
+            if self.i < self.n and self.text[self.i] in "+-":
+                self.i += 1
+            if self.i >= self.n or not self.text[self.i].isdigit():
+                raise ValueError("lenient json number")
+            while self.i < self.n and self.text[self.i].isdigit():
+                self.i += 1
+        token = self.text[start : self.i]
+        if any(ch in token for ch in ".eE"):
+            return float(token)
+        return int(token)
+
+
+def _loads_lenient(text: str) -> object:
+    return _LenientJson(text).parse()
+
+
 def _slice_json_object(text: str) -> str | None:
     start = text.find("{")
     end = text.rfind("}")
@@ -689,9 +889,23 @@ def _slice_json_object(text: str) -> str | None:
 
 
 def _load_json_object(body: str) -> dict[str, Any] | None:
+    # Valid JSON first. Sanitizing before this doubles backslashes that were
+    # already escaped and can turn `\(` into a bare parenthesis.
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    try:
+        parsed = _loads_lenient(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
     latex_fixed = _escape_latex_json_collisions(body)
     candidates: list[str] = []
-    for candidate in (latex_fixed, _sanitize_json_text(body), body, _repair_json_escapes(body)):
+    for candidate in (latex_fixed, _sanitize_json_text(body), _repair_json_escapes(body)):
         if candidate not in candidates:
             candidates.append(candidate)
     for candidate in candidates:
@@ -737,11 +951,18 @@ def _parse_maybe_json(raw: object) -> object:
     if parsed is not None:
         return parsed
     if stripped.startswith("["):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+        try:
+            return _loads_lenient(stripped)
+        except ValueError:
+            pass
         latex_fixed = _escape_latex_json_collisions(stripped)
         for candidate in (
             latex_fixed,
             _sanitize_json_text(stripped),
-            stripped,
             _repair_json_escapes(stripped),
         ):
             try:

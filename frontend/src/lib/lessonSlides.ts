@@ -1,5 +1,5 @@
 import type { LessonMaterial, LessonSlide } from "../api/types";
-import { unwrapMarkdownFence } from "./markdownMath";
+import { prepareLessonMarkdown } from "./markdownMath";
 
 const CANONICAL_SLIDE = /^## Slide (\d+)\s*[—\-]\s*(.+?)\s*$/;
 const H1_HEADING = /^#\s+(.+?)\s*$/;
@@ -18,7 +18,7 @@ export function slidesForLessonView(lesson: LessonMaterial): LessonSlide[] {
 }
 
 export function slidesFromMarkdown(markdown: string, fallbackTitle: string): LessonSlide[] {
-  const normalized = unwrapMarkdownFence(markdown).trim();
+  const normalized = prepareLessonMarkdown(markdown).trim();
   if (!normalized) {
     return [];
   }

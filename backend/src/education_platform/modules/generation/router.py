@@ -113,6 +113,7 @@ async def submit_for_subject(
     title: str = Form(...),
     file: UploadFile = File(...),
     target_item_count: int | None = Form(None),
+    grade_name: str | None = Form(None),
     principal: Principal = Depends(require_administrator),
     session: AsyncSession = Depends(get_session),
 ) -> AcceptedRunOut:
@@ -124,6 +125,7 @@ async def submit_for_subject(
         title=title,
         file=file,
         target_item_count=target_item_count,
+        grade_name=grade_name,
     )
     return AcceptedRunOut.from_domain(accepted)
 

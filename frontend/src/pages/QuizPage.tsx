@@ -10,6 +10,7 @@ import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PushButton } from "../components/PushButton";
 import { resolvePathFromAttempt, resolvePathFromQuizId, learningPathCrumb, type LearningPath } from "../lib/learningPath";
+import { presentQuizText } from "../lib/quizText";
 
 export function QuizPage() {
   const { quizId = "" } = useParams();
@@ -150,7 +151,7 @@ export function QuizPage() {
           <article className="panel">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
-              <MarkdownContent inline>{question.prompt}</MarkdownContent>
+              <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>
             </h2>
             <div
               className="options"
@@ -172,7 +173,7 @@ export function QuizPage() {
                   >
                     <span className="option__mark">{opt.label}</span>
                     <span className="option__text">
-                      <MarkdownContent inline>{opt.text}</MarkdownContent>
+                      <MarkdownContent inline>{presentQuizText(opt.text)}</MarkdownContent>
                     </span>
                   </button>
                 );

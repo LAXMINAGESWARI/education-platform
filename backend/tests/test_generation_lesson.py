@@ -166,6 +166,30 @@ def test_write_topic_lesson_is_sequential_not_a_dump() -> None:
     assert_parseable_mermaid(markdown)
 
 
+def test_json_section_unwraps_and_grade_voice_stays_off_the_page() -> None:
+    def _json(request: LessonSectionRequest) -> str:
+        return (
+            '{"lesson_markdown": "## ' + request.heading + '\\n\\nFour equal sides. \\(2x = 4\\)."}'
+        )
+
+    request = LessonSectionRequest(
+        heading="Properties of squares",
+        objectives=("Identify squares",),
+        chunk_texts=("A square has four equal sides.",),
+        grade_voice="Write for Grade 6 students studying Shapes. Use plain language.",
+        glossary=(),
+        prior_titles=(),
+        defined_terms=(),
+        prior_recap="",
+    )
+    markdown = write_topic_lesson((request,), write_section=_json)
+    assert "## Properties of squares" in markdown
+    assert r"\(2x = 4\)" in markdown
+    assert '{"lesson_markdown"' not in markdown
+    assert "studying Shapes" not in markdown
+    assert "Use plain language" not in markdown
+
+
 def test_overflow_splits_idea_then_examples() -> None:
     captured: list[LessonSectionRequest] = []
 
@@ -272,6 +296,7 @@ def test_stitch_does_not_rewrite_teaching() -> None:
     )
     assert section_md.strip() in stitched
     assert "**Topic recap.**" in stitched
+    assert "Write for Grade 6" not in stitched
 
 
 def test_items_only_success_stays_generating(

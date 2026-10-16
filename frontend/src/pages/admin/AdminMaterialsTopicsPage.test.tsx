@@ -179,10 +179,14 @@ describe("AdminMaterialsTopicsPage", () => {
     await waitFor(() => {
       expect(submitSubjectGenerationRun).toHaveBeenCalled();
     });
-    const [subjectId, uploaded, title] = vi.mocked(submitSubjectGenerationRun).mock.calls[0]!;
+    const [subjectId, uploaded, title, targetItemCount, gradeName] = vi.mocked(
+      submitSubjectGenerationRun,
+    ).mock.calls[0]!;
     expect(subjectId).toBe("subj-math-uuid");
     expect(uploaded).toBeInstanceOf(File);
     expect(title).toBe("Fractions extra");
+    expect(targetItemCount).toBeUndefined();
+    expect(gradeName).toBe("Grade 8");
     expect(await screen.findByText("Topic pipeline")).toBeInTheDocument();
   });
 

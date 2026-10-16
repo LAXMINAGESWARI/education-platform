@@ -14,6 +14,8 @@ from education_platform.modules.generation.adk import (
     extract_json_object,
     items_from_node_state,
     items_result_from_state,
+    markdown_from_lesson_draft,
+    repair_latex_controls,
 )
 from education_platform.modules.generation.adk_live import LiveItemsRunner
 from education_platform.modules.generation.blueprint import ITEM_BATCH_MAX
@@ -79,6 +81,29 @@ def test_extract_json_object_newlines_survive_latex_sanitize() -> None:
     assert r"\text" in data["latex"]
 
 
+def test_extract_json_object_keeps_latex_delimiters_json_would_reject() -> None:
+    raw = (
+        '{"lesson_markdown": "## Solving\\n\\n'
+        "See \\(2x - 3 = 7\\) and \\frac{1}{2}.\\n"
+        '$$\\n2x &= 4 \\\\ next$$"}'
+    )
+    text = markdown_from_lesson_draft(raw)
+    assert text.startswith("## Solving")
+    assert r"\(2x - 3 = 7\)" in text
+    assert r"\frac{1}{2}" in text
+    assert '{"lesson_markdown"' not in text
+    assert "\x0c" not in text
+
+
+def test_repair_latex_controls_restores_frac_and_times() -> None:
+    broken = "$$2 \\\x0crac{5}{4}$$ and $2 \\\times 5$"
+    repaired = repair_latex_controls(broken)
+    assert r"\frac{5}{4}" in repaired
+    assert r"\times" in repaired
+    assert "\x0c" not in repaired
+    assert "\t" not in repaired
+
+
 def test_extract_json_object_keeps_mermaid_inside_json_string() -> None:
     lesson = "# Squares\n\n```mermaid\nflowchart LR\n    side --> area\n```\n"
     data = extract_json_object(json.dumps({"lesson_markdown": lesson}))
@@ -102,6 +127,24 @@ def test_items_from_chunks_balances_correct_labels() -> None:
     )
     items = items_from_chunks(node)
     assert len(items) == 8
+    assert all("source excerpt" not in item.prompt.casefold() for item in items)
+    assert all(not item.prompt.startswith("Item ") for item in items)
+    assert "Fraction Multiplication" not in items[0].prompt
+    assert "excerpt" not in " ".join(items[0].options.values()).casefold()
+    exercise = items_from_chunks(
+        NodeItemRequest(
+            subtopic_id=node.subtopic_id,
+            learning_outcome_ids=(),
+            heading="EXERCISE 2.2",
+            chunk_texts=("EXERCISE 2.2 Solve $$x + 1 = 4$$.",),
+            quota=1,
+            bloom=(BloomLevel.REMEMBER,),
+        )
+    )[0]
+    blob = f"{exercise.prompt} {' '.join(exercise.options.values())}"
+    assert "EXERCISE" not in blob
+    assert "source excerpt" not in blob.casefold()
+    assert "x + 1 = 4" in blob
     labels = [item.correct_label for item in items]
     assert set(labels) == {"A", "B", "C", "D"}
     # Verify not all items are 'A'

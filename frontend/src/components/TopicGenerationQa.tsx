@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 
 import type { BloomLevel, GenerationQaItem, LessonMaterial, RunPhase } from "../api/types";
 import { slidesForLessonView } from "../lib/lessonSlides";
+import { presentQuizText } from "../lib/quizText";
 import { LessonSlideFrame } from "./LessonSlideFrame";
+import { MarkdownContent } from "./MarkdownContent";
 import { PushButton } from "./PushButton";
 import "./TopicGenerationQa.css";
 
@@ -252,7 +254,9 @@ export function TopicGenerationQa({
                         ) : null}
                         <td>{item.sequence}</td>
                         <td>
-                          <p className="qa-review__prompt">{item.prompt}</p>
+                          <p className="qa-review__prompt">
+                            <MarkdownContent inline>{presentQuizText(item.prompt)}</MarkdownContent>
+                          </p>
                           {disputedBadge(item) ? (
                             <p className="qa-review__disputed">
                               <span className="badge badge--warn">{disputedBadge(item)}</span>
@@ -276,8 +280,8 @@ export function TopicGenerationQa({
                                     : undefined
                                 }
                               >
-                                <span className="qa-review__key">{label}.</span>
-                                {text}
+                                <span className="qa-review__key">{label}.</span>{" "}
+                                <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
                               </li>
                             ))}
                           </ul>

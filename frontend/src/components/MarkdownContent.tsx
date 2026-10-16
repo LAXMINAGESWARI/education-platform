@@ -53,8 +53,9 @@ export function MarkdownContent({
   inline = false,
 }: MarkdownContentProps) {
   const classes = ["markdown-content", className].filter(Boolean).join(" ");
+  const Tag = inline ? "span" : "div";
   return (
-    <div className={classes}>
+    <Tag className={classes}>
       <ReactMarkdown
         remarkPlugins={[remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
@@ -62,6 +63,6 @@ export function MarkdownContent({
       >
         {normalizeMarkdownMath(children)}
       </ReactMarkdown>
-    </div>
+    </Tag>
   );
 }
