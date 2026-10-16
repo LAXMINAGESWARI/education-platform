@@ -52,8 +52,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     });
   }
 
-  const onHome = !location.pathname.startsWith("/feedback");
-  const onFeedback = location.pathname.startsWith("/feedback");
+  const onFeedback = location.pathname.startsWith("/feedback") || location.pathname.endsWith("/feedback");
+  const onHome = !onFeedback;
 
   useEffect(() => {
     if (!menuOpen) return;

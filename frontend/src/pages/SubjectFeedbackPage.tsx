@@ -504,38 +504,25 @@ function EngagementBadge({ engagement }: { engagement: EngagementRate | undefine
         ? { label: "Skimmed", color: "#b45309", bg: "#fffbeb", border: "#d97706", icon: "📖" }
         : { label: "Quick pass", color: "#1e40af", bg: "#eff6ff", border: "#3b82f6", icon: "📖" };
 
-  const hint =
-    rate >= 0.7
-      ? "You spent good time with the material."
-      : rate >= 0.4
-        ? "You moved through some slides quickly — a revisit could help."
-        : "You moved through fast — worth slowing down next time.";
-
   return (
-    <div
+    <p
       style={{
-        marginTop: "10px",
-        padding: "8px 10px",
-        borderRadius: "8px",
-        background: tier.bg,
-        border: `1px solid ${tier.border}`,
+        margin: "10px 0 0 0",
+        fontSize: "0.8rem",
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        flexWrap: "wrap",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontWeight: 700, fontSize: "0.85rem", color: tier.color }}>
-          {tier.icon} Engagement: {pctValue}%
-        </span>
-        <span style={{ fontSize: "0.72rem", color: tier.color, fontWeight: 600 }}>
-          · {tier.label}
-        </span>
-        <span style={{ fontSize: "0.72rem", color: "var(--ink-muted)" }}>
-          ({engagement.engaged_slides}/{engagement.total_slides} slides)
-        </span>
-      </div>
-      <p style={{ margin: "4px 0 0 0", fontSize: "0.72rem", color: "var(--ink-muted)" }}>
-        {hint}
-      </p>
-    </div>
+      <span style={{ color: tier.color, fontWeight: 600 }}>
+        {tier.icon} {pctValue}% engaged
+      </span>
+      <span style={{ color: tier.color }}>· {tier.label}</span>
+      <span style={{ color: "var(--ink-muted)" }}>
+        ({engagement.engaged_slides}/{engagement.total_slides} slides)
+      </span>
+    </p>
   );
 }
 
