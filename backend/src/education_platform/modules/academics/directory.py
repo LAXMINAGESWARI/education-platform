@@ -151,6 +151,12 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
             progress_percent = round(sum(units) / len(units)) if units else 0
             topic_complete = overall_unlocked and (not overall.available or overall.passed)
             objectives = await _topic_objectives(session, topic.id)
+            if scope.self_student_id is not None and not _released_to_students(
+                topic_lesson=topic_lesson,
+                subtopic_nodes=subtopic_nodes,
+                overall_available=overall.available,
+            ):
+                continue
             topic_nodes.append(
                 TopicNodeOut(
                     id=topic.id,
@@ -167,6 +173,8 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
                     topic_source_material_version_id=topic_lesson.id if topic_lesson else None,
                 )
             )
+        if scope.self_student_id is not None and not topic_nodes:
+            continue
         subject_progress = (
             round(sum(topic.progress_percent for topic in topic_nodes) / len(topic_nodes))
             if topic_nodes
@@ -204,6 +212,22 @@ async def _topic_objectives(session: AsyncSession, topic_id: UUID) -> list[str]:
         seen.add(text)
         objectives.append(text)
     return objectives
+
+
+def _released_to_students(
+    *,
+    topic_lesson: SourceMaterialVersion | None,
+    subtopic_nodes: list[SubtopicNodeOut],
+    overall_available: bool,
+) -> bool:
+    """Students see a topic once a lesson or quiz is published.
+
+    A generation upload creates the topic before review. Administrators and
+    teachers still see that draft so they can open the review board.
+    """
+    if topic_lesson is not None or overall_available:
+        return True
+    return any(node.has_lesson or node.quiz is not None for node in subtopic_nodes)
 
 
 def _lesson_progress_percent(

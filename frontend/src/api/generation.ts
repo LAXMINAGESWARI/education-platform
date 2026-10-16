@@ -78,12 +78,16 @@ export async function submitSubjectGenerationRun(
   file: File,
   title: string,
   targetItemCount?: number,
+  gradeName?: string,
 ): Promise<AcceptedGenerationRun> {
   const body = new FormData();
   body.append("file", file);
   body.append("title", title);
   if (targetItemCount != null) {
     body.append("target_item_count", String(targetItemCount));
+  }
+  if (gradeName) {
+    body.append("grade_name", gradeName);
   }
   return apiRequest<AcceptedGenerationRun>(
     `/admin/subjects/${encodeURIComponent(subjectId)}/generation-runs`,

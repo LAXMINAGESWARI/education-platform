@@ -16,7 +16,16 @@ from sqlalchemy.orm import Session
 from education_platform.core.config import get_settings
 from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.constants import POC_SUBJECT_CODE
-from education_platform.modules.academics.models import LearningOutcome, Subject, Subtopic, Topic
+from education_platform.modules.academics.models import (
+    AcademicPeriod,
+    Grade,
+    GradeSubjectOffering,
+    LearningOutcome,
+    PeriodGrade,
+    Subject,
+    Subtopic,
+    Topic,
+)
 from education_platform.modules.generation.models import (
     ContentGenerationOutlineNode,
     ContentGenerationRun,
@@ -328,13 +337,21 @@ def _submit_subject(
     subject_id: UUID,
     *,
     title: str = "New topic PDF",
+    grade_name: str | None = None,
 ) -> Any:
+    data = {"title": title}
+    if grade_name is not None:
+        data["grade_name"] = grade_name
     return client.post(
         f"/api/v1/admin/subjects/{subject_id}/generation-runs",
         headers=headers,
-        data={"title": title},
+        data=data,
         files={"file": ("topic.pdf", TINY_PDF, "application/pdf")},
     )
+
+
+def _directory_topic_ids(directory: dict[str, Any]) -> set[str]:
+    return {topic["id"] for subject in directory["subjects"] for topic in subject["topics"]}
 
 
 def test_admin_subject_submit_creates_topic_and_starts_run(
@@ -374,6 +391,71 @@ def test_admin_subject_submit_creates_topic_and_starts_run(
 
     second = _submit_admin(client, admin_headers, topic_id, title="Again")
     assert second.status_code == 409
+
+
+def test_subject_submit_uses_named_grade_when_several_exist(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_db: Session,
+) -> None:
+    subject_id = _seeded_subject_id(seeded_db)
+    subject = seeded_db.get(Subject, subject_id)
+    assert subject is not None
+    period = seeded_db.scalar(
+        select(AcademicPeriod).where(AcademicPeriod.institution_id == subject.institution_id)
+    )
+    assert period is not None
+    grade = Grade(institution_id=subject.institution_id, name="Grade 9", sort_order=9)
+    seeded_db.add(grade)
+    seeded_db.flush()
+    period_grade = PeriodGrade(academic_period_id=period.id, grade_id=grade.id)
+    seeded_db.add(period_grade)
+    seeded_db.flush()
+    offering = GradeSubjectOffering(period_grade_id=period_grade.id, subject_id=subject.id)
+    seeded_db.add(offering)
+    seeded_db.commit()
+
+    ambiguous = _submit_subject(client, admin_headers, subject_id, title="Which grade")
+    assert ambiguous.status_code == 409, ambiguous.text
+    assert ambiguous.json()["detail"] == "This subject is offered on more than one grade."
+
+    missing = _submit_subject(
+        client, admin_headers, subject_id, title="Missing grade", grade_name="Grade 7"
+    )
+    assert missing.status_code == 404, missing.text
+
+    placed = _submit_subject(
+        client, admin_headers, subject_id, title="Grade nine unit", grade_name="Grade 9"
+    )
+    assert placed.status_code == 202, placed.text
+    seeded_db.expire_all()
+    topic = seeded_db.get(Topic, UUID(placed.json()["topic_id"]))
+    assert topic is not None
+    assert topic.grade_subject_offering_id == offering.id
+
+
+def test_unpublished_upload_is_hidden_from_students(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    enrolled_student_headers: dict[str, str],
+    seeded_db: Session,
+) -> None:
+    subject_id = _seeded_subject_id(seeded_db)
+    response = _submit_subject(client, admin_headers, subject_id, title="Secret Draft Unit")
+    assert response.status_code == 202, response.text
+    topic_id = response.json()["topic_id"]
+
+    student = client.get("/api/v1/me/learning-directory", headers=enrolled_student_headers)
+    assert student.status_code == 200, student.text
+    assert topic_id not in _directory_topic_ids(student.json())
+    titles = [
+        topic["title"] for subject in student.json()["subjects"] for topic in subject["topics"]
+    ]
+    assert "Secret Draft Unit" not in titles
+
+    admin = client.get("/api/v1/me/learning-directory", headers=admin_headers)
+    assert admin.status_code == 200, admin.text
+    assert topic_id in _directory_topic_ids(admin.json())
 
 
 def test_teacher_forbidden_on_admin_subject_submit(alnoor: TestClient) -> None:

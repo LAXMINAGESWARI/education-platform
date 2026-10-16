@@ -347,7 +347,13 @@ export function AdminMaterialsTopicsPage() {
     setBusy(true);
     setUploadError(null);
     try {
-      const accepted = await submitSubjectGenerationRun(subject.id, file, resolvedTitle);
+      const accepted = await submitSubjectGenerationRun(
+        subject.id,
+        file,
+        resolvedTitle,
+        undefined,
+        grade.name,
+      );
       navigate(
         `/admin/materials/grades/${grade.key}/subjects/${subject.id}/topics/${accepted.topic_id}`,
       );

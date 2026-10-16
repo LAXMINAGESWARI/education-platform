@@ -15,8 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.modules.academics.models import (
+    AcademicPeriod,
+    AcademicPeriodStatus,
+    Grade,
     GradeSubjectOffering,
     LearningOutcome,
+    PeriodGrade,
     Subject,
     Subtopic,
     Topic,
@@ -363,33 +367,69 @@ async def submit_pdf(
 
 
 async def _authorised_offering_for_subject(
-    session: AsyncSession, scope: Scope, subject_id: UUID
+    session: AsyncSession,
+    scope: Scope,
+    subject_id: UUID,
+    *,
+    grade_name: str | None = None,
 ) -> GradeSubjectOffering:
+    """Pick the offering the upload is for.
+
+    A subject code is unique per institution and is offered once per grade. The materials
+    browser is already on one grade, so the caller names that grade. Without a grade, a
+    single offering still resolves; several grades stay a 409 rather than guessing.
+    """
+    requested = grade_name.strip().casefold() if grade_name and grade_name.strip() else None
     rows = (
         await session.execute(
-            select(GradeSubjectOffering, Subject.institution_id)
+            select(
+                GradeSubjectOffering,
+                Subject.institution_id,
+                Grade.name,
+                AcademicPeriod.status,
+            )
             .join(Subject, Subject.id == GradeSubjectOffering.subject_id)
+            .join(PeriodGrade, PeriodGrade.id == GradeSubjectOffering.period_grade_id)
+            .join(Grade, Grade.id == PeriodGrade.grade_id)
+            .join(AcademicPeriod, AcademicPeriod.id == PeriodGrade.academic_period_id)
             .where(GradeSubjectOffering.subject_id == subject_id)
         )
     ).all()
     matching = [
-        offering for offering, institution_id in rows if institution_id == scope.institution_id
+        (offering, status)
+        for offering, institution_id, grade, status in rows
+        if institution_id == scope.institution_id
+        and (requested is None or grade.casefold() == requested)
     ]
     if not matching:
-        raise GenerationError("That subject does not exist.", status_code=404)
+        if requested is None:
+            raise GenerationError("That subject does not exist.", status_code=404)
+        raise GenerationError("That subject is not offered in this grade.", status_code=404)
     if not scope.unrestricted:
-        matching = [offering for offering in matching if offering.id in scope.taught_offering_ids]
+        matching = [
+            (offering, status)
+            for offering, status in matching
+            if offering.id in scope.taught_offering_ids
+        ]
         if not matching:
             raise GenerationError(
                 "You do not teach this subject, so you cannot start a generation run.",
                 status_code=403,
             )
     if len(matching) > 1:
+        active = [
+            (offering, status)
+            for offering, status in matching
+            if status is AcademicPeriodStatus.ACTIVE
+        ]
+        if len(active) == 1:
+            matching = active
+    if len(matching) > 1:
         raise GenerationError(
             "This subject is offered on more than one grade.",
             status_code=409,
         )
-    return cast(GradeSubjectOffering, matching[0])
+    return cast(GradeSubjectOffering, matching[0][0])
 
 
 async def _create_next_topic(session: AsyncSession, offering_id: UUID, title: str) -> Topic:
@@ -424,8 +464,11 @@ async def submit_pdf_for_subject(
     title: str,
     file: UploadFile,
     target_item_count: int | None = None,
+    grade_name: str | None = None,
 ) -> AcceptedRun:
-    offering = await _authorised_offering_for_subject(session, scope, subject_id)
+    offering = await _authorised_offering_for_subject(
+        session, scope, subject_id, grade_name=grade_name
+    )
     topic = await _create_next_topic(session, offering.id, title)
     return await submit_pdf(
         session,
