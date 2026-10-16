@@ -92,7 +92,7 @@ describe("generation helpers", () => {
     });
 
     const file = new File(["%PDF"], "topic.pdf", { type: "application/pdf" });
-    await submitSubjectGenerationRun("subj-1", file, "Fractions", 70);
+    await submitSubjectGenerationRun("subj-1", file, "Fractions", 70, "Grade 8");
 
     expect(apiRequest).toHaveBeenCalledTimes(1);
     const [path, options] = vi.mocked(apiRequest).mock.calls[0]!;
@@ -102,6 +102,7 @@ describe("generation helpers", () => {
     const body = options!.body as FormData;
     expect(body.get("title")).toBe("Fractions");
     expect(body.get("target_item_count")).toBe("70");
+    expect(body.get("grade_name")).toBe("Grade 8");
     expect(body.get("file")).toBeInstanceOf(File);
   });
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -280,7 +281,17 @@ def test_fake_solver_agree_disagree_and_error_reach_qa(
     received: list[tuple[str, dict[str, str]]] = []
 
     def _writer(request: NodeItemRequest) -> Sequence[GeneratedItem]:
-        batch = items_from_chunks(request)
+        # Fallback stems repeat ("Which statement is correct?"). Stamp the slot
+        # number the way this test classifies agree / disagree / error.
+        batch = tuple(
+            replace(
+                item,
+                prompt=(
+                    f"Item {index + 1} ({item.bloom.value}) for {item.source_method}: {item.prompt}"
+                ),
+            )
+            for index, item in enumerate(items_from_chunks(request))
+        )
         produced.extend(batch)
         return batch
 
