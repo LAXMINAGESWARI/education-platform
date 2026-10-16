@@ -243,14 +243,25 @@ async def test_refused_run_also_produces_a_complete_audit_record(
     monkeypatch: pytest.MonkeyPatch, seeded: _Seeded, async_session: AsyncSession
 ) -> None:
     async def _fake_generate_sql(state: TextToSQLState) -> TextToSQLState:
-        # Passes validate_sql structurally, then apply_role_scope's blocklist rejects it —
-        # same proven ROLE_VIOLATION trigger used in the Task 6/7 graph-level tests.
-        return {**state, "generated_sql": "SELECT password_hash FROM users", "error": None}
+        # Account tables are rejected by validate_sql before apply_role_scope, and a
+        # fake that keeps returning them retries until the recursion limit. This query
+        # is in the whitelist, then a student reading teaching_assignments is a
+        # ROLE_VIOLATION with no retry. The literal keeps password_hash in the audit.
+        return {
+            **state,
+            "generated_sql": (
+                "SELECT teacher_user_id FROM teaching_assignments "
+                "WHERE teacher_user_id = 'password_hash'"
+            ),
+            "error": None,
+        }
 
     monkeypatch.setattr(graph_module, "generate_sql", _fake_generate_sql)
 
     graph = build_text_to_sql_graph()
-    result = await graph.ainvoke(_initial_state(seeded), config={"recursion_limit": 15})
+    state = _initial_state(seeded)
+    state["user_role"] = "student"
+    result = await graph.ainvoke(state, config={"recursion_limit": 15})
     assert error_category(result["error"]) == ROLE_VIOLATION
 
     event = await _latest_audit_event(async_session, seeded.institution_id)

@@ -54,9 +54,11 @@
 #   This library deliberately does NOT attempt to cover every question a
 #   teacher might ask. Per the governed-hybrid design rule: a WRONG TEMPLATE
 #   (one that partially matches and silently answers a different question) is
-#   a worse outcome than falling back to the hardened free-form path. These 12
-#   cover the highest-value, most repeated question shapes observed in the
-#   golden evaluation set. Everything else is expected to abstain to free-form.
+#   a worse outcome than falling back to the hardened free-form path. The
+#   templates cover the highest-value, most repeated question shapes observed
+#   in the golden evaluation set, plus a subtopic quiz-score average whose
+#   free-form SQL was averaging subject mastery instead. Everything else is
+#   expected to abstain to free-form.
 #
 # THRESHOLDS REQUIRING SIGN-OFF:
 #   Templates marked `requires_signoff: true` encode a business/policy
@@ -307,6 +309,7 @@ templates:
         negative_examples:
         - Who are my top students in Mathematics?
         - Which students scored below 40% in Mathematics?
+        - What is the average quiz score on the Fractions subtopic in section 8A?
         supported_operations:
         - average
         required_parameters:
@@ -327,6 +330,66 @@ templates:
           LEFT JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
           WHERE ta.teacher_user_id = :current_user_id
             AND ta.status = 'active'
+            AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
+        )
+
+  # ---------------------------------------------------------------------------
+  # SUBTOPIC QUIZ AVERAGE
+  # ---------------------------------------------------------------------------
+  # student_360.mastery_percent is the subject-level average. A named subtopic
+  # ("Fractions") has to be averaged from quiz_attempts through the quiz's subtopic.
+  - name: average_subtopic_quiz_score
+    description: >
+      Average quiz score_percent for one named subtopic and one section, limited
+      to the requesting teacher's own students. "Grade 8 section A" is section
+      name 8A, not the words Section A. This is not subject-level mastery.
+    example_questions:
+      - "What is the average quiz score on the Fractions subtopic for my Grade 8 section A students?"
+      - "What is the average Fractions quiz score in section 8A?"
+    parameters:
+      subtopic_name:
+        type: string
+        pattern: '^[A-Za-z][A-Za-z ]{0,80}$'
+        required: true
+      section_name:
+        type: string
+        pattern: '^[0-9]{1,2}[A-Z]$'
+        required: true
+    requires_signoff: false
+    router:
+        intent_group: quiz_attempts
+        positive_examples:
+        - What is the average quiz score on the Fractions subtopic for my Grade 8 section A students?
+        - What is the average Fractions quiz score in section 8A?
+        negative_examples:
+        - What is the average Mathematics mastery for my students?
+        - Compare average Mathematics mastery for section 8A versus section 8B.
+        supported_operations:
+        - average
+        required_parameters:
+        - subtopic_name
+        - section_name
+        requires_keywords:
+        - quiz
+
+    sql: |
+      SELECT AVG(qa.score_percent) AS average_score
+      FROM quiz_attempts qa
+      JOIN quiz_versions qv ON qv.id = qa.quiz_version_id
+      JOIN common_mastery_quizzes cmq ON cmq.id = qv.quiz_id
+      JOIN subtopics st ON st.id = cmq.subtopic_id
+      JOIN student_subject_enrollments sse ON sse.id = qa.student_subject_enrollment_id
+      JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
+      JOIN sections sec ON sec.id = sge.section_id
+      WHERE st.name = :subtopic_name
+        AND sec.name = :section_name
+        AND qa.score_percent IS NOT NULL
+        AND sse.status = 'active'
+        AND EXISTS (
+          SELECT 1 FROM teaching_assignments ta
+          WHERE ta.teacher_user_id = :current_user_id
+            AND ta.status = 'active'
+            AND ta.grade_subject_offering_id = sse.grade_subject_offering_id
             AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
         )
 

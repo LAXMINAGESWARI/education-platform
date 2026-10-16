@@ -534,6 +534,17 @@ async def test_average_mastery_by_subject_reflects_section_scoping(seeded: _Fixt
     assert round(float(teacher2_result["query_result"][0]["average_score"]), 2) == 65.00
 
 
+async def test_average_subtopic_quiz_score_executes(seeded: _Fixture) -> None:
+    result = await _run_template(
+        "average_subtopic_quiz_score",
+        user_id=seeded.teacher_user_id,
+        institution_id=seeded.institution_id,
+        parameters={"subtopic_name": "Fractions", "section_name": "8A"},
+    )
+    assert result["error"] is None
+    assert result["result_row_count"] == 1
+
+
 # --- 4. average_attendance_rate ------------------------------------------------------------
 
 

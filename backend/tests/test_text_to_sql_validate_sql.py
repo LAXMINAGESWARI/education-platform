@@ -172,7 +172,6 @@ async def test_every_excluded_table_rejected_even_if_hallucinated(table: str) ->
     "table",
     [
         "institutions",
-        "users",
         "student_profiles",
         "grades",
         "subjects",
@@ -188,6 +187,13 @@ async def test_every_excluded_table_rejected_even_if_hallucinated(table: str) ->
 )
 async def test_representative_kept_tables_all_pass(table: str) -> None:
     await _validated(f"SELECT * FROM {table}")
+
+
+@pytest.mark.parametrize("table", ["users", "user_roles", "refresh_sessions"])
+async def test_account_tables_rejected_even_if_hallucinated(table: str) -> None:
+    error = await _rejected(f"SELECT email FROM {table}")
+    assert table in error
+    assert "not part of the available schema" in error
 
 
 async def test_nonexistent_table_not_in_schema_at_all_rejected() -> None:

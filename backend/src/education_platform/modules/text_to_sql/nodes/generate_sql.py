@@ -49,10 +49,21 @@ the question asks. Row-level access enforcement for that role is applied in a \
 separate step after your query is generated; you do not need to hand-roll \
 access-control filtering yourself, but do not drop a WHERE clause the question itself \
 asks for.
+- Never reference `users`, `user_roles`, or `refresh_sessions`. Email addresses, \
+passwords, password hashes, and login sessions are not available. A student's name \
+is `student_profiles.full_name` or `student_360.full_name`.
+- A question about a quiz score for a named subtopic ("Fractions", "Decimals", and \
+similar) is not `student_360.mastery_percent` — that column is the subject-level \
+average across every subtopic. Average `quiz_attempts.score_percent` joined through \
+`quiz_versions` to `common_mastery_quizzes` to `subtopics`, filter `subtopics.name`, \
+and when the question names a section also filter `sections.name` (for example `8A`).
+- Whole-day attendance rows store `attendance_records.grade_subject_offering_id` as \
+NULL. A date-range attendance question filters `attendance_records.on_date` and the \
+section. Do not require that offering id to be non-null.
 - If the question needs to compare a column against the identity of the person asking \
-(e.g. "what subject do I teach" needs teacher_user_id = <the asking teacher>, "what's \
-my email" needs id = <the asking user>), you do not know that person's real ID, name, \
-or email — never invent, guess, or leave blank a value for this. Instead write the \
+(e.g. "what subject do I teach" needs teacher_user_id = <the asking teacher>), you do \
+not know that person's real ID or name — never invent, guess, or leave blank a value \
+for this. Instead write the \
 exact literal string '__CURRENT_USER_ID__' (including the quotes and underscores) as \
 the comparison value; a separate step after generation resolves it to the asking \
 user's real, verified identity. Example: a teacher asking "what subject do I teach" \

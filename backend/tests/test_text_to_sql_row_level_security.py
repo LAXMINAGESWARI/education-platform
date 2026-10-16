@@ -205,7 +205,7 @@ async def test_no_set_local_via_execute_sql_directly_still_denies() -> None:
     would take, not just a hand-rolled raw connection.
     """
     state: TextToSQLState = {
-        "validated_sql": "SELECT id FROM users",
+        "validated_sql": "SELECT id FROM subjects",
         "user_id": "",
         "user_role": "",
         "institution_id": "",

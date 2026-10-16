@@ -174,12 +174,14 @@ async def test_password_hash_and_token_hash_columns_are_absent_for_any_role(role
     assert "token_hash" not in context, f"leaked into schema_context for role={role}"
 
 
-def test_sibling_columns_of_scrubbed_tables_survive() -> None:
+def test_account_tables_are_removed_and_roster_columns_survive() -> None:
     filtered = _filter_schema_catalog(_raw_catalog())
-    assert "#### `users`" in filtered
-    assert "#### `refresh_sessions`" in filtered
-    for column in ("email", "full_name", "status", "expires_at", "revoked_at"):
-        assert f"`{column}`" in filtered, f"{column!r} should survive column-row removal"
+    assert "#### `users`" not in filtered
+    assert "#### `user_roles`" not in filtered
+    assert "#### `refresh_sessions`" not in filtered
+    assert "#### `student_profiles`" in filtered
+    for column in ("full_name", "student_identifier", "status"):
+        assert f"`{column}`" in filtered, f"{column!r} should survive account-table removal"
 
 
 def test_excluded_tables_cover_the_required_set() -> None:
@@ -194,6 +196,8 @@ def test_excluded_tables_cover_the_required_set() -> None:
         "chunk_embeddings",
         "audit_events",
         "question_answer_keys",
+        "user_roles",
+        "refresh_sessions",
     }
 
 
@@ -203,11 +207,13 @@ def test_assistant_and_rag_module_sections_fully_removed() -> None:
     assert "Module: `rag`" not in filtered
 
 
-def test_audit_events_removed_but_auth_siblings_kept() -> None:
+def test_audit_events_and_account_tables_removed_but_roster_kept() -> None:
     filtered = _filter_schema_catalog(_raw_catalog())
     assert "#### `audit_events`" not in filtered
-    for table in ("institutions", "users", "user_roles", "student_profiles", "refresh_sessions"):
-        assert f"#### `{table}`" in filtered, f"auth sibling {table!r} should survive"
+    for table in ("users", "user_roles", "refresh_sessions"):
+        assert f"#### `{table}`" not in filtered
+    for table in ("institutions", "student_profiles"):
+        assert f"#### `{table}`" in filtered, f"roster table {table!r} should survive"
 
 
 # --- Required content survives ----------------------------------------------------
