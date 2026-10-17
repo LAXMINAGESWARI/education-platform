@@ -53,6 +53,7 @@ def main() -> None:
     print(f"Teachers    : {result.teachers}")
     print(f"Sections    : {result.sections}")
     print(f"Offerings   : {result.offerings}")
+    print(f"Lessons     : {result.lessons}")
     print(f"Quiz attempts    : {result.attempts}")
     print(f"Attendance rows  : {result.attendance_rows}")
     print("Planted for the demo:")

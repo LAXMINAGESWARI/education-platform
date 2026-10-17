@@ -55,6 +55,11 @@ services:
       TRANSFORMERS_CACHE: /data/hf
       HF_HUB_DISABLE_TELEMETRY: "1"
       TOKENIZERS_PARALLELISM: "false"
+      # Docling layout uses torch.compile. The image has g++; this directory is
+      # the inductor_cache volume so the first compile survives worker restarts.
+      # Shared by api and worker. Self-host merges this file, so the VM stack
+      # and ./deploy/selfhost.sh use the same cache.
+      TORCHINDUCTOR_CACHE_DIR: /data/torchinductor
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +82,7 @@ services:
     volumes:
       - uploads:/data/uploads
       - hf_cache:/data/hf
+      - inductor_cache:/data/torchinductor
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,6 +119,7 @@ services:
     volumes:
       - uploads:/data/uploads
       - hf_cache:/data/hf
+      - inductor_cache:/data/torchinductor
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,5 +183,6 @@ volumes:
   postgres_data:
   uploads:
   hf_cache:
+  inductor_cache:
   caddy_data:
   caddy_config:

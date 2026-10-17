@@ -81,6 +81,9 @@ export function CurriculumMaterialUpload({
       });
       setStatus(settled);
       onSettled?.(settled);
+      if (settled.failure_reason) {
+        setError(settled.failure_reason);
+      }
       setFile(null);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;

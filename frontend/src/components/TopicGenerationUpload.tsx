@@ -663,10 +663,11 @@ export function TopicGenerationUpload({
   }
 
   function renderPhase(current: GenerationRun): ReactNode {
+    const failed = current.phase === "failed";
     const status = (
       <>
         <GenerationProgressStepper run={current} />
-        <p className="admin-upload__status" role="status">
+        <p className={failed ? "form__error" : "admin-upload__status"} role={failed ? "alert" : "status"}>
           {current.phase}. {phaseStatusCopy(current)}
         </p>
       </>

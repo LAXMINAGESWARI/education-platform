@@ -114,6 +114,46 @@ describe("AdminDocumentsPage", () => {
     expect(listKnowledgeDocuments).toHaveBeenCalledTimes(2);
   });
 
+  it("shows the worker failure reason after a failed ingest", async () => {
+    const user = userEvent.setup();
+    const reason =
+      "Conversion failed for: hemh109.pdf with status: failure. — InvalidCxxCompiler: No working C++ compiler found";
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockResolvedValue({
+      id: "ver-2",
+      document_id: "doc-2",
+      version_number: 1,
+      lifecycle_status: "failed",
+      failure_reason: reason,
+      chunk_count: 0,
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Attendance policy")).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/^title$/i), "Handbook");
+    const file = new File(["%PDF-1.4"], "handbook.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText(/drop a pdf here/i), { target: { files: [file] } });
+    await user.click(screen.getByRole("button", { name: /upload pdf/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("InvalidCxxCompiler");
+    expect(screen.getByRole("alert")).toHaveTextContent("hemh109.pdf");
+  });
+
   it("blocks upload for fixture mock sessions", async () => {
     authState.isDevMockSession = true;
 

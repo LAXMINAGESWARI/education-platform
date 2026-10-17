@@ -64,6 +64,7 @@ from education_platform.workers.ingest import (
     enrich_formulas_with_openrouter,
     parse_pdf_with_docling,
     process_ingest_job_sync,
+    public_ingest_error,
 )
 from education_platform.workers.runner import claim_next_job, poll_once
 
@@ -1042,6 +1043,42 @@ def test_convert_pdf_with_docling_disables_formula_enrichment(
     format_options = captured["format_options"]
     assert isinstance(format_options, dict)
     assert fake_pdf.PDF in format_options
+
+
+def test_pdf_pipeline_keeps_layout_compile_enabled() -> None:
+    import os
+
+    from docling.datamodel.object_detection_engine_options import (
+        TransformersObjectDetectionEngineOptions,
+    )
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.settings import settings as docling_settings
+
+    assert os.environ.get("TORCH_COMPILE_DISABLE") != "1"
+    assert os.environ.get("TORCHDYNAMO_DISABLE") != "1"
+    assert os.environ.get("DOCLING_INFERENCE_COMPILE_TORCH_MODELS") != "false"
+    docling_settings.inference.compile_torch_models = True
+    options = PdfPipelineOptions()
+    engine = options.layout_options.engine_options
+    assert isinstance(engine, TransformersObjectDetectionEngineOptions)
+    assert engine.compile_model is True
+
+
+def test_public_ingest_error_keeps_docling_cause() -> None:
+    from docling.exceptions import ConversionError
+
+    cause = RuntimeError(
+        "InvalidCxxCompiler: No working C++ compiler found in "
+        "torch._inductor.config.cpp.cxx: (None, 'g++')"
+    )
+    try:
+        raise ConversionError("Conversion failed for: hemh109.pdf with status: failure.") from cause
+    except ConversionError as exc:
+        message = public_ingest_error(exc)
+    assert "hemh109.pdf" in message
+    assert "InvalidCxxCompiler" in message
+    assert "g++" in message
+    assert "\n" not in message
 
 
 def test_parse_pdf_with_docling_enriches_before_chunk(

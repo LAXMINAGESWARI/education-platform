@@ -175,10 +175,26 @@ into **POC Demo School** on startup when that tree is empty. The synthetic
 school is a second institution, **Al Noor International**.
 
 `SEED_SYNTHETIC=true` skips the seed when that institution already exists, so
-later deploys do not wipe it. Set `SEED_SYNTHETIC=always` for one deploy when
-you want a clean demo school, then set it back to `true`. Keep
+later deploys do not wipe it. Set `SEED_SYNTHETIC=always` in `deploy/.env`, run
+`./deploy/selfhost.sh update` once, then set it back to `true`. Keep
 `SYNTHETIC_SECTIONS_PER_GRADE` at 2 or more. The generator assigns one teacher
 to two sections of the same grade.
+
+`always` rebuilds only the institution named by `SYNTHETIC_INSTITUTION`
+(default **Al Noor International**). It replaces that school's users, teaching
+assignments, enrollments, attendance, quiz attempts, lesson-completion rows,
+at-risk flags, and policy chats owned by those accounts, then writes the school
+again. Grades, topics, and quizzes are kept and reused. Published lesson text
+is rewritten for every seeded topic and subtopic; a curriculum PDF that had
+been published as that lesson (slug `lesson`) is superseded. The old version
+row and its file stay on disk. Knowledge-document uploads for that school,
+including any QA- PDFs stored as knowledge documents, stay in the database and
+on the uploads volume. Other institutions, including POC Demo School, are left
+as they are.
+
+A content-generation run or curriculum-generation job submitted by an Al Noor
+account is not removed. If one exists, the rebuild stops on the user foreign
+key and the transaction rolls back, so the previous school is unchanged.
 
 ## 1. Create the VM
 
