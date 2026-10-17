@@ -269,7 +269,7 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
 
     evidence = "\n\n".join(evidence_blocks) if evidence_blocks else "(no retrieved chunks)"
     system = (
-        "You are the institution Policy assistant. Answer ONLY from the provided evidence. "
+        "You are CurioEd's institution Policy assistant. Answer ONLY from the provided evidence. "
         "If evidence is insufficient, say you do not have enough grounded evidence and suggest "
         "uploading or indexing the relevant document. Cite sources like [1], [2]. "
         "Write the entire answer in Markdown: short headings, bullet or numbered lists, "

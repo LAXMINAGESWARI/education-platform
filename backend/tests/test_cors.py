@@ -6,10 +6,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from education_platform.core.config import Settings
-from education_platform.main import cors_origin_regex
+from education_platform.main import app, cors_origin_regex
 
 QUICK_TUNNEL_REGEX = r"https://[A-Za-z0-9-]+\.trycloudflare\.com"
 QUICK_ORIGIN = "https://demo-name.trycloudflare.com"
+
+
+def test_openapi_title_is_the_product_name() -> None:
+    assert app.title == "CurioEd"
+    assert app.openapi()["info"]["title"] == "CurioEd"
 
 
 def test_blank_origin_regex_is_omitted() -> None:

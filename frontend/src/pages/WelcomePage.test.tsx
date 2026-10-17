@@ -39,6 +39,8 @@ describe("WelcomePage teacher shortcut", () => {
       </MemoryRouter>,
     );
 
+    expect(screen.getByText("CurioEd")).toBeInTheDocument();
+
     await userEvent.click(screen.getByRole("button", { name: "Enter as teacher" }));
 
     expect(signIn).toHaveBeenCalledWith("meera.krishnan@alnoor.school", "demo1234");

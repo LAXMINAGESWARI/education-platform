@@ -1,1 +1,1 @@
-"""Education platform backend."""
+"""CurioEd backend."""

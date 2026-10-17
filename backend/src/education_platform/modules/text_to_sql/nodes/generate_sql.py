@@ -30,7 +30,7 @@ from education_platform.core.config import get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion
 from education_platform.modules.text_to_sql.state import LLM_ERROR, TextToSQLState, format_error
 
-_SYSTEM_PROMPT = """You are a SQL generation assistant for an education platform's \
+_SYSTEM_PROMPT = """You are a SQL generation assistant for CurioEd's \
 PostgreSQL database.
 
 Given a natural-language question, a schema catalog describing the available tables \

@@ -11,7 +11,7 @@ from education_platform.core.config import Settings, get_settings
 
 _OPENROUTER_HEADERS = {
     "HTTP-Referer": "https://github.com/aushakanuj/education-platform",
-    "X-Title": "Education Platform Policy Assistant",
+    "X-Title": "CurioEd Policy Assistant",
 }
 
 

@@ -49,7 +49,7 @@ describe("AppShell", () => {
     renderShell();
 
     expect(screen.queryByRole("complementary", { name: "Primary" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Education Platform" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "CurioEd" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Demo mockup only/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reset demo" })).not.toBeInTheDocument();
 

@@ -1,4 +1,4 @@
-# Education Platform — Schema Catalog
+# CurioEd — Schema Catalog
 
 Generated from the SQLAlchemy models in `backend/src/education_platform/modules/{auth,academics,materials,assessments,attendance,assistant,rag}/models.py`, the `student_360` view definition in `backend/alembic/versions/d3e4f5a6b7c8_attendance_and_student_360.py`, and the `insights` module's read-only view binding (`backend/src/education_platform/modules/insights/models.py`).
 

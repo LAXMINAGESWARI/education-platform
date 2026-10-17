@@ -9,12 +9,17 @@ from openai import OpenAIError
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import (
+    _OPENROUTER_HEADERS,
     OpenRouterError,
     build_openrouter_client,
     chat_completion,
     chat_completion_sync,
     chat_completion_vision_sync,
 )
+
+
+def test_openrouter_title_names_the_product() -> None:
+    assert _OPENROUTER_HEADERS["X-Title"] == "CurioEd Policy Assistant"
 
 
 def test_pytest_defaults_do_not_use_live_openrouter() -> None:

@@ -329,6 +329,7 @@ async def test_summarize_instructs_markdown_output() -> None:
 
     system = captured["messages"][0]["content"]
     user = captured["messages"][-1]["content"]
+    assert "You are CurioEd's institution Policy assistant." in system
     assert "Markdown" in system
     assert "Markdown" in user
     assert result["assistant_content"].startswith("## Late homework")
