@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-mkdir -p "${UPLOAD_DIR:-/data/uploads}" "${HF_HOME:-/data/hf}"
+mkdir -p "${UPLOAD_DIR:-/data/uploads}" "${HF_HOME:-/data/hf}" "${TORCHINDUCTOR_CACHE_DIR:-/data/torchinductor}"
 
 secret="${JWT_SECRET:-}"
 if [ -z "$secret" ] || [ "$secret" = "dev-only-change-me-use-32bytes-min!!" ] || [ "${#secret}" -lt 32 ]; then

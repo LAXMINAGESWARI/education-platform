@@ -62,6 +62,7 @@ from education_platform.modules.rag.vector_store import VectorRow, delete_by_ver
 logger = logging.getLogger(__name__)
 
 ParsePdfFn = Callable[[Path], list[TextChunk]]
+_FAILURE_REASON_LIMIT = 2000
 
 _CODEFORMULA_MPS_PATCHED = False
 FORMULA_VISION_BATCH_SIZE = 8
@@ -386,6 +387,21 @@ def enrich_formulas_with_openrouter(
     )
 
 
+def public_ingest_error(exc: BaseException) -> str:
+    """One admin-facing reason. Keeps Docling's message and a distinct cause."""
+    parts: list[str] = []
+    current: BaseException | None = exc
+    while current is not None and len(parts) < 4:
+        text = " ".join(str(current).split())
+        if text and all(text not in earlier for earlier in parts):
+            parts.append(text)
+        current = current.__cause__ or current.__context__
+    message = " — ".join(parts) if parts else type(exc).__name__
+    if len(message) > _FAILURE_REASON_LIMIT:
+        return message[: _FAILURE_REASON_LIMIT - 1].rstrip() + "…"
+    return message
+
+
 def convert_pdf_with_docling(path: Path) -> Any:
     """Convert a PDF to a DoclingDocument (lazy import; keeps layout structure)."""
     from docling.datamodel.base_models import InputFormat
@@ -393,15 +409,19 @@ def convert_pdf_with_docling(path: Path) -> Any:
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     pipeline_options = apply_formula_pipeline_options(PdfPipelineOptions())
+    layout_options = getattr(pipeline_options, "layout_options", None)
+    layout_engine = getattr(layout_options, "engine_options", None)
     logger.info(
         "Docling convert accelerator_options.device=%s cuda_available=%s mps_available=%s "
-        "do_formula_enrichment=%s generate_page_images=%s do_table_structure=%s",
+        "do_formula_enrichment=%s generate_page_images=%s do_table_structure=%s "
+        "layout_compile_model=%s",
         pipeline_options.accelerator_options.device,
         cuda_is_available(),
         mps_is_available(),
         pipeline_options.do_formula_enrichment,
         pipeline_options.generate_page_images,
         pipeline_options.do_table_structure,
+        getattr(layout_engine, "compile_model", None),
     )
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
@@ -593,7 +613,7 @@ def process_ingest_job_sync(
             job = session.get(IngestJob, UUID(ingest_job_id))
             if job is None:
                 return
-            reason = str(exc)[:2000]
+            reason = public_ingest_error(exc)
             if job.source_material_version_id is not None:
                 version = session.get(SourceMaterialVersion, job.source_material_version_id)
                 if version is not None:

@@ -1,5 +1,7 @@
 # PC demo in front of Cloudflare Tunnel. Merge with docker-compose.prod.yml.
 # Same project name as that file so the two files cannot select different stacks.
+# TORCHINDUCTOR_CACHE_DIR and the inductor_cache volume live on api and worker
+# in that file, so self-host and the VM stack share one compile cache.
 
 name: education-platform-prod
 

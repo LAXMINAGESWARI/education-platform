@@ -631,6 +631,7 @@ describe("TopicGenerationUpload", () => {
 
     renderPanel();
     await user.click(await screen.findByRole("button", { name: /Unit source/i }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Outline writer timed out");
     await user.click(await screen.findByRole("button", { name: "Retry" }));
 
     expect(retryGenerationRun).toHaveBeenCalledWith("run-1");
