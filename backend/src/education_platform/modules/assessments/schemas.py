@@ -89,6 +89,94 @@ class AttemptAnswerOut(BaseModel):
     marks_awarded: Decimal | None
 
 
+class RemediationOut(BaseModel):
+    material_id: UUID | None = None
+    material_title: str | None = None
+    retake_quiz_id: UUID | None = None
+
+
+class SubtopicAttemptScore(BaseModel):
+    sequence: int
+    percent: Decimal
+    submitted_at: datetime | None
+
+
+class SetGoalRequest(BaseModel):
+    target_percent: Decimal = Field(ge=0, le=100)
+    due_at: datetime
+
+
+class GoalOut(BaseModel):
+    subtopic_id: UUID
+    subtopic_name: str
+    target_percent: Decimal
+    due_at: datetime
+    current_percent: Decimal | None
+    status: Literal["on_track", "achieved", "missed"]
+
+
+class SubtopicFeedback(BaseModel):
+    subtopic_id: UUID
+    subtopic_name: str
+    topic_name: str
+    percent: Decimal
+    question_count: int
+    attempts: list[SubtopicAttemptScore] = Field(default_factory=list)
+    percent_easy: Decimal | None = None
+    easy_question_count: int = 0
+    percent_medium: Decimal | None = None
+    medium_question_count: int = 0
+    percent_hard: Decimal | None = None
+    hard_question_count: int = 0
+    prior_percent: Decimal | None = None
+    delta: Decimal | None = None
+    class_avg_percent: Decimal | None = None
+    class_sample_size: int = 0
+    is_weak: bool | None = None
+    remediation: RemediationOut | None = None
+    goal: GoalOut | None = None
+
+
+class RegressionOut(BaseModel):
+    subtopic_id: UUID
+    subtopic_name: str
+    regressed_question_count: int
+
+
+class SubjectFeedbackDashboard(BaseModel):
+    subject_id: UUID
+    subject_name: str
+    overall_percent: Decimal | None
+    attempt_count: int
+    subtopics: list[SubtopicFeedback]
+    strength_subtopic_id: UUID | None
+    top_focus_subtopic_ids: list[UUID]
+    regressions: list[RegressionOut] = Field(default_factory=list)
+    summary: str
+
+
+class ReviewNudgeOut(BaseModel):
+    subtopic_id: UUID
+    subtopic_name: str
+    topic_name: str
+    days_since_last_attempt: int
+    due_interval_days: int
+    remediation: RemediationOut | None = None
+
+
+class TrajectoryOut(BaseModel):
+    subtopic_id: UUID
+    subtopic_name: str
+    trend: Literal["improving", "flat", "declining"]
+    recent_change: Decimal | None
+    evidence_level: Literal["low", "medium"]
+
+
+class FeedbackHighlights(BaseModel):
+    due_reviews: list[ReviewNudgeOut] = Field(default_factory=list)
+    trajectories: list[TrajectoryOut] = Field(default_factory=list)
+
+
 class AttemptResult(BaseModel):
     id: UUID
     quiz_id: UUID

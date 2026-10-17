@@ -142,6 +142,89 @@ export type LearningDirectory = {
   subjects: SubjectNode[];
 };
 
+export type RemediationOut = {
+  material_id: string | null;
+  material_title: string | null;
+  retake_quiz_id: string | null;
+};
+
+export type SubtopicAttemptScore = {
+  sequence: number;
+  percent: string | number;
+  submitted_at: string | null;
+};
+
+export type GoalOut = {
+  subtopic_id: string;
+  subtopic_name: string;
+  target_percent: string | number;
+  due_at: string;
+  current_percent: string | number | null;
+  status: "on_track" | "achieved" | "missed";
+};
+
+export type SubtopicFeedback = {
+  subtopic_id: string;
+  subtopic_name: string;
+  topic_name: string;
+  percent: string | number;
+  question_count: number;
+  attempts: SubtopicAttemptScore[];
+  percent_easy: string | number | null;
+  easy_question_count: number;
+  percent_medium: string | number | null;
+  medium_question_count: number;
+  percent_hard: string | number | null;
+  hard_question_count: number;
+  prior_percent: string | number | null;
+  delta: string | number | null;
+  class_avg_percent: string | number | null;
+  class_sample_size: number;
+  is_weak: boolean | null;
+  remediation: RemediationOut | null;
+  goal: GoalOut | null;
+};
+
+export type RegressionOut = {
+  subtopic_id: string;
+  subtopic_name: string;
+  regressed_question_count: number;
+};
+
+export type ReviewNudgeOut = {
+  subtopic_id: string;
+  subtopic_name: string;
+  topic_name: string;
+  days_since_last_attempt: number;
+  due_interval_days: number;
+  remediation: RemediationOut | null;
+};
+
+export type TrajectoryOut = {
+  subtopic_id: string;
+  subtopic_name: string;
+  trend: "improving" | "flat" | "declining";
+  recent_change: string | number | null;
+  evidence_level: "low" | "medium";
+};
+
+export type FeedbackHighlights = {
+  due_reviews: ReviewNudgeOut[];
+  trajectories: TrajectoryOut[];
+};
+
+export type SubjectFeedbackDashboard = {
+  subject_id: string;
+  subject_name: string;
+  overall_percent: string | number | null;
+  attempt_count: number;
+  subtopics: SubtopicFeedback[];
+  strength_subtopic_id: string | null;
+  top_focus_subtopic_ids: string[];
+  regressions: RegressionOut[];
+  summary: string;
+};
+
 export type LessonSlide = {
   number: number;
   title: string;

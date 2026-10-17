@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { updateMaterialProgress } from "../api/materials";
+import { recordSlideEngagement } from "../api/engagement";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
@@ -26,6 +27,75 @@ export function LessonSlidesPage() {
   const [searchParams] = useSearchParams();
   const [slideIndex, setSlideIndex] = useState(0);
   const startedRef = useRef(false);
+
+  // ─── Slide engagement tracking ────────────────────────────────────────────
+  // Tracks active seconds per slide (pauses when tab is hidden).
+  const activeSecondsRef = useRef<number>(0);   // accumulated active time for current slide
+  const lastTickRef      = useRef<number>(Date.now()); // when we last "ticked"
+  const isVisibleRef     = useRef<boolean>(true);      // is the tab currently visible?
+  const slideIndexRef    = useRef<number>(0);           // mirror of slideIndex for use in effects/unmount
+
+  // Keep slideIndexRef in sync
+  useEffect(() => {
+    slideIndexRef.current = slideIndex;
+  }, [slideIndex]);
+
+  // Page Visibility API — pause the clock when tab is hidden
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.hidden) {
+        // Tab hidden — bank time up to now
+        activeSecondsRef.current += (Date.now() - lastTickRef.current) / 1000;
+        isVisibleRef.current = false;
+      } else {
+        // Tab visible again — restart the tick
+        lastTickRef.current = Date.now();
+        isVisibleRef.current = true;
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, []);
+
+  // Reset timer whenever slide changes
+  useEffect(() => {
+    activeSecondsRef.current = 0;
+    lastTickRef.current = Date.now();
+    isVisibleRef.current = !document.hidden;
+  }, [slideIndex]);
+
+  // Flush on unmount (student navigates away mid-lesson)
+  useEffect(() => {
+    return () => {
+      const extra = isVisibleRef.current
+        ? (Date.now() - lastTickRef.current) / 1000
+        : 0;
+      const total = activeSecondsRef.current + extra;
+      if (subtopicId && total >= 2) {
+        void recordSlideEngagement(subtopicId, slideIndexRef.current, total);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subtopicId]);
+
+  /**
+   * Flush active time for the given slide index to the backend.
+   * Call this BEFORE changing slideIndex.
+   */
+  async function flushEngagement(index: number) {
+    if (!subtopicId) return;
+    const extra = isVisibleRef.current
+      ? (Date.now() - lastTickRef.current) / 1000
+      : 0;
+    const total = activeSecondsRef.current + extra;
+    if (total < 2) return; // ignore sub-2s noise
+    try {
+      await recordSlideEngagement(subtopicId, index, total);
+    } catch {
+      /* non-blocking — never interrupt the student's flow */
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     startedRef.current = false;
@@ -85,12 +155,22 @@ export function LessonSlidesPage() {
   async function goNext() {
     if (!lesson || !slides.length) return;
     const next = Math.min(slides.length - 1, slideIndex + 1);
+    // Flush engagement for the slide we're leaving
+    await flushEngagement(slideIndex);
     setSlideIndex(next);
     if (next === slides.length - 1) {
       await markCompleted(slides[next]?.number ?? next + 1);
     } else {
       await persistSlidePosition(next);
     }
+  }
+
+  async function goPrev() {
+    const prev = Math.max(0, slideIndex - 1);
+    // Flush engagement for the slide we're leaving
+    await flushEngagement(slideIndex);
+    setSlideIndex(prev);
+    void persistSlidePosition(prev);
   }
 
   return (
@@ -134,11 +214,7 @@ export function LessonSlidesPage() {
                     variant="outline"
                     size="sm"
                     disabled={slideIndex === 0}
-                    onClick={() => {
-                      const prev = Math.max(0, slideIndex - 1);
-                      setSlideIndex(prev);
-                      void persistSlidePosition(prev);
-                    }}
+                    onClick={() => void goPrev()}
                   >
                     Previous
                   </PushButton>
