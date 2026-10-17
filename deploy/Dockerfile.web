@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# linux/amd64 and linux/arm64. The bundle calls the API on the same origin
+# unless VITE_API_BASE_URL is set at build time.
+
+FROM node:20-bookworm-slim AS build
+
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+ARG VITE_API_BASE_URL=
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+RUN npx vite build
+
+FROM nginx:1.27-alpine
+
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /src/dist /usr/share/nginx/html

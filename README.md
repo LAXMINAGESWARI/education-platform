@@ -166,6 +166,12 @@ Legacy flat list (prefer learning-directory): `GET /api/v1/materials`.
 curl http://127.0.0.1:8000/health
 ```
 
+## Production deploy
+
+One Oracle Cloud Always Free ARM VM, Docker Compose, and Caddy. Local
+`docker compose up -d postgres` is unchanged. Steps, GoDaddy DNS, and the
+GitHub auto-deploy secrets are in [deploy/README.md](deploy/README.md).
+
 ## Quality checks
 
 CI (`.github/workflows/ci.yml`) runs backend and frontend jobs in parallel on pull
