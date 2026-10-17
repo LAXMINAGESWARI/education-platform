@@ -1,4 +1,8 @@
 # PC demo in front of Cloudflare Tunnel. Merge with docker-compose.prod.yml.
+# Same project name as that file so the two files cannot select different stacks.
+
+name: education-platform-prod
+
 # Caddy listens on the Docker network only. cloudflared makes the outbound
 # connection. ./deploy/selfhost.sh selects one profile:
 #   quick — trycloudflare.com, no Cloudflare account

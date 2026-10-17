@@ -1,4 +1,7 @@
 # One host, one Compose project. Local `docker-compose.yml` is unchanged.
+# The project name is not the repo directory name. A checkout named
+# education-platform would otherwise share the dev Postgres volume and
+# containers, and `--remove-orphans` would stop the dev database.
 #
 # Public ports: Caddy only (80/443). Postgres has no published port.
 # There is no Redis and no separate scheduler. The worker polls Postgres
@@ -8,7 +11,7 @@
 # and /openapi.json go to the API. Leave VITE_API_BASE_URL empty so the
 # browser calls that same origin.
 
-name: education-platform
+name: education-platform-prod
 
 x-logging: &logging
   logging:

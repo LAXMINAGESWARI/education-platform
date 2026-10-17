@@ -86,7 +86,7 @@ fi
 
 export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
-compose=(docker compose --env-file "$env_file" -f deploy/docker-compose.prod.yml)
+compose=(docker compose --project-name education-platform-prod --env-file "$env_file" -f deploy/docker-compose.prod.yml)
 
 "${compose[@]}" pull postgres caddy
 "${compose[@]}" build

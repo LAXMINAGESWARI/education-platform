@@ -6,6 +6,10 @@ Cloudflare Tunnel reaches the demo with an outbound connection, so the home rout
 
 These steps are for a Linux x86_64 PC (Ubuntu or similar) with Docker Engine. The same `./deploy/selfhost.sh` command works on Apple Silicon: install Docker Desktop, then keep the Mac awake with `caffeinate -dims`.
 
+The prod project name is `education-platform-prod`. Containers and volumes use that prefix. Root `docker compose` keeps the checkout directory name (usually `education-platform`) and its own Postgres volume. `./deploy/selfhost.sh` and `./deploy/deploy.sh` pass the prod name, so they do not attach to the dev database or remove dev containers with `--remove-orphans`.
+
+No VM was deployed under the earlier name `education-platform`. If a PC already ran the prod file that way, it attached to the dev volume and the dev Postgres container. Leave `education-platform_postgres_data` in place, start dev again with `docker compose up -d postgres` from the repo root, and run `./deploy/selfhost.sh up`. That creates `education-platform-prod_postgres_data`. A `COMPOSE_PROJECT_NAME=education-platform-prod` workaround is optional on this version; the scripts set the project name.
+
 ### Windows
 
 Use Docker Desktop with the WSL2 backend and run the script in the Ubuntu distro. Windows sleep pauses WSL, so set the power plan to never sleep while you share the link. A systemd unit inside WSL runs when systemd is enabled there. Otherwise let Docker Desktop start with Windows; the Compose services use `restart: unless-stopped`.
@@ -112,7 +116,9 @@ stack: ingest and generation jobs are rows in Postgres, claimed with
 `python -m education_platform.workers`.
 
 Local development still uses the root `docker-compose.yml` Postgres container.
-Nothing in that file changes.
+Nothing in that file changes. The prod stack is the Compose project
+`education-platform-prod`, so it does not share that dev volume or those
+containers.
 
 ## What is public
 
@@ -339,21 +345,21 @@ commit you want. The next push to `main` checks `main` out again.
 
 ```bash
 cd /opt/education-platform
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml logs -f --tail=200 api worker caddy
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml logs -f --tail=200 api worker caddy
 ```
 
 The worker is up when its log contains `Worker started`. It then polls Postgres.
 A quiet log after that means the queue is empty, not that the process stopped.
 
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml ps
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml ps
 ```
 
 ## Back up the database
 
 ```bash
 cd /opt/education-platform
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T postgres \
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T postgres \
   sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --format=custom' \
   > "education-$(date +%F).dump"
 ```
@@ -362,7 +368,7 @@ Copy the dump off the VM. Restore into the database only when you mean to
 replace the data:
 
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T postgres \
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T postgres \
   sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' \
   < education-YYYY-MM-DD.dump
 ```
@@ -370,7 +376,7 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T 
 Also copy the uploads volume if you need the PDF blobs:
 
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T api \
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T api \
   tar -C /data/uploads -czf - . > uploads.tgz
 ```
 
@@ -431,5 +437,5 @@ ALLOW_LOCAL_DOMAIN=1 DEPLOY_SKIP_GIT=1 ./deploy/deploy.sh
 curl --insecure --fail --silent https://localhost/health
 ```
 
-`docker compose -f deploy/docker-compose.prod.yml config` checks the file
-without starting anything.
+`docker compose --project-name education-platform-prod -f deploy/docker-compose.prod.yml config` checks the file
+without starting anything. The project name in that output is `education-platform-prod`.

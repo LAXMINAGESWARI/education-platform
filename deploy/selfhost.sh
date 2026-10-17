@@ -60,7 +60,7 @@ fi
 compose_files=(-f deploy/docker-compose.prod.yml -f deploy/docker-compose.tunnel.yml)
 
 compose() {
-  docker compose --env-file "$env_file" "${compose_files[@]}" "$@"
+  docker compose --project-name education-platform-prod --env-file "$env_file" "${compose_files[@]}" "$@"
 }
 
 token="$(env_get CLOUDFLARE_TUNNEL_TOKEN || true)"
