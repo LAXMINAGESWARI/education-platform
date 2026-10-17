@@ -4,6 +4,11 @@ import { Link, useParams } from "react-router-dom";
 import { deleteSubtopicGoal, getSubjectFeedback, setSubtopicGoal } from "../api/feedback";
 import { getEngagementRate, type EngagementRate } from "../api/engagement";
 import { useAuth } from "../auth/AuthContext";
+import {
+  getSelfEvaluation,
+  recordSelfEvaluation,
+  type ConfidenceLevel,
+} from "../api/selfEvaluation";
 import type {
   GoalOut,
   RegressionOut,
@@ -550,6 +555,7 @@ function SubtopicCard({
   const status = passed ? `${title!.emoji} ${title!.label}` : bestScore === null ? "No data yet" : "Keep going";
   const lastIndex = attempts.length - 1;
   const barColor = passed ? "#1D9E75" : bestScore === null ? "#cbd5e1" : "#378ADD";
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="card" style={{ cursor: "default" }}>
@@ -570,6 +576,27 @@ function SubtopicCard({
         </div>
       )}
 
+      <EngagementBadge engagement={engagement} />
+
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          marginTop: "10px",
+          background: "none",
+          border: "none",
+          color: "#1e40af",
+          fontSize: "0.8rem",
+          fontWeight: 600,
+          cursor: "pointer",
+          padding: 0,
+        }}
+      >
+        {expanded ? "Hide details ▲" : "Show details ▼"}
+      </button>
+
+      {expanded && (
+      <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
         {attempts.map((attempt, index) => {
           const chip = (
@@ -629,9 +656,9 @@ function SubtopicCard({
         </div>
       )}
 
-      <EngagementBadge engagement={engagement} />
-
       <GoalSection subtopic={subtopic} onGoalChange={onGoalChange} />
+      </>
+      )}
     </div>
   );
 }
@@ -772,6 +799,77 @@ function ReportCard({
           best result per subtopic.
         </p>
       </div>
+    </div>
+  );
+}
+
+// ─── NEW: Self-evaluation self-check ──────────────────────────────────────────
+function SelfCheck({ subjectId, subjectName }: { subjectId: string; subjectName: string }) {
+  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await getSelfEvaluation(subjectId);
+      if (!cancelled && result) setConfidence(result.confidence);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [subjectId]);
+
+  async function choose(level: ConfidenceLevel) {
+    setConfidence(level); // optimistic
+    setSaved(false);
+    const result = await recordSelfEvaluation(subjectId, level);
+    if (result) setSaved(true);
+  }
+
+  const options: { value: ConfidenceLevel; label: string }[] = [
+    { value: "still_learning", label: "Still learning" },
+    { value: "getting_it", label: "Getting it" },
+    { value: "confident", label: "Confident" },
+  ];
+
+  return (
+    <div
+      style={{
+        background: "#eff6ff",
+        border: "1px solid #bfdbfe",
+        borderRadius: "10px",
+        padding: "0.9rem 1.1rem",
+        marginTop: "1.5rem",
+      }}
+    >
+      <p style={{ margin: "0 0 8px 0", fontWeight: 600, fontSize: "0.9rem", color: "#1e40af" }}>
+        🙂 Your self-check: how well do you feel you understand {subjectName}?
+      </p>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        {options.map((o) => {
+          const active = confidence === o.value;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              className="btn btn--sm"
+              onClick={() => void choose(o.value)}
+              style={
+                active
+                  ? { background: "#1e40af", color: "#ffffff", borderColor: "#1e40af" }
+                  : undefined
+              }
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      {saved && (
+        <p style={{ margin: "8px 0 0 0", fontSize: "0.78rem", color: "#1e3a8a" }}>
+          Thanks — we saved how you're feeling. You can change it anytime.
+        </p>
+      )}
     </div>
   );
 }
@@ -928,6 +1026,9 @@ export function SubjectFeedbackPage() {
                   />
                 ))}
               </div>
+
+              {/* ─── NEW: Self-evaluation self-check ──────────────────────── */}
+              <SelfCheck subjectId={subjectId} subjectName={dashboard.subject_name} />
 
               {/* ─── NEW: Report card (collapsed behind a toggle) ─────────── */}
               <div style={{ marginTop: "1.5rem" }}>

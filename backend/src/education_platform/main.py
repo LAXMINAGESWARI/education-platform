@@ -25,6 +25,7 @@ from education_platform.modules.materials.router import router as materials_rout
 from education_platform.modules.materials.seed import seed_approved_materials
 from education_platform.modules.progress.router import router as progress_router
 from education_platform.modules.rag.router import router as rag_router
+from education_platform.modules.self_evaluation.router import router as self_evaluation_router
 from education_platform.modules.text_to_sql.router import router as text_to_sql_router
 
 _ = _models
@@ -80,6 +81,7 @@ app.include_router(progress_router, prefix=settings.api_v1_prefix)
 app.include_router(at_risk_router, prefix=settings.api_v1_prefix)
 
 app.include_router(engagement_router, prefix=settings.api_v1_prefix)
+app.include_router(self_evaluation_router, prefix=settings.api_v1_prefix)
 
 
 @app.exception_handler(DomainError)
