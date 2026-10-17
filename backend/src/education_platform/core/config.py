@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Education Platform"
+    app_name: str = "CurioEd"
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = [

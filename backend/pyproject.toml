@@ -1,7 +1,7 @@
 [project]
 name = "education-platform"
 version = "0.1.0"
-description = "Education platform API — serve approved curriculum materials and quizzes"
+description = "CurioEd API — serve approved curriculum materials and quizzes"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.15",

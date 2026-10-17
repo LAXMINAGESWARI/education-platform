@@ -1,6 +1,6 @@
 # Frontend
 
-Vite + React + TypeScript **multi-role web client** for the Agentic Education Platform: student
+Vite + React + TypeScript **multi-role web client** for CurioEd: student
 (live API), administrator (live API including policy chats), and teacher (mock fixtures).
 
 See the [documentation hub](../docs/README.md) for product vision and implementation status.

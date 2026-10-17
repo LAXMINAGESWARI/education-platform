@@ -57,7 +57,7 @@ export function TeacherShell() {
           <div className="rail__top">
             {!railCollapsed && (
               <Link to="/teacher" className="rail__brand">
-                Education Platform
+                CurioEd
               </Link>
             )}
             <button
@@ -141,7 +141,7 @@ export function TeacherShell() {
           <div className="topbar">
             <div className="topbar__row">
               <Link to="/teacher" className="topbar__brand">
-                Education Platform
+                CurioEd
               </Link>
               <PushButton variant="outline" size="sm" onClick={() => void signOut()}>
                 Sign out

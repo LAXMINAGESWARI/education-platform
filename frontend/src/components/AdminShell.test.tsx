@@ -30,6 +30,8 @@ describe("AdminShell", () => {
       </MemoryRouter>,
     );
 
+    expect(screen.getAllByRole("link", { name: "CurioEd" }).length).toBeGreaterThan(0);
+
     const app = document.querySelector(".app");
     expect(app).not.toHaveClass("is-rail-collapsed");
 

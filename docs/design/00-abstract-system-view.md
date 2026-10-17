@@ -2,9 +2,8 @@
 
 ## 1. Purpose
 
-The Agentic Platform for Automated Education Management and Analytics helps educational
-institutions improve learning outcomes by combining approved curriculum, online learner activity,
-assessment evidence, and role-scoped insights for students and teachers.
+CurioEd helps educational institutions improve learning outcomes by combining approved curriculum,
+online learner activity, assessment evidence, and role-scoped insights for students and teachers.
 
 The platform grounds AI assistance in institution-approved content and operates strictly within
 each user's role, enrollment, and institutional access boundaries.

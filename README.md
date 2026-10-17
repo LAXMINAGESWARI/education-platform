@@ -1,4 +1,4 @@
-# Agentic Education Platform
+# CurioEd
 
 Multi-role platform for common curriculum and student evaluation. Administrators publish a shared
 **SourceCurriculum**; enrolled students study through a private **StudentLearningDirectory** that

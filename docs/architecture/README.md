@@ -6,10 +6,10 @@ Narrative companion to the [diagram-only views](./diagrams.md) and the
 
 ## System context
 
-The **Agentic Platform for Automated Education Management and Analytics** serves administrators,
-teachers, and students within institution-scoped tenants. Clients (React web today; React Native
-target) call a FastAPI backend over JWT-authenticated REST. Bounded components include identity
-and access, academic structure, source curriculum, ingestion and indexing, assessment, analytics,
+**CurioEd** serves administrators, teachers, and students within institution-scoped tenants. Clients
+(React web today; React Native target) call a FastAPI backend over JWT-authenticated REST. Bounded
+components include identity and access, academic structure, source curriculum, ingestion and
+indexing, assessment, analytics,
 student learning experience, grounded AI assistance, and platform infrastructure.
 
 The [repository README](../../README.md) describes the **implemented POC slice**. Diagrams in this

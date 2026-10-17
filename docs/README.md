@@ -1,8 +1,8 @@
-# Education Platform Documentation
+# CurioEd documentation
 
-**Agentic Platform for Automated Education Management and Analytics** — a multi-role system where
-administrators publish shared source curriculum, enrolled students study through a private learning
-directory (reference-not-copy), and teachers consume class evidence. The POC proves a focused loop:
+**CurioEd** is a multi-role system where administrators publish shared source curriculum, enrolled
+students study through a private learning directory (reference-not-copy), and teachers consume class
+evidence. The POC proves a focused loop:
 publish → study → common subtopic quiz → four-pillar evaluation → teacher evidence.
 
 Two complementary directories anchor the product model:

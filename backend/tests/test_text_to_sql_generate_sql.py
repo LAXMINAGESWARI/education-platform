@@ -181,7 +181,9 @@ async def test_prompt_includes_question_schema_and_role(monkeypatch: pytest.Monk
         )
     )
 
-    user_content = cast(list[dict[str, str]], captured["messages"])[-1]["content"]
+    messages = cast(list[dict[str, str]], captured["messages"])
+    assert messages[0]["content"].startswith("You are a SQL generation assistant for CurioEd's")
+    user_content = messages[-1]["content"]
     assert "How many students are enrolled?" in user_content
     assert "student_subject_enrollments" in user_content
     assert "teacher" in user_content

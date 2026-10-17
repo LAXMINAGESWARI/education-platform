@@ -1,4 +1,4 @@
-# Education Agentic Platform Design
+# CurioEd design
 
 This directory contains the evolving design documentation for the platform. Documents move from
 high-level product decisions toward detailed component designs, contracts, data models, and

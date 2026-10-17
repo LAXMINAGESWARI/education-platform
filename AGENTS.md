@@ -1,4 +1,4 @@
-# Education Platform
+# CurioEd
 
 - Use `uv` for all Python commands from `backend/`; do not add `requirements.txt`.
 - Keep HTTP routes thin. Place business logic in module services.

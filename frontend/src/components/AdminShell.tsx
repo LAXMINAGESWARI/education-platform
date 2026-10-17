@@ -64,7 +64,7 @@ export function AdminShell() {
           <div className="rail__top">
             {!railCollapsed && (
               <Link to="/admin/dashboard" className="rail__brand">
-                Education Platform
+                CurioEd
               </Link>
             )}
             <button
@@ -102,7 +102,7 @@ export function AdminShell() {
           <div className="topbar">
             <div className="topbar__row">
               <Link to="/admin/dashboard" className="topbar__brand">
-                Education Platform
+                CurioEd
               </Link>
               <PushButton variant="outline" size="sm" onClick={() => void signOut()}>
                 Sign out

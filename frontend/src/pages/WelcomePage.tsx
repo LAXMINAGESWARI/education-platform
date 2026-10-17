@@ -138,7 +138,7 @@ export function WelcomePage() {
       </div>
       <div className="login">
         <div className="login__card">
-          <div className="login__brand">Education Platform</div>
+          <div className="login__brand">CurioEd</div>
           <p className="login__lede">Sign in to explore subjects, topics, and quizzes.</p>
           <p className="hint">
             Demo login: <code>{DEMO_EMAIL}</code> / <code>{DEMO_PASSWORD}</code>
