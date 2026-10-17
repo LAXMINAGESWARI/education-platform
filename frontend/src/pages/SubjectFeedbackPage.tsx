@@ -556,6 +556,10 @@ function SubtopicCard({
   const lastIndex = attempts.length - 1;
   const barColor = passed ? "#1D9E75" : bestScore === null ? "#cbd5e1" : "#378ADD";
   const [expanded, setExpanded] = useState(false);
+  const latestScore =
+    attempts.length > 0 ? (pct(attempts[attempts.length - 1].percent) ?? 0) : null;
+  const isNewBest =
+    attempts.length >= 2 && bestScore !== null && latestScore === bestScore && (delta ?? 0) > 0;
 
   return (
     <div className="card" style={{ cursor: "default" }}>
@@ -567,7 +571,24 @@ function SubtopicCard({
       {bestScore !== null && (
         <div style={{ marginTop: "10px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
-            <span style={{ fontSize: "1.3rem", fontWeight: 700 }}>{Math.round(bestScore)}%</span>
+            <span style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+              <span style={{ fontSize: "1.3rem", fontWeight: 700 }}>{Math.round(bestScore)}%</span>
+              {isNewBest && (
+                <span
+                  style={{
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
+                    color: "#0f766e",
+                    background: "#f0fdfa",
+                    border: "1px solid #99f6e4",
+                    borderRadius: "999px",
+                    padding: "1px 8px",
+                  }}
+                >
+                  ↑ New best!
+                </span>
+              )}
+            </span>
             <span style={{ fontSize: "0.72rem", color: "var(--ink-muted)" }}>best score</span>
           </div>
           <div style={{ height: "6px", background: "#eef2f7", borderRadius: "999px", overflow: "hidden" }}>
@@ -804,9 +825,16 @@ function ReportCard({
 }
 
 // ─── NEW: Self-evaluation self-check ──────────────────────────────────────────
-function SelfCheck({ subjectId, subjectName }: { subjectId: string; subjectName: string }) {
+function SelfCheck({
+  subjectId,
+  subjectName,
+  overallScore,
+}: {
+  subjectId: string;
+  subjectName: string;
+  overallScore: number | null;
+}) {
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -821,9 +849,7 @@ function SelfCheck({ subjectId, subjectName }: { subjectId: string; subjectName:
 
   async function choose(level: ConfidenceLevel) {
     setConfidence(level); // optimistic
-    setSaved(false);
-    const result = await recordSelfEvaluation(subjectId, level);
-    if (result) setSaved(true);
+    await recordSelfEvaluation(subjectId, level);
   }
 
   const options: { value: ConfidenceLevel; label: string }[] = [
@@ -865,13 +891,32 @@ function SelfCheck({ subjectId, subjectName }: { subjectId: string; subjectName:
           );
         })}
       </div>
-      {saved && (
+      {confidence !== null && (
         <p style={{ margin: "8px 0 0 0", fontSize: "0.78rem", color: "#1e3a8a" }}>
-          Thanks — we saved how you're feeling. You can change it anytime.
+          {calibrationMessage(confidence, overallScore)}
         </p>
       )}
     </div>
   );
+}
+
+// Gently compares how a student feels vs how they're scoring (calibration).
+function calibrationMessage(confidence: ConfidenceLevel, score: number | null): string {
+  if (score !== null) {
+    if (confidence === "confident" && score < 70) {
+      return "You're feeling confident — a quick review will help your scores catch up to that confidence.";
+    }
+    if (confidence === "still_learning" && score >= 80) {
+      return 'You said "still learning," but your scores say you\'ve got this — trust yourself a little more!';
+    }
+    if (confidence === "still_learning" && score >= 70) {
+      return "You're doing better than you feel — keep going, you're closer than you think.";
+    }
+    if (confidence === "confident" && score >= 80) {
+      return "Confident and scoring high — you really do know this. Nice.";
+    }
+  }
+  return "Thanks — we saved how you're feeling. You can change it anytime.";
 }
 
 export function SubjectFeedbackPage() {
@@ -999,8 +1044,36 @@ export function SubjectFeedbackPage() {
           </header>
 
           {dashboard.attempt_count === 0 ? (
-            <div className="alert alert--info">
-              No scored quiz attempts yet in this subject. Take a quiz to see feedback here.
+            <div
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                borderRadius: "12px",
+                padding: "2rem 1.5rem",
+                textAlign: "center",
+                marginTop: "1rem",
+              }}
+            >
+              <p style={{ fontSize: "2rem", margin: "0 0 8px 0" }}>🌱</p>
+              <p style={{ fontWeight: 700, fontSize: "1.1rem", margin: "0 0 6px 0" }}>
+                Your feedback starts here
+              </p>
+              <p
+                style={{
+                  color: "var(--ink-muted)",
+                  fontSize: "0.9rem",
+                  margin: "0 0 16px 0",
+                  maxWidth: "440px",
+                  marginLeft: "auto",
+                  marginRight: "auto",
+                }}
+              >
+                Once you take your first quiz in {dashboard.subject_name}, this page fills with your
+                scores, your progress over time, and a personalized next step.
+              </p>
+              <Link to={`/subjects/${subjectId}`} className="btn btn--sm">
+                Start a lesson
+              </Link>
             </div>
           ) : (
             <>
@@ -1028,7 +1101,11 @@ export function SubjectFeedbackPage() {
               </div>
 
               {/* ─── NEW: Self-evaluation self-check ──────────────────────── */}
-              <SelfCheck subjectId={subjectId} subjectName={dashboard.subject_name} />
+              <SelfCheck
+                subjectId={subjectId}
+                subjectName={dashboard.subject_name}
+                overallScore={overallScore}
+              />
 
               {/* ─── NEW: Report card (collapsed behind a toggle) ─────────── */}
               <div style={{ marginTop: "1.5rem" }}>
