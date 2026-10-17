@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -23,10 +23,10 @@ vi.mock("../api/demo", () => ({
   resetDemoProgress: vi.fn(),
 }));
 
-function renderShell() {
+function renderShell(path = "/subjects/sub-1") {
   return render(
     <MemoryRouter
-      initialEntries={["/subjects/sub-1"]}
+      initialEntries={[path]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <Routes>
@@ -38,18 +38,28 @@ function renderShell() {
             </AppShell>
           }
         />
+        <Route
+          path="/subjects/:subjectId/feedback"
+          element={
+            <AppShell>
+              <div>Feedback body</div>
+            </AppShell>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 describe("AppShell", () => {
-  it("keeps reset and sign out under a persistent profile icon", async () => {
+  it("shows Home and Feedback in the student rail and keeps account actions in the profile menu", async () => {
     const user = userEvent.setup();
     renderShell();
 
-    expect(screen.queryByRole("complementary", { name: "Primary" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "CurioEd" })).not.toBeInTheDocument();
+    const rail = screen.getByRole("complementary", { name: "Primary" });
+    expect(within(rail).getByRole("link", { name: "CurioEd" })).toBeInTheDocument();
+    expect(within(rail).getByRole("link", { name: "Home" })).toHaveClass("is-active");
+    expect(within(rail).getByRole("link", { name: "Feedback" })).not.toHaveClass("is-active");
     expect(screen.queryByText(/Demo mockup only/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reset demo" })).not.toBeInTheDocument();
 
@@ -57,5 +67,13 @@ describe("AppShell", () => {
     expect(screen.getByRole("menuitem", { name: "Reset demo" })).toBeInTheDocument();
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(signOut).toHaveBeenCalled();
+  });
+
+  it("highlights Feedback instead of Home on a subject feedback page", () => {
+    renderShell("/subjects/sub-1/feedback");
+
+    const rail = screen.getByRole("complementary", { name: "Primary" });
+    expect(within(rail).getByRole("link", { name: "Feedback" })).toHaveClass("is-active");
+    expect(within(rail).getByRole("link", { name: "Home" })).not.toHaveClass("is-active");
   });
 });
