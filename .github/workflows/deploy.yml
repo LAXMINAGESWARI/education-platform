@@ -1,4 +1,5 @@
 # Redeploy the Oracle VM on every push to main.
+# This workflow is VM mode only. A PC demo uses ./deploy/selfhost.sh update.
 # Forks and PRs do not run this file. A push with the secrets unset is skipped.
 # workflow_dispatch fails when the secrets are missing so a manual run is obvious.
 

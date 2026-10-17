@@ -168,8 +168,8 @@ curl http://127.0.0.1:8000/health
 
 ## Production deploy
 
-One Oracle Cloud Always Free ARM VM, Docker Compose, and Caddy. Local
-`docker compose up -d postgres` is unchanged. Steps, GoDaddy DNS, and the
+One Oracle Cloud Always Free ARM VM, or a Linux PC behind a Cloudflare Tunnel.
+Local `docker compose up -d postgres` is unchanged. Steps, GoDaddy DNS, and the
 GitHub auto-deploy secrets are in [deploy/README.md](deploy/README.md).
 
 ## Quality checks

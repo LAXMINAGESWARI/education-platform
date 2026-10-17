@@ -1,4 +1,108 @@
-# Deploy on one Oracle Cloud ARM VM
+# Deploy
+
+## Self-host on your PC (demo)
+
+Cloudflare Tunnel reaches the demo with an outbound connection, so the home router can stay closed and the PC needs no public IP. `cloudflared` joins the Compose network and dials Caddy over plain HTTP. Cloudflare terminates TLS, so Caddy does not run ACME in this mode. The Oracle VM path (ports 80 and 443, Let's Encrypt) is the rest of this guide.
+
+These steps are for a Linux x86_64 PC (Ubuntu or similar) with Docker Engine. The same `./deploy/selfhost.sh` command works on Apple Silicon: install Docker Desktop, then keep the Mac awake with `caffeinate -dims`.
+
+### Windows
+
+Use Docker Desktop with the WSL2 backend and run the script in the Ubuntu distro. Windows sleep pauses WSL, so set the power plan to never sleep while you share the link. A systemd unit inside WSL runs when systemd is enabled there. Otherwise let Docker Desktop start with Windows; the Compose services use `restart: unless-stopped`.
+
+### 1. Install Docker Engine
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
+sudo systemctl enable --now docker
+```
+
+Log out and back in so the `docker` group applies.
+
+### 2. Fill in the env file
+
+```bash
+git clone https://github.com/aushakanuj/education-platform.git
+cd education-platform
+cp deploy/.env.prod.example deploy/.env
+chmod 600 deploy/.env
+```
+
+Set `POSTGRES_PASSWORD`, `JWT_SECRET` (32 characters or more), and `TEXT_TO_SQL_DB_PASSWORD`. Passwords are letters, digits, and hyphen. Leave `VITE_API_BASE_URL` empty so the built app calls `/api/v1` on the tunnel host.
+
+| Mode | Cloudflare account | What you set |
+| --- | --- | --- |
+| Quick | None. The URL is `https://<random>.trycloudflare.com` | Leave `CLOUDFLARE_TUNNEL_TOKEN` empty |
+| Named | A hostname on your domain | `CLOUDFLARE_TUNNEL_TOKEN`, `DOMAIN`, and `CORS_ORIGINS` containing `https://DOMAIN` |
+
+Quick mode sets `CORS_ORIGIN_REGEX` to `https://[A-Za-z0-9-]+\.trycloudflare\.com`. The hostname changes each time `cloudflared` starts, and that pattern matches the new origin. The page and the API are the same host, so the browser calls `/api/v1` on the URL `up` prints. Anyone who has the link can open the demo. The quick URL changes again after a restart.
+
+Named mode leaves that regex empty and uses `CORS_ORIGINS` only.
+
+Demo accounts after a synthetic seed use the password `demo1234`. The table is in [What you fill in by hand](#what-you-fill-in-by-hand) below.
+
+### 3. Start and share
+
+```bash
+./deploy/selfhost.sh up
+./deploy/selfhost.sh url
+./deploy/selfhost.sh logs
+./deploy/selfhost.sh down
+```
+
+`up` builds, migrates, and prints the public URL in quick mode. `down` stops the containers and keeps the Postgres volume.
+
+### Keep the PC awake
+
+```bash
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo mkdir -p /etc/systemd/logind.conf.d
+sudo tee /etc/systemd/logind.conf.d/no-suspend.conf >/dev/null <<'EOF'
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+EOF
+sudo systemctl restart systemd-logind
+```
+
+Restarting `systemd-logind` can drop the current login. SSH back in afterward.
+
+### Start again after a reboot
+
+Compose sets `restart: unless-stopped` on the API, worker, Caddy, and `cloudflared`. With Docker enabled (`systemctl enable docker`), those containers come back when the PC boots.
+
+To run the deploy script itself on boot (so migrate runs, not only existing containers):
+
+```bash
+sudo mkdir -p /opt/education-platform
+# Or point the unit at the directory where you cloned the repo.
+sudo cp deploy/education-platform-selfhost.service /etc/systemd/system/education-platform.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now education-platform.service
+```
+
+Edit `WorkingDirectory`, `ExecStart`, and `ExecStop` if the clone is not `/opt/education-platform`. In quick mode, run `./deploy/selfhost.sh url` after boot because the public URL is new. A named tunnel stays on `https://DOMAIN`.
+
+### Update this PC
+
+The GitHub Action in `.github/workflows/deploy.yml` updates the Oracle VM. On the PC, pull and rebuild with:
+
+```bash
+./deploy/selfhost.sh update
+```
+
+### Named tunnel on a GoDaddy domain
+
+In the Cloudflare dashboard: **Zero Trust → Networks → Tunnels → Create a tunnel**. Choose the Docker install, and put the token in `CLOUDFLARE_TUNNEL_TOKEN`. Add a public hostname for `DOMAIN`, service type **HTTP**, URL **`caddy:80`**. `caddy` is the Compose service name on the Docker network. Save, then `./deploy/selfhost.sh up`.
+
+**Move the nameservers (free plan).** Add the domain in Cloudflare. At GoDaddy, set the domain's nameservers to the two Cloudflare assigns. When the zone is active, the public hostname you added on the tunnel creates the DNS record. That includes the apex when `DOMAIN` is the root of the domain.
+
+**CNAME, leaving GoDaddy authoritative.** Cloudflare's partial setup (also called CNAME setup) proxies a hostname without a nameserver change. It is a Business or Enterprise feature. Create a CNAME at GoDaddy from that hostname to `{hostname}.cdn.cloudflare.net`, which is the target in [Cloudflare's tunnel FAQ](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/). The `<tunnel-id>.cfargotunnel.com` CNAME belongs in the Cloudflare DNS zone for the same account as the tunnel. Cloudflare creates it when the nameservers point at Cloudflare and you add the public hostname. On the free plan, moving the nameservers is the setup that publishes the hostname.
+
+## Oracle Cloud VM
 
 The demo runs on a single Ubuntu VM (`VM.Standard.A1.Flex`, 4 OCPU, 24 GB). One
 Compose project starts Postgres (pgvector), a one-shot migration, the API, the
@@ -271,6 +375,8 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T 
 ```
 
 ## Auto-redeploy on push
+
+This workflow is for the Oracle VM. A PC demo updates with `./deploy/selfhost.sh update`.
 
 `.github/workflows/deploy.yml` runs on every push to `main` and on
 **Run workflow**. It does not run on pull requests. If the secrets are missing,

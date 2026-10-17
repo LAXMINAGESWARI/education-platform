@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Pull, build, migrate, and recreate the app containers. Safe to run twice.
+# Oracle VM mode: Caddy publishes 80/443 and obtains a certificate.
+# A PC demo uses deploy/selfhost.sh (Cloudflare Tunnel, HTTP inside Docker).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
