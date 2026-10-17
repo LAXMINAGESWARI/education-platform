@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from education_platform.modules.academics.models import (
@@ -59,11 +59,14 @@ from education_platform.modules.assessments.models import (
     QuizAttempt,
     QuizAttemptStatus,
     QuizItem,
+    QuizRelease,
     QuizResultReleaseMode,
     QuizScope,
     QuizVersion,
     QuizVersionStatus,
 )
+from education_platform.modules.assistant.models import ChatConversation
+from education_platform.modules.at_risk.models import AtRiskFlag
 from education_platform.modules.attendance.models import AttendanceRecord, AttendanceStatus
 from education_platform.modules.auth.models import (
     AuditEvent,
@@ -78,6 +81,18 @@ from education_platform.modules.auth.models import (
     UserStatus,
 )
 from education_platform.modules.auth.security import hash_password
+from education_platform.modules.materials.models import (
+    SourceMaterialVersion,
+    StudentMaterialProgress,
+)
+from education_platform.modules.synthetic.lessons import (
+    bind_quiz_to_lesson,
+    complete_lesson,
+    ensure_open_quiz_window,
+    publish_approved_lesson,
+    subtopic_lesson_markdown,
+    topic_lesson_markdown,
+)
 
 DEFAULT_PASSWORD = "demo1234"
 
@@ -189,6 +204,7 @@ class GenerationResult:
     offerings: int = 0
     attempts: int = 0
     attendance_rows: int = 0
+    lessons: int = 0
     planted: dict[str, str] = field(default_factory=dict)
 
 
@@ -206,6 +222,20 @@ def _wipe(session: Session, institution_id: UUID) -> None:
         if attempt_ids:
             session.execute(delete(AttemptAnswer).where(AttemptAnswer.attempt_id.in_(attempt_ids)))
             session.execute(delete(QuizAttempt).where(QuizAttempt.id.in_(attempt_ids)))
+        enrollment_ids = list(
+            session.scalars(
+                select(StudentSubjectEnrollment.id).where(
+                    StudentSubjectEnrollment.student_id.in_(student_ids)
+                )
+            )
+        )
+        if enrollment_ids:
+            session.execute(
+                delete(StudentMaterialProgress).where(
+                    StudentMaterialProgress.student_subject_enrollment_id.in_(enrollment_ids)
+                )
+            )
+        session.execute(delete(AtRiskFlag).where(AtRiskFlag.student_id.in_(student_ids)))
         session.execute(
             delete(AttendanceRecord).where(AttendanceRecord.student_id.in_(student_ids))
         )
@@ -228,6 +258,23 @@ def _wipe(session: Session, institution_id: UUID) -> None:
     # Users too, or a regenerate collides with the unique (institution, email) constraint.
     user_ids = list(session.scalars(select(User.id).where(User.institution_id == institution_id)))
     if user_ids:
+        # Lessons and open quiz windows stay, because topics and quizzes are reused.
+        # Their submitter and releaser are replaced on the next publish.
+        session.execute(
+            update(SourceMaterialVersion)
+            .where(SourceMaterialVersion.submitted_by_user_id.in_(user_ids))
+            .values(submitted_by_user_id=None)
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            update(QuizRelease)
+            .where(QuizRelease.released_by_user_id.in_(user_ids))
+            .values(released_by_user_id=None)
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            delete(ChatConversation).where(ChatConversation.owner_user_id.in_(user_ids))
+        )
         session.execute(
             delete(TeachingAssignment).where(TeachingAssignment.teacher_user_id.in_(user_ids))
         )
@@ -320,6 +367,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     # ---- academic structure -------------------------------------------------
     offerings: dict[tuple[str, str], GradeSubjectOffering] = {}
     sections: dict[str, list[Section]] = {}
+    topics: dict[tuple[str, str], Topic] = {}
     subtopics: dict[tuple[str, str], list[Subtopic]] = {}
 
     for order, grade_name in enumerate(spec.grades, start=6):
@@ -380,8 +428,13 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                 )
             )
             if existing_topic is not None:
+                topics[(grade_name, subject_name)] = existing_topic
                 subtopics[(grade_name, subject_name)] = list(
-                    session.scalars(select(Subtopic).where(Subtopic.topic_id == existing_topic.id))
+                    session.scalars(
+                        select(Subtopic)
+                        .where(Subtopic.topic_id == existing_topic.id)
+                        .order_by(Subtopic.sequence)
+                    )
                 )
                 continue
 
@@ -393,6 +446,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
             )
             session.add(topic)
             session.flush()
+            topics[(grade_name, subject_name)] = topic
 
             made: list[Subtopic] = []
             for seq, topic_name in enumerate(topic_names, start=1):
@@ -418,6 +472,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     # ---- teachers -----------------------------------------------------------
     # Meera teaches across two grades AND two subjects on purpose: her scope is a set of
     # (offering, section) pairs, which is what makes the permission tests meaningful.
+    teachers: dict[tuple[str, str], User] = {}
     feature_teacher = _make_user(
         session,
         institution.id,
@@ -431,6 +486,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
         (("Grade 8", "Mathematics"), 1),
         (("Grade 9", "Science"), 0),
     ):
+        teachers[offering_key] = feature_teacher
         grade_name, _ = offering_key
         session.add(
             TeachingAssignment(
@@ -458,6 +514,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                 RoleName.TEACHER,
             )
             result.teachers += 1
+            teachers[(grade_name, subject_name)] = teacher
             for section in sections[grade_name]:
                 session.add(
                     TeachingAssignment(
@@ -479,6 +536,10 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     _ = admin
     session.flush()
 
+    term_end = term_start + timedelta(weeks=spec.term_weeks)
+    quiz_window_start = datetime.combine(term_start, time.min, tzinfo=UTC)
+    quiz_window_end = datetime.combine(term_end + timedelta(days=365), time(23, 59), tzinfo=UTC)
+
     # ---- quizzes ------------------------------------------------------------
     quiz_versions: dict[UUID, QuizVersion] = {}
     for grade_name, subject_name in offerings:
@@ -494,6 +555,13 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                 )
                 if existing_version is not None:
                     quiz_versions[subtopic.id] = existing_version
+                    ensure_open_quiz_window(
+                        session,
+                        existing_version,
+                        starts_at=quiz_window_start,
+                        ends_at=quiz_window_end,
+                        released_by_user_id=admin.id,
+                    )
                     continue
             else:
                 quiz = CommonMasteryQuiz(
@@ -549,6 +617,55 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                     )
                 )
             quiz_versions[subtopic.id] = version
+            ensure_open_quiz_window(
+                session,
+                version,
+                starts_at=quiz_window_start,
+                ends_at=quiz_window_end,
+                released_by_user_id=admin.id,
+            )
+
+    # ---- lessons ------------------------------------------------------------
+    # Published after the teacher and the admin exist, so submitter and releaser
+    # are real users. Student endpoints read these rows; they do not read a flag.
+    subtopic_lessons: dict[UUID, UUID] = {}
+    topic_lessons: dict[tuple[str, str], UUID] = {}
+    for key, topic in topics.items():
+        grade_name, subject_name = key
+        teacher = teachers[key]
+        unit_names = tuple(subtopic.name for subtopic in subtopics[key])
+        topic_version = publish_approved_lesson(
+            session,
+            topic=topic,
+            title=topic.name,
+            markdown=topic_lesson_markdown(
+                seed=spec.seed,
+                grade_name=grade_name,
+                subject_name=subject_name,
+                title=topic.name,
+                units=unit_names,
+            ),
+            submitted_by_user_id=teacher.id,
+        )
+        topic_lessons[key] = topic_version.id
+        result.lessons += 1
+        for subtopic in subtopics[key]:
+            lesson_version = publish_approved_lesson(
+                session,
+                subtopic=subtopic,
+                title=subtopic.name,
+                markdown=subtopic_lesson_markdown(
+                    seed=spec.seed,
+                    grade_name=grade_name,
+                    subject_name=subject_name,
+                    title=subtopic.name,
+                ),
+                submitted_by_user_id=teacher.id,
+            )
+            subtopic_lessons[subtopic.id] = lesson_version.id
+            bind_quiz_to_lesson(session, quiz_versions[subtopic.id].id, lesson_version.id)
+            result.lessons += 1
+    session.flush()
 
     # ---- students, marks, attendance ---------------------------------------
     planted_student_id: UUID | None = None
@@ -642,6 +759,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                     )
                     session.add(subject_enrollment)
                     session.flush()
+                    topic_completed = False
 
                     base = rng.uniform(58, 84)
                     if counter % COUNTER_EXAMPLE_EVERY == 0:
@@ -680,6 +798,20 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                         )
                         session.add(attempt)
                         result.attempts += 1
+                        complete_lesson(
+                            session,
+                            enrollment_id=subject_enrollment.id,
+                            version_id=subtopic_lessons[subtopic.id],
+                            completed_at=submitted - timedelta(minutes=30),
+                        )
+                        if not topic_completed:
+                            complete_lesson(
+                                session,
+                                enrollment_id=subject_enrollment.id,
+                                version_id=topic_lessons[(grade_name, subject_name)],
+                                completed_at=submitted - timedelta(hours=1),
+                            )
+                            topic_completed = True
 
                 if counter % 40 == 0:
                     session.flush()
