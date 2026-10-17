@@ -1,0 +1,40 @@
+# Shared site block. The VM Caddyfile attaches this to {$DOMAIN} (HTTPS).
+# The tunnel Caddyfile attaches it to :80 (HTTP). Cloudflare terminates TLS
+# in tunnel mode, so this block does not request a certificate.
+
+(site) {
+	encode zstd gzip
+
+	handle /api/* {
+		request_body {
+			max_size 32MB
+		}
+		reverse_proxy api:8000 {
+			flush_interval -1
+			transport http {
+				read_timeout 300s
+				write_timeout 300s
+			}
+		}
+	}
+
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	handle /docs* {
+		reverse_proxy api:8000
+	}
+
+	handle /openapi.json {
+		reverse_proxy api:8000
+	}
+
+	handle /redoc {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+}

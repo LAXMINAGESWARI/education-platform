@@ -29,6 +29,10 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
     ]
+    # Starlette fullmatch against Origin. Blank keeps the explicit list only.
+    # Quick Cloudflare tunnels set a trycloudflare.com pattern; that hostname
+    # is chosen after the process starts.
+    cors_origin_regex: str = ""
     materials_dir: Path = _DEFAULT_MATERIALS_DIR
     database_url: str = _DEFAULT_DATABASE_URL
     jwt_secret: str = "dev-only-change-me-use-32bytes-min!!"

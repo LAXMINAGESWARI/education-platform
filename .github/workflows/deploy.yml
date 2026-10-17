@@ -1,0 +1,84 @@
+# Redeploy the Oracle VM on every push to main.
+# This workflow is VM mode only. A PC demo uses ./deploy/selfhost.sh update.
+# Forks and PRs do not run this file. A push with the secrets unset is skipped.
+# workflow_dispatch fails when the secrets are missing so a manual run is obvious.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Decide whether deploy secrets are configured
+        id: gate
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_USER" ] && [ -n "$DEPLOY_SSH_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error::Set DEPLOY_HOST, DEPLOY_USER, and DEPLOY_SSH_KEY before running this workflow."
+            exit 1
+          fi
+          echo "::notice title=Deploy skipped::DEPLOY_HOST, DEPLOY_USER, or DEPLOY_SSH_KEY is not set. This push did not deploy."
+
+      - name: Deploy over SSH
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          keyfile="${HOME}/.ssh/education_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$keyfile"
+          chmod 600 "$keyfile"
+          port="${DEPLOY_PORT:-22}"
+          path="${DEPLOY_PATH:-/opt/education-platform}"
+          ssh-keyscan -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          ssh -i "$keyfile" \
+            -p "$port" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=240 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd $(printf '%q' "$path") && ./deploy/deploy.sh"
+
+      - name: Check the public health URL
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HEALTH_URL}" ]; then
+            echo "DEPLOY_HEALTH_URL is not set. Skipping the post-deploy check."
+            exit 0
+          fi
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl --fail --silent --show-error --max-time 20 "$DEPLOY_HEALTH_URL"; then
+              echo
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check failed." >&2
+          exit 1

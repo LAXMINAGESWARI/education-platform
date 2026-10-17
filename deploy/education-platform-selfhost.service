@@ -1,0 +1,25 @@
+# Optional boot unit for a Linux PC demo.
+# Copy to /etc/systemd/system/education-platform.service and edit the path
+# if the clone is not /opt/education-platform. Then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now education-platform.service
+#
+# The Compose services already use restart: unless-stopped. This unit is for
+# running migrate on boot, not only restarting containers Docker already knows.
+
+[Unit]
+Description=Education platform demo (Cloudflare Tunnel)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/education-platform
+ExecStart=/opt/education-platform/deploy/selfhost.sh up
+ExecStop=/opt/education-platform/deploy/selfhost.sh down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

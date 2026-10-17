@@ -1,0 +1,22 @@
+# Public edge for the Oracle VM. DOMAIN and ACME_EMAIL come from the
+# container environment. Same host serves the SPA and reverse-proxies the
+# API, so the browser does not make a cross-origin call. Leave
+# VITE_API_BASE_URL empty.
+#
+# A PC demo uses Caddyfile.tunnel instead (plain HTTP behind Cloudflare).
+{
+	email {$ACME_EMAIL}
+	servers {
+		timeouts {
+			read_body 300s
+			write 300s
+			idle 5m
+		}
+	}
+}
+
+import /etc/caddy/Caddyfile.site
+
+{$DOMAIN} {
+	import site
+}

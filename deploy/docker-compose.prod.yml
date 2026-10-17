@@ -1,0 +1,180 @@
+# One host, one Compose project. Local `docker-compose.yml` is unchanged.
+# The project name is not the repo directory name. A checkout named
+# education-platform would otherwise share the dev Postgres volume and
+# containers, and `--remove-orphans` would stop the dev database.
+#
+# Public ports: Caddy only (80/443). Postgres has no published port.
+# There is no Redis and no separate scheduler. The worker polls Postgres
+# (`ingest_jobs`, then `generation_jobs`) with FOR UPDATE SKIP LOCKED.
+#
+# Routing: https://DOMAIN serves the SPA. https://DOMAIN/api, /health, /docs,
+# and /openapi.json go to the API. Leave VITE_API_BASE_URL empty so the
+# browser calls that same origin.
+
+name: education-platform-prod
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    <<: *logging
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-education}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-education}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - data
+
+  migrate:
+    <<: *logging
+    image: education-platform-api:prod
+    restart: "no"
+    entrypoint: ["/app/deploy/migrate.sh"]
+    env_file:
+      - path: .env
+        required: false
+    environment: &app-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-education}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-education}
+      MATERIALS_DIR: /app/docs/curriculum
+      UPLOAD_DIR: /data/uploads
+      HF_HOME: /data/hf
+      TRANSFORMERS_CACHE: /data/hf
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+
+  api:
+    <<: *logging
+    image: education-platform-api:prod
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+    volumes:
+      - uploads:/data/uploads
+      - hf_cache:/data/hf
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks:
+      - edge
+      - data
+
+  worker:
+    <<: *logging
+    image: education-platform-api:prod
+    restart: unless-stopped
+    init: true
+    command: ["python", "-m", "education_platform.workers"]
+    stop_grace_period: 30s
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+    volumes:
+      - uploads:/data/uploads
+      - hf_cache:/data/hf
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "/app/deploy/db_ping.py"]
+      interval: 20s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+    networks:
+      - data
+
+  web:
+    <<: *logging
+    image: education-platform-web:prod
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - edge
+
+  caddy:
+    <<: *logging
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.site:/etc/caddy/Caddyfile.site:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks:
+      - edge
+
+networks:
+  edge:
+  data:
+
+volumes:
+  postgres_data:
+  uploads:
+  hf_cache:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,56 @@
+# PC demo in front of Cloudflare Tunnel. Merge with docker-compose.prod.yml.
+# Same project name as that file so the two files cannot select different stacks.
+
+name: education-platform-prod
+
+# Caddy listens on the Docker network only. cloudflared makes the outbound
+# connection. ./deploy/selfhost.sh selects one profile:
+#   quick — trycloudflare.com, no Cloudflare account
+#   named — CLOUDFLARE_TUNNEL_TOKEN, hostname routed in the Cloudflare dashboard
+
+services:
+  api:
+    environment:
+      CORS_ORIGIN_REGEX: ${CORS_ORIGIN_REGEX:-}
+
+  caddy:
+    ports: !reset []
+    volumes: !override
+      - ./Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.site:/etc/caddy/Caddyfile.site:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  cloudflared:
+    profiles: ["quick"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://caddy:80"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      caddy:
+        condition: service_started
+    networks:
+      - edge
+
+  cloudflared-named:
+    profiles: ["named"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      caddy:
+        condition: service_started
+    networks:
+      - edge
