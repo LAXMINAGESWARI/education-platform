@@ -953,6 +953,8 @@ button:hover:not(:disabled),
 
 .crumbs-host {
   flex: none;
+  min-width: 0;
+  max-width: 100%;
   overflow: visible;
 }
 
