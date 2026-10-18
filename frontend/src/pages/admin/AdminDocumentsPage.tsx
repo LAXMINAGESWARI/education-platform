@@ -7,6 +7,7 @@ import {
 } from "../../api/adminIngest";
 import { ApiError, type KnowledgeDocumentListItem } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
+import { DEMO_ADMIN } from "../../auth/demoAccounts";
 import { ROLE_ADMIN, ROLE_STUDENT, ROLE_TEACHER } from "../../auth/roles";
 import { IngestStatusBadge } from "../../components/IngestStatusBadge";
 import { PushButton } from "../../components/PushButton";
@@ -26,7 +27,7 @@ const ROLE_OPTIONS = [
 const DEFAULT_ROLES = [ROLE_ADMIN, ROLE_TEACHER];
 
 const MOCK_SESSION_DOCS_ERROR =
-  "Documents need a real administrator JWT. Sign in as admin@demo.school (not a fixture session).";
+  `Documents need a real administrator JWT. Sign in as ${DEMO_ADMIN.email} (not a fixture session).`;
 
 function isPdfFile(file: File): boolean {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");

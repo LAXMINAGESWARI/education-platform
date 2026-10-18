@@ -46,14 +46,13 @@ Open `http://localhost:5173`.
 
 ## Student POC flow
 
-1. **Sign in** on `/login` (`student@demo.school` / `demo1234`)
-2. **Enroll** in Grade 8 Math (`POST /api/v1/me/enrollments/poc-math`), or use **Quick demo**
-3. Open a topic lesson, then **Start the quiz**
-4. Submit answers; review score (pass ≥ 70%). Correct option labels are never shown.
+1. **Sign in** on `/login` (`student1@alnoor.school` / `demo1234`, Adnan, Grade 6)
+2. Open a topic lesson, then **Start the quiz**
+3. Submit answers; review score (pass ≥ 70%). Correct option labels are never shown. Copy and paste are disabled on the question during the attempt.
 
 ## Admin flow
 
-1. **Sign in** as `admin@demo.school` / `demo1234` (real JWT)
+1. **Sign in** as `fatima.almansouri@alnoor.school` / `demo1234` (real JWT)
 2. Browse `/admin/materials` — grades, subjects, topics from `GET /me/learning-directory`
 3. Use **Upload** on Materials (or a unit’s lesson row) to POST a curriculum PDF and poll ingest status
 4. `/admin/documents` — upload/list knowledge PDFs and watch processing/ready/failed
@@ -61,25 +60,20 @@ Open `http://localhost:5173`.
 
 Administrators do not require student enrollments to read the learning directory.
 
-## Teacher flow (mock)
+## Teacher flow
 
-1. In dev, use **Enter as teacher** on the login page
-2. Explore `/teacher` classes, roster, and subject materials — all from fixtures
-3. No JWT is issued; session persists under `localStorage` key `ep_dev_mock_role`
+1. **Sign in** as `meera.krishnan@alnoor.school` / `demo1234`, or use **Enter as teacher** in dev
+2. Explore `/teacher` classes, roster, and subject materials for that teacher's assignments
 
-## DEV shortcuts and mock rules
+## DEV shortcuts
 
-In `npm run dev` only, the login page offers:
+In `npm run dev` only, the login page offers **Enter as** shortcuts for the four seeded Al Noor
+accounts (admin, teacher, student, second student). Each shortcut calls `signIn` with that
+account and `demo1234`. The account list itself is click-to-fill in every build.
 
-- **Enter as admin** — real `signIn("admin@demo.school", "demo1234")` (JWT). Requires seeded
-  administrator on the API.
-- **Enter as teacher** — fixture `MeResponse` only (no JWT), persisted under `ep_dev_mock_role`.
-- **Quick demo** — calls `POST /me/demo/bootstrap` after student sign-in.
-
-Sign out clears mock role and tokens. Real email/password sign-in also clears any mock role.
-Production builds do not show dev role buttons. A leftover admin fixture session cannot load
-materials (clear error; use real admin sign-in). Teacher fixtures remain the only mock data path;
-policy chat is live.
+Sign out clears tokens and any leftover fixture role. Real email/password sign-in also clears a
+fixture role. Production builds do not show the dev shortcuts. A leftover admin fixture session
+cannot load materials (clear error; use the seeded administrator). Policy chat is live.
 
 ## Tests
 

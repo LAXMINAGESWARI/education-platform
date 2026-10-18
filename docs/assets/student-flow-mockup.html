@@ -1154,17 +1154,16 @@
   </style>
 </head>
 <body>
-  <div class="demo-banner" role="status">
-    Demo mockup only · Calm Humanist · Source Sans 3 + IBM Plex Mono · no API integration
-  </div>
-
   <!-- LOGIN -->
   <div id="screen-login" class="login">
     <div class="login__card">
       <div class="login__brand">CurioEd</div>
       <p class="login__lede">Sign in to explore subjects, topics, and quizzes.</p>
       <p class="hint">
-        Demo login: <code>student@demo.school</code> / <code>demo1234</code>
+        Demo login: <code>student1@alnoor.school</code> / <code>demo1234</code>
+        (Adnan, Grade 6). Also <code>student97@alnoor.school</code>,
+        <code>fatima.almansouri@alnoor.school</code>,
+        <code>meera.krishnan@alnoor.school</code>.
       </p>
       <form class="form" id="login-form" novalidate>
         <div class="form__field">
@@ -1175,7 +1174,7 @@
             name="email"
             type="email"
             autocomplete="username"
-            value="student@demo.school"
+            value="student1@alnoor.school"
             required
           />
         </div>
@@ -1513,9 +1512,9 @@
     };
 
     const DEMO_USER = {
-      email: "student@demo.school",
+      email: "student1@alnoor.school",
       password: "demo1234",
-      name: "Asha Student",
+      name: "Adnan Farooq",
     };
 
     /**
@@ -2381,7 +2380,7 @@
         return;
       }
       if (email !== DEMO_USER.email || password !== DEMO_USER.password) {
-        err.textContent = "Invalid demo credentials. Use student@demo.school / demo1234.";
+        err.textContent = "Invalid demo credentials. Use student1@alnoor.school / demo1234.";
         err.classList.remove("hidden");
         return;
       }

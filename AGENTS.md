@@ -63,8 +63,14 @@ Standard quality commands: root [`README.md`](README.md) and [`backend/README.md
 
 ### Demo accounts
 
-- Student: `student@demo.school` / `demo1234`
-- Admin: `admin@demo.school` / `demo1234`
+Synthetic Al Noor school (password `demo1234`):
+
+- Admin: `fatima.almansouri@alnoor.school`
+- Teacher: `meera.krishnan@alnoor.school`
+- Student: `student1@alnoor.school` (Adnan, Grade 6)
+- Second student: `student97@alnoor.school` (Aisha Rahman, Grade 8)
+
+`student@demo.school` and `admin@demo.school` are created only when `ENVIRONMENT=development` by the curriculum seed. They are not the login-page accounts.
 
 ### Gotchas
 

@@ -151,7 +151,7 @@ Environment variables (see `.env.example`):
 | `MATERIALS_DIR` | `<repo>/docs/curriculum` | Markdown seed source |
 | `DATABASE_URL` | Compose Postgres `education` DB | Async SQLAlchemy URL (`postgresql+asyncpg://...`) |
 | `JWT_SECRET` | dev placeholder | Token signing |
-| `DEMO_STUDENT_EMAIL` / `DEMO_ADMIN_EMAIL` | `@demo.school` accounts | Seeded demo users |
+| `DEMO_STUDENT_EMAIL` / `DEMO_ADMIN_EMAIL` | `@demo.school` accounts | Development-only POC users. The login page lists the synthetic Al Noor accounts instead |
 | `UPLOAD_DIR` | `backend/var/uploads` | Local PDF blobs |
 | `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Local embedding model |
 | `MAX_UPLOAD_BYTES` | `20971520` (20MB) | Upload size cap |

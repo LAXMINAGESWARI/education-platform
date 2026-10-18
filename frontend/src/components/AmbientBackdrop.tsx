@@ -67,10 +67,11 @@ function readChromeAnchor(): DOMRect | null {
   return el.getBoundingClientRect();
 }
 
-/** Student AppShell routes that show the sage grid (no doodles except `/`). */
+/** Student routes, login, and feedback that show the sage grid (no doodles except `/`). */
 export function isStudentBackdropPath(pathname: string): boolean {
-  if (pathname === "/") return true;
+  if (pathname === "/" || pathname === "/login" || pathname === "/feedback") return true;
   if (matchPath({ path: "/subjects/:subjectId", end: true }, pathname)) return true;
+  if (matchPath({ path: "/subjects/:subjectId/feedback", end: true }, pathname)) return true;
   if (
     matchPath(
       { path: "/subjects/:subjectId/subtopics/:subtopicId/lesson", end: false },
@@ -91,8 +92,9 @@ export function isSubjectsHomePath(pathname: string): boolean {
 
 /**
  * Fixed full-viewport sage grid. Portfolio doodles + user sketch strokes run
- * only on the subjects home page (`/`). Subject, lesson, slides, quiz history,
- * quiz, and result pages keep the grid. Hidden on admin/teacher routes.
+ * only on the subjects home page (`/`). Login, feedback, subject, lesson,
+ * slides, quiz history, quiz, and result pages keep the grid. Hidden on
+ * admin/teacher routes. Reduced motion and coarse pointers use the static grid.
  */
 export function AmbientBackdrop() {
   const { pathname } = useLocation();

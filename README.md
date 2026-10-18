@@ -102,7 +102,14 @@ Optional:
 | API docs | http://127.0.0.1:8000/docs |
 | Web app | http://localhost:5173 |
 
-Demo accounts: `student@demo.school` / `demo1234`, `admin@demo.school` / `demo1234`.
+Demo accounts (synthetic Al Noor school, password `demo1234`):
+
+| Role | Email |
+| --- | --- |
+| Admin | `fatima.almansouri@alnoor.school` |
+| Teacher | `meera.krishnan@alnoor.school` |
+| Student (Adnan, Grade 6) | `student1@alnoor.school` |
+| Second student (Aisha Rahman, Grade 8) | `student97@alnoor.school` |
 
 Schema browser: [docs/design/relational-schema.html](docs/design/relational-schema.html).
 
@@ -110,21 +117,20 @@ Schema browser: [docs/design/relational-schema.html](docs/design/relational-sche
 
 ### Student
 
-1. Sign in as `student@demo.school` / `demo1234`
-2. Enroll in Grade 8 Math, or use **Quick demo**
-3. Open a topic lesson (slides), then start the unit quiz
-4. Submit answers and review the score (pass ≥ 70%). Correct option labels are never shown.
+1. Sign in as `student1@alnoor.school` / `demo1234` (Adnan, Grade 6). The second student is `student97@alnoor.school` (Aisha Rahman, Grade 8).
+2. Open a subject, then a topic lesson, then start the quiz
+3. Submit answers and review the score (pass ≥ 70%). Correct option labels are never shown. Copy and paste are disabled on the question while the attempt is in progress.
 
 ### Admin
 
-1. Sign in as `admin@demo.school` / `demo1234`
+1. Sign in as `fatima.almansouri@alnoor.school` / `demo1234`
 2. `/admin/materials` — browse the curriculum tree; upload curriculum PDFs and poll ingest status
 3. `/admin/documents` — upload/list knowledge PDFs
 4. `/admin/policy` — multi-chat policy assistant (retrieval over indexed docs; LLM optional via OpenRouter)
 
 ### Teacher
 
-DEV **Enter as teacher** only — fixture UI, no teacher backend APIs.
+Sign in as `meera.krishnan@alnoor.school` / `demo1234`, or use **Enter as teacher** on the login page in dev.
 
 ## Example requests
 
@@ -147,7 +153,7 @@ curl http://127.0.0.1:8000/api/v1/me/learning-directory -H "Authorization: Beare
 ```bash
 ADMIN_TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@demo.school","password":"demo1234"}' | python -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+  -d '{"email":"fatima.almansouri@alnoor.school","password":"demo1234"}' | python -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
 curl http://127.0.0.1:8000/api/v1/me/learning-directory -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
