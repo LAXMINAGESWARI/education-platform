@@ -151,14 +151,16 @@ describe("AssistantPage", () => {
       "How many of my students are doing well?",
       "How many students have attendance less than 85%?",
       "Who took the last quiz?",
+      "What is the average quiz score for my students?",
+      "What was the highest quiz score?",
     ];
 
-    it("offers the eight tested questions, grouped, plus a placeholder", () => {
+    it("offers the tested questions, grouped, plus a placeholder", () => {
       renderPage();
 
       const select = screen.getByLabelText("Suggested questions");
       const options = within(select).getAllByRole("option");
-      // placeholder first, then the eight questions
+      // placeholder first, then every suggested question in order
       expect(options[0]).toHaveTextContent("Choose a question…");
       expect(options[0]).toBeDisabled();
       expect(options.slice(1).map((option) => option.textContent)).toEqual(EXPECTED_QUESTIONS);

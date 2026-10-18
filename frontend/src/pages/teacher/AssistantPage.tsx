@@ -42,7 +42,11 @@ const SUGGESTED_QUESTIONS: { group: string; questions: string[] }[] = [
   },
   {
     group: "Quizzes",
-    questions: ["Who took the last quiz?"],
+    questions: [
+      "Who took the last quiz?",
+      "What is the average quiz score for my students?",
+      "What was the highest quiz score?",
+    ],
   },
 ];
 
