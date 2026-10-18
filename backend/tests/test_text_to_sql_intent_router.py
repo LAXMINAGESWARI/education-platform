@@ -120,6 +120,25 @@ async def test_at_risk_count_question_routes_to_students_needing_support(
     assert result["intent"] == "students_needing_support"
     assert result["query_source"] == "template"
     assert "COUNT" in (result["generated_sql"] or "")
+    assert result["answer_criterion"] == "mastery below 60% or attendance below 80%"
+
+
+async def test_free_form_route_has_no_answer_criterion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The free_form path has no single fixed definition to name, and must not carry over
+    a stale answer_criterion from a prior template-matched decision on the same state —
+    _free_form always clears it explicitly rather than leaving it unset.
+    """
+    _mock_classifier(
+        monkeypatch,
+        {"intent": None, "confidence": 0.73, "parameters": {}, "operation": None},
+    )
+
+    stale_state = _state()
+    stale_state["answer_criterion"] = "mastery below 60% or attendance below 80%"
+    result = await _MODULE.intent_router(stale_state)
+
+    assert result["intent_route"] == "free_form"
+    assert result["answer_criterion"] is None
 
 
 @pytest.mark.asyncio
@@ -367,3 +386,531 @@ def test_graph_places_router_after_question_validator() -> None:
     assert ("intent_router", "load_schema") in edges
     assert ("validate_sql", "generate_sql") in edges
     assert ("validate_sql", "apply_role_scope") in edges
+
+
+# --- top-N: the requested N must reach the executed SQL as a literal LIMIT ------------------
+
+
+async def _routed_top_n(
+    monkeypatch: pytest.MonkeyPatch, parameters: dict[str, Any]
+) -> TextToSQLState:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "top_students_by_subject",
+            "confidence": 0.97,
+            "parameters": parameters,
+            "operation": "top_n",
+        },
+    )
+    return await _MODULE.intent_router(_state("Who are my top students in Science?"))
+
+
+@pytest.mark.asyncio
+async def test_top_n_limit_is_inlined_as_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = await _routed_top_n(monkeypatch, {"subject": "Science", "limit": 3})
+
+    assert result["intent_route"] == "template"
+    sql = result["generated_sql"]
+    assert sql is not None
+    assert "LIMIT 3" in sql
+    assert ":limit" not in sql
+
+
+@pytest.mark.asyncio
+async def test_top_n_without_a_stated_count_uses_the_declared_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = await _routed_top_n(monkeypatch, {"subject": "Science"})
+
+    sql = result["generated_sql"]
+    assert sql is not None
+    assert "LIMIT 5" in sql
+    assert ":limit" not in sql
+
+
+@pytest.mark.asyncio
+async def test_top_n_limit_survives_validate_sql(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The original bug: validate_sql only honours a literal LIMIT and silently replaced a
+    bound `LIMIT COALESCE(:limit, 5)` with `LIMIT 500`, so "top 5" returned every row."""
+    from education_platform.modules.text_to_sql.nodes.validate_sql import validate_sql
+
+    routed = await _routed_top_n(monkeypatch, {"subject": "Science", "limit": 3})
+    validated = await validate_sql(routed)
+
+    assert validated["error"] is None
+    sql = validated["validated_sql"]
+    assert sql is not None
+    assert sql.rstrip().endswith("LIMIT 3")
+    assert "LIMIT 500" not in sql
+
+
+def test_inline_limit_refuses_sql_that_still_has_an_unbound_limit_placeholder() -> None:
+    template = {"parameters": {"limit": {"type": "integer", "default": 5}}}
+    # A LIMIT shape the substitution does not recognise must not slip through as ":limit".
+    assert _MODULE._inline_limit("SELECT 1 LIMIT LEAST(:limit, 10)", template, {"limit": 3}) is None
+
+
+def test_inline_limit_leaves_templates_without_a_limit_parameter_untouched() -> None:
+    sql = "SELECT 1"
+    assert _MODULE._inline_limit(sql, {"parameters": {}}, {}) == sql
+
+
+# --- optional parameters: an explicit null means "not stated", same as an omitted key -------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["Who took the last quiz?", "Who took the most recent quiz?"])
+async def test_unqualified_latest_quiz_with_null_subject_routes_to_the_template(
+    monkeypatch: pytest.MonkeyPatch, question: str
+) -> None:
+    # The classifier reports the absent optional `subject` as an explicit null, not by
+    # omitting the key. That used to be validated against the subject enum and rejected,
+    # sending every unqualified latest-quiz question to free-form.
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "latest_quiz_attempt",
+            "confidence": 1.0,
+            "parameters": {"subject": None},
+            "operation": "latest",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state(question))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == "latest_quiz_attempt"
+    assert result["intent_parameters"] == {"subject": None}
+
+
+@pytest.mark.asyncio
+async def test_latest_quiz_with_a_named_subject_is_unaffected_by_null_handling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "latest_quiz_attempt",
+            "confidence": 1.0,
+            "parameters": {"subject": "Maths"},
+            "operation": "latest",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("Who took the last quiz in Maths?"))
+
+    assert result["intent_route"] == "template"
+    assert result["intent_parameters"] == {"subject": "Mathematics"}
+
+
+@pytest.mark.asyncio
+async def test_null_for_a_required_parameter_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "average_mastery_by_subject",
+            "confidence": 0.97,
+            "parameters": {"subject": None},
+            "operation": "average",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("What is my class average?"))
+
+    assert result["intent_route"] == "free_form"
+
+
+@pytest.mark.asyncio
+async def test_null_top_n_limit_falls_back_to_the_default_instead_of_free_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = await _routed_top_n(monkeypatch, {"subject": "Science", "limit": None})
+
+    assert result["intent_route"] == "template"
+    sql = result["generated_sql"]
+    assert sql is not None
+    assert "LIMIT 5" in sql
+
+
+# --- my_subjects vs my_sections: each must name what it lists --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_subjects_question_misclassified_as_sections_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The evaluated failure (Q023): "assigned to" is shared wording, the classifier picked
+    # my_sections at full confidence, and the teacher was answered with sections.
+    _mock_classifier(
+        monkeypatch,
+        {"intent": "my_sections", "confidence": 1.0, "parameters": {}, "operation": "list"},
+    )
+
+    result = await _MODULE.intent_router(_state("Which subjects am I assigned to?"))
+
+    assert result["intent_route"] == "free_form"
+    assert result["query_source"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "intent"),
+    [
+        ("What subject do I teach?", "my_subjects"),
+        ("Which subjects am I assigned to?", "my_subjects"),
+        ("What do I teach?", "my_subjects"),
+        ("What sections am I assigned to?", "my_sections"),
+        ("Which classes do I teach?", "my_sections"),
+        ("Which sections do I teach?", "my_sections"),
+    ],
+)
+async def test_self_reference_questions_still_route_to_the_right_template(
+    monkeypatch: pytest.MonkeyPatch, question: str, intent: str
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": intent, "confidence": 1.0, "parameters": {}, "operation": "list"},
+    )
+
+    result = await _MODULE.intent_router(_state(question))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == intent
+
+
+@pytest.mark.asyncio
+async def test_sections_question_misclassified_as_subjects_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": "my_subjects", "confidence": 1.0, "parameters": {}, "operation": "list"},
+    )
+
+    result = await _MODULE.intent_router(_state("What sections am I assigned to?"))
+
+    assert result["intent_route"] == "free_form"
+
+
+# --- F5: a qualifier the template has no parameter for forces free-form ----------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "intent", "parameters"),
+    [
+        # subject named, template has no subject parameter
+        (
+            "How many students are doing well in Mathematics?",
+            "students_meeting_performance_bar",
+            {},
+        ),
+        ("Which students need support in Science?", "students_needing_support", {"shape": "list"}),
+        ("What is the average attendance in Maths?", "average_attendance_rate", {}),
+        # number given, template takes no value parameter
+        (
+            "How many students have attendance below 40%?",
+            "students_needing_support",
+            {"shape": "count"},
+        ),
+        ("How many students do I have in grade 8?", "count_my_students", {}),
+    ],
+)
+async def test_unsupported_qualifier_forces_free_form(
+    monkeypatch: pytest.MonkeyPatch, question: str, intent: str, parameters: dict[str, Any]
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": intent,
+            "confidence": 0.97,
+            "parameters": parameters,
+            "operation": "count" if parameters.get("shape") != "list" else "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state(question))
+
+    assert result["intent_route"] == "free_form"
+    assert result["query_source"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "intent", "parameters", "operation"),
+    [
+        (
+            "How many of my students are doing well?",
+            "students_meeting_performance_bar",
+            {},
+            "count",
+        ),
+        ("Show me the struggling students.", "students_needing_support", {"shape": "list"}, "list"),
+        (
+            "List my students in section 8A.",
+            "list_students_in_section",
+            {"section_name": "8A"},
+            "list",
+        ),
+        (
+            "Show me the top 10 in Mathematics.",
+            "top_students_by_subject",
+            {"subject": "Mathematics", "limit": 10},
+            "top_n",
+        ),
+        ("Who took the last quiz in Maths?", "latest_quiz_attempt", {"subject": "Maths"}, "latest"),
+        (
+            "Which of my students scored below 40% in Mathematics?",
+            "list_students_below_score_in_subject",
+            {"subject": "Mathematics", "threshold": 40},
+            "list",
+        ),
+        (
+            "How many students have attendance less than 40%?",
+            "students_below_attendance_threshold",
+            {"threshold": 40, "shape": "count"},
+            "count",
+        ),
+    ],
+)
+async def test_questions_whose_qualifiers_the_template_supports_still_route(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    intent: str,
+    parameters: dict[str, Any],
+    operation: str,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": intent, "confidence": 0.97, "parameters": parameters, "operation": operation},
+    )
+
+    result = await _MODULE.intent_router(_state(question))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == intent
+
+
+# --- F10: zero-result handling declared per template -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_threshold_template_carries_a_formatted_empty_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "list_students_below_score_in_subject",
+            "confidence": 0.97,
+            "parameters": {"subject": "Mathematics", "threshold": 40},
+            "operation": "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(
+        _state("Which of my students scored below 40% in Mathematics?")
+    )
+
+    assert result["zero_result_is_valid"] is True
+    assert result["empty_answer"] == "None of your students scored below 40% in Mathematics."
+
+
+@pytest.mark.asyncio
+async def test_support_template_empty_answer_includes_its_criterion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_needing_support",
+            "confidence": 0.97,
+            "parameters": {"shape": "list"},
+            "operation": "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("Show me the struggling students."))
+
+    assert result["empty_answer"] == (
+        "None of your students currently need support (mastery below 60% or attendance below 80%)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_template_without_zero_is_valid_gets_no_leniency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": "count_my_students", "confidence": 0.97, "parameters": {}, "operation": "count"},
+    )
+
+    result = await _MODULE.intent_router(_state("How many students do I teach?"))
+
+    assert result["zero_result_is_valid"] is False
+    assert result["empty_answer"] is None
+
+
+@pytest.mark.asyncio
+async def test_free_form_route_clears_zero_result_leniency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": None, "confidence": 0.0, "parameters": {}, "operation": None},
+    )
+    state = _state("What is the weather?")
+    state["zero_result_is_valid"] = True
+    state["empty_answer"] = "stale"
+
+    result = await _MODULE.intent_router(state)
+
+    assert result["intent_route"] == "free_form"
+    assert result["zero_result_is_valid"] is False
+    assert result["empty_answer"] is None
+
+
+# --- below-score template: natural comparison wording, still guarded by its subject ---------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    ["Show me students under 50 in Science.", "Who scored under 50 in Science?"],
+)
+async def test_below_score_routes_when_the_question_uses_comparison_wording(
+    monkeypatch: pytest.MonkeyPatch, question: str
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "list_students_below_score_in_subject",
+            "confidence": 0.95,
+            "parameters": {"subject": "Science", "threshold": 50},
+            "operation": "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state(question))
+
+    assert result["intent_route"] == "template"
+    assert result["intent"] == "list_students_below_score_in_subject"
+
+
+@pytest.mark.asyncio
+async def test_below_score_still_refuses_an_attendance_question_without_a_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "below" now satisfies the keyword gate, but this template still requires a subject.
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "list_students_below_score_in_subject",
+            "confidence": 0.95,
+            "parameters": {"threshold": 40},
+            "operation": "list",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("Which of my students have attendance below 40%?"))
+
+    assert result["intent_route"] == "free_form"
+
+
+# --- zero-result probes: reference queries attached for execute_sql -------------------------
+
+
+@pytest.mark.asyncio
+async def test_zero_valid_template_gets_the_visible_students_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "students_below_attendance_threshold",
+            "confidence": 0.97,
+            "parameters": {"threshold": 40, "shape": "count"},
+            "operation": "count",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("How many students have attendance less than 40%?"))
+
+    probes = result["zero_probe_sql"]
+    assert set(probes) == {"visible_students"}
+    assert "COUNT(DISTINCT sse.student_id)" in probes["visible_students"]
+    assert ":current_user_id" in probes["visible_students"]
+    assert result["zero_probe_results"] is None
+
+
+@pytest.mark.asyncio
+async def test_subject_template_gets_the_taught_subjects_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "average_mastery_by_subject",
+            "confidence": 1.0,
+            "parameters": {"subject": "English"},
+            "operation": "average",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("What is my class average in English?"))
+
+    assert set(result["zero_probe_sql"]) == {"taught_subjects"}
+    assert "teaching_assignments" in result["zero_probe_sql"]["taught_subjects"]
+
+
+@pytest.mark.asyncio
+async def test_unqualified_latest_quiz_gets_no_subject_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {
+            "intent": "latest_quiz_attempt",
+            "confidence": 1.0,
+            "parameters": {"subject": None},
+            "operation": "latest",
+        },
+    )
+
+    result = await _MODULE.intent_router(_state("Who took the last quiz?"))
+
+    assert result["zero_probe_sql"] == {}
+
+
+@pytest.mark.asyncio
+async def test_templates_with_neither_trait_get_no_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": "count_my_students", "confidence": 0.97, "parameters": {}, "operation": "count"},
+    )
+
+    result = await _MODULE.intent_router(_state("How many students do I teach?"))
+
+    assert result["zero_probe_sql"] == {}
+
+
+@pytest.mark.asyncio
+async def test_free_form_route_clears_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_classifier(
+        monkeypatch,
+        {"intent": None, "confidence": 0.0, "parameters": {}, "operation": None},
+    )
+    state = _state("What is the weather?")
+    state["zero_probe_sql"] = {"visible_students": "SELECT 1"}
+    state["zero_probe_results"] = {"visible_students": 5}
+
+    result = await _MODULE.intent_router(state)
+
+    assert result["zero_probe_sql"] == {}
+    assert result["zero_probe_results"] is None

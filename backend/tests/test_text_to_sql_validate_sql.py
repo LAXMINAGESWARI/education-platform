@@ -363,6 +363,21 @@ async def test_query_to_xml_with_inner_set_config_is_rejected() -> None:
     assert "query_to_xml" in error.lower()
 
 
+async def test_query_to_xml_is_rejected() -> None:
+    # The confirmed live bypass: query_to_xml isn't a session mutator by itself, but its
+    # first argument is an arbitrary SQL string Postgres actually executes — including a
+    # nested set_config(...) call that can rewrite the RLS session variables every table
+    # policy trusts. No function-name blocklist could ever catch this (query_to_xml
+    # wasn't in it, and the dangerous payload is text inside a string literal, not a SQL
+    # AST node), which is exactly why the allowlist rejects the outer call outright.
+    error = await _rejected(
+        "SELECT query_to_xml($$select set_config('app.current_institution_id',"
+        "'00000000-0000-0000-0000-000000000099',true), email from users$$, "
+        "true, false, '') FROM subjects"
+    )
+    assert "query_to_xml" in error.lower()
+
+
 async def test_schema_qualified_quoted_query_to_xml_is_rejected() -> None:
     error = await _rejected("SELECT pg_catalog.\"query_to_xml\"($$SELECT 1$$, true, true, '')")
     assert "query_to_xml" in error.lower()
@@ -383,6 +398,37 @@ async def test_cursor_to_xml_is_rejected() -> None:
         "SELECT cursor_to_xml('c'::refcursor, 10, true, true, '') FROM subjects"
     )
     assert "cursor_to_xml" in error.lower()
+
+
+async def test_table_to_xml_is_rejected() -> None:
+    error = await _rejected("SELECT table_to_xml('users'::regclass, true, false, '') FROM subjects")
+    assert "table_to_xml" in error.lower()
+
+
+async def test_database_to_xml_is_rejected() -> None:
+    error = await _rejected("SELECT database_to_xml(true, false, '') FROM subjects")
+    assert "database_to_xml" in error.lower()
+
+
+async def test_current_setting_is_rejected() -> None:
+    # Reads arbitrary GUCs, including this pipeline's own RLS session variables — a
+    # disclosure risk independent of the string-smuggling vector above.
+    error = await _rejected(
+        "SELECT current_setting('app.current_institution_id') FROM subjects"
+    )
+    assert "current_setting" in error.lower()
+
+
+async def test_pg_read_file_is_rejected() -> None:
+    error = await _rejected("SELECT pg_read_file('/etc/passwd') FROM subjects")
+    assert "pg_read_file" in error.lower()
+
+
+async def test_dblink_is_rejected() -> None:
+    # Pure-parser unit test — sqlglot parses this as exp.Anonymous regardless of whether
+    # the dblink extension is actually installed in any given Postgres instance.
+    error = await _rejected("SELECT dblink_exec('dbname=x', 'select 1') FROM subjects")
+    assert "dblink_exec" in error.lower()
 
 
 async def test_select_into_is_rejected() -> None:

@@ -172,6 +172,32 @@ class TextToSQLState(TypedDict, total=False):
     intent: str | None
     intent_confidence: float | None
     intent_parameters: dict[str, Any]
+    answer_criterion: str | None  # a template's own short, teacher-facing phrase for a
+    # policy-defined criterion that isn't obvious from the number/list alone (e.g.
+    # "mastery below 60% or attendance below 80%") — set by intent_router from the
+    # matched template's optional `criterion` field, None for free_form (that path has no
+    # single fixed definition to name) or for a template with no `criterion` declared.
+    # compose_answer appends it, verbatim, to the deterministic single-scalar answer path
+    # only — never handed to the LLM summarization path, which already free-phrases and
+    # could instead paraphrase or drop it the same way Task 9's own fix was needed for.
+
+    zero_result_is_valid: bool  # set by intent_router from the matched template's
+    # `zero_is_valid` flag. True means "no rows / a zero count is a genuine answer for this
+    # template" (e.g. no student below a stated threshold): sanity_check then skips its
+    # zero_rows / zero_valued_aggregate downgrades. Unset/False for free_form, whose zero is
+    # ambiguous between "nothing matches" and "scoping silently excluded everything".
+    empty_answer: str | None  # the template's own plain sentence for a zero-row result
+    # (`empty_answer` in intent_templates.yaml, already formatted with the validated
+    # parameters); compose_answer uses it instead of the generic "couldn't find any records".
+
+    zero_probe_sql: dict[str, str]  # reference queries (existing governed templates) the
+    # router attaches for templates whose zero result needs corroborating:
+    # `visible_students` (count_my_students) for `zero_is_valid` templates,
+    # `taught_subjects` (my_subjects) for templates that take a `subject`. execute_sql runs
+    # them only when the main result is empty/zero, in the same RLS-scoped transaction.
+    zero_probe_results: dict[str, Any] | None  # their answers: {"visible_students": int,
+    # "taught_subjects": [str, ...]}; a probe that failed is simply absent, and None means
+    # no probe ran (the result wasn't zero). sanity_check / compose_answer read this.
 
     # --- SQL generation / validation ---
     generated_sql: str | None  # raw SQL produced by generate_sql, before validation

@@ -314,6 +314,69 @@ async def test_result_row_count_falls_back_to_len_query_result_when_unset() -> N
     assert result["confidence"] == "high"
 
 
+# --- Cross-institution scope assumed ----------------------------------------------------
+
+
+async def test_cross_institution_scope_phrase_downgrades_to_medium_and_is_recorded() -> None:
+    result = await sanity_check(
+        _state(
+            question="how does our school compare to other schools",
+            query_result=[{"avg_score": 71.2}],
+        )
+    )
+
+    assert result["confidence"] == "medium"
+    triggers = _triggers(result)
+    names = {t.split(":", 1)[0] for t in triggers}
+    assert "cross_institution_scope_assumed" in names
+
+
+async def test_cross_institution_scope_not_flagged_for_an_ordinary_question() -> None:
+    result = await sanity_check(
+        _state(
+            question="what is my school's average quiz score",
+            query_result=[{"avg_score": 71.2}],
+        )
+    )
+
+    assert result["confidence"] == "high"
+    assert _triggers(result) == []
+
+
+async def test_cross_institution_scope_trigger_reason_is_explicitly_flagged_as_a_heuristic() -> (
+    None
+):
+    result = await sanity_check(
+        _state(
+            question="how do we compare to other institutions nationwide",
+            query_result=[{"avg_score": 71.2}],
+        )
+    )
+
+    triggers = _triggers(result)
+    names = {t.split(":", 1)[0] for t in triggers}
+    assert "cross_institution_scope_assumed" in names
+    matching = next(t for t in triggers if t.startswith("cross_institution_scope_assumed:"))
+    assert "heuristic" in matching
+    assert "not a certainty" in matching
+
+
+async def test_cross_institution_scope_trigger_reason_never_mentions_a_count_or_name() -> (
+    None
+):
+    result = await sanity_check(
+        _state(
+            question="how does our school compare to other schools",
+            query_result=[{"avg_score": 71.2}],
+        )
+    )
+
+    matching = next(
+        t for t in _triggers(result) if t.startswith("cross_institution_scope_assumed:")
+    )
+    assert not any(char.isdigit() for char in matching)
+
+
 # --- Never mutates query_result ---------------------------------------------------------
 
 
@@ -336,3 +399,106 @@ async def test_preserves_existing_audit_entry_keys() -> None:
     assert audit_entry["role_scope_applied"] == "rewritten"
     assert audit_entry["scoped_by_user_id"] == "u1"
     assert "sanity_check_triggers" in audit_entry
+
+
+# --- zero_result_is_valid: a template whose zero is a genuine answer --------------------------
+
+
+async def test_zero_rows_from_zero_valid_template_stay_high_when_students_visible() -> None:
+    state = _state(question="which students have attendance below 40%?", query_result=[])
+    state["zero_result_is_valid"] = True
+    state["zero_probe_results"] = {"visible_students": 72}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "high"
+    assert _triggers(result) == []
+
+
+async def test_zero_count_from_zero_valid_template_stays_high_when_students_visible() -> None:
+    state = _state(
+        question="how many students have attendance below 40%?",
+        query_result=[{"student_count": 0}],
+    )
+    state["zero_result_is_valid"] = True
+    state["zero_probe_results"] = {"visible_students": 72}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "high"
+    assert _triggers(result) == []
+
+
+async def test_zero_is_valid_flag_alone_is_not_trusted_without_a_probe() -> None:
+    # The whole point of the visibility probe: a flag on the template cannot tell "nothing
+    # matches" from "role-scoping silently returned nothing".
+    state = _state(question="which students have attendance below 40%?", query_result=[])
+    state["zero_result_is_valid"] = True
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "medium"
+    assert _triggers(result)[0].startswith("zero_rows:")
+
+
+async def test_zero_with_no_students_visible_keeps_the_hedge() -> None:
+    state = _state(question="which students have attendance below 40%?", query_result=[])
+    state["zero_result_is_valid"] = True
+    state["zero_probe_results"] = {"visible_students": 0}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "medium"
+
+
+async def test_zero_with_a_failed_probe_keeps_the_hedge() -> None:
+    # A probe that errored is absent from the results, not "assume fine".
+    state = _state(question="how many students have attendance below 40%?", query_result=[{"c": 0}])
+    state["zero_result_is_valid"] = True
+    state["zero_probe_results"] = {}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "medium"
+
+
+async def test_empty_result_for_a_subject_the_teacher_does_not_teach_is_explained() -> None:
+    state = _state(question="average mastery in English?", query_result=[{"average_score": None}])
+    state["intent_parameters"] = {"subject": "English"}
+    state["zero_probe_results"] = {"taught_subjects": ["Mathematics", "Science"]}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "high"
+    assert _triggers(result) == []
+
+
+async def test_empty_result_for_a_subject_the_teacher_does_teach_is_still_hedged() -> None:
+    state = _state(question="average mastery in Science?", query_result=[{"average_score": None}])
+    state["intent_parameters"] = {"subject": "Science"}
+    state["zero_probe_results"] = {"taught_subjects": ["Mathematics", "Science"]}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "medium"
+
+
+async def test_zero_is_valid_does_not_silence_other_triggers() -> None:
+    # Only the two zero-result triggers are lifted: a percentage outside 0-100 is still
+    # "low" no matter what the template declares about zeros.
+    state = _state(query_result=[{"attendance_percent": 140.0}])
+    state["zero_result_is_valid"] = True
+    state["zero_probe_results"] = {"visible_students": 72}
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "low"
+
+
+async def test_zero_rows_without_the_flag_still_downgrade() -> None:
+    state = _state(question="how many students failed?", query_result=[])
+    state["zero_result_is_valid"] = False
+
+    result = await sanity_check(state)
+
+    assert result["confidence"] == "medium"

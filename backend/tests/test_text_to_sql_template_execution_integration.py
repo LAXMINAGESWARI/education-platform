@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import yaml
@@ -504,8 +504,8 @@ async def test_count_my_students_differs_by_teacher(seeded: _Fixture) -> None:
     teacher2_result = await _run_template(
         "count_my_students", user_id=seeded.teacher2_user_id, institution_id=seeded.institution_id
     )
-    assert teacher_result["query_result"][0]["total_students"] == 2  # a_math + a_science
-    assert teacher2_result["query_result"][0]["total_students"] == 2  # a_math + b_math (8A+8B)
+    assert teacher_result["query_result"][0]["student_count"] == 2  # a_math + a_science
+    assert teacher2_result["query_result"][0]["student_count"] == 2  # a_math + b_math (8A+8B)
 
 
 # --- 3. average_mastery_by_subject --------------------------------------------------------
@@ -694,7 +694,7 @@ async def test_students_meeting_performance_bar_sql_is_correctly_scoped(seeded: 
         user_id=seeded.teacher_user_id,
         institution_id=seeded.institution_id,
     )
-    assert teacher_result["query_result"][0]["students_doing_well"] == 1
+    assert teacher_result["query_result"][0]["student_count"] == 1
 
     # Teacher2 (a_math 85/passed, b_math 45/failed): only a_math meets the bar, same as
     # before -- b_math already failed both the old and the new, higher threshold.
@@ -703,7 +703,7 @@ async def test_students_meeting_performance_bar_sql_is_correctly_scoped(seeded: 
         user_id=seeded.teacher2_user_id,
         institution_id=seeded.institution_id,
     )
-    assert teacher2_result["query_result"][0]["students_doing_well"] == 1
+    assert teacher2_result["query_result"][0]["student_count"] == 1
 
 
 # --- 12. students_needing_support ("struggling"/"at risk" -- approved: mastery < 60 OR -----
@@ -804,3 +804,153 @@ async def test_students_below_attendance_threshold_count_shape_matches_list_shap
     # The design doc's own Finding 1 regression pair: list and count shapes must agree on
     # the same underlying fact for the same teacher/threshold.
     assert count_result["query_result"][0]["student_count"] == list_result["result_row_count"]
+
+
+# --- scoping must not depend on RLS ---------------------------------------------------------
+
+
+def test_student_360_templates_scope_on_the_student_offering_pair() -> None:
+    """student_360 has one row per student per SUBJECT. Scoping on `s.student_id IN (...)`
+    alone admits every one of the teacher's students' rows in every subject, including other
+    teachers' subjects; only row-level security hid them (owner-run: 12 "doing well" instead
+    of 2, 39 "struggling" instead of 12). The scope must be the (student, offering) pair."""
+    with _TEMPLATES_PATH.open(encoding="utf-8") as stream:
+        catalog = yaml.safe_load(stream)
+
+    checked = 0
+    for template in catalog["templates"]:
+        for key in ("sql", "sql_list", "sql_count"):
+            sql = template.get(key)
+            if not isinstance(sql, str) or "student_360" not in sql:
+                continue
+            checked += 1
+            where = f"{template['name']}.{key}"
+            assert "(s.student_id, s.grade_subject_offering_id) IN (" in sql, where
+            assert "s.student_id IN (" not in sql.replace(
+                "(s.student_id, s.grade_subject_offering_id) IN (", ""
+            ), where
+    assert checked == 9  # every student_360 query; update deliberately if one is added
+
+
+# --- zero-result probes (run by execute_sql, in the same RLS-scoped transaction) ------------
+
+
+def _probe_sql() -> dict[str, str]:
+    return {
+        "visible_students": _template("count_my_students")["sql"].strip(),
+        "taught_subjects": _template("my_subjects")["sql"].strip(),
+    }
+
+
+async def _execute_with_probes(
+    *,
+    user_id: UUID,
+    institution_id: UUID,
+    template_name: str,
+    sql_key: str,
+    parameters: dict[str, Any],
+    probes: dict[str, str],
+) -> TextToSQLState:
+    state: TextToSQLState = {
+        "question": f"zero-probe integration test for {template_name!r}",
+        "user_id": str(user_id),
+        "user_role": "teacher",
+        "institution_id": str(institution_id),
+        "generated_sql": _template(template_name)[sql_key],
+        "validated_sql": None,
+        "query_source": "template",
+        "intent": template_name,
+        "intent_parameters": parameters,
+        "zero_probe_sql": probes,
+        "retry_count": 0,
+        "error": None,
+        "audit_entry": None,
+    }
+    validated = await validate_sql(state)
+    assert validated["error"] is None, validated["error"]
+    return await execute_sql(validated)
+
+
+async def test_zero_result_runs_probes_and_reports_the_teachers_scope(seeded: _Fixture) -> None:
+    result = await _execute_with_probes(
+        user_id=seeded.teacher_user_id,
+        institution_id=seeded.institution_id,
+        template_name="students_below_attendance_threshold",
+        sql_key="sql_count",
+        parameters={"threshold": 0, "shape": "count"},
+        probes=_probe_sql(),
+    )
+
+    assert result["query_result"] == [{"student_count": 0}]
+    assert result["zero_probe_results"] == {
+        "visible_students": 2,  # a_math (8A) + a_science
+        "taught_subjects": ["Mathematics", "Science"],
+    }
+    assert result["audit_entry"] is not None
+    assert result["audit_entry"]["zero_probe_results"] == result["zero_probe_results"]
+
+
+async def test_zero_probe_for_a_scope_that_sees_nothing_reports_zero(seeded: _Fixture) -> None:
+    # An identity with no teaching assignments at all: the case a confident "none" must NOT
+    # be given for. The probe reports it instead of letting the zero pass as an answer.
+    result = await _execute_with_probes(
+        user_id=uuid4(),
+        institution_id=seeded.institution_id,
+        template_name="students_below_attendance_threshold",
+        sql_key="sql_count",
+        parameters={"threshold": 0, "shape": "count"},
+        probes=_probe_sql(),
+    )
+
+    assert result["zero_probe_results"] == {"visible_students": 0, "taught_subjects": []}
+
+
+async def test_probes_do_not_run_when_the_result_is_not_zero(seeded: _Fixture) -> None:
+    result = await _execute_with_probes(
+        user_id=seeded.teacher2_user_id,
+        institution_id=seeded.institution_id,
+        template_name="students_below_attendance_threshold",
+        sql_key="sql_count",
+        parameters={"threshold": 75, "shape": "count"},  # stu-b-math (50%) qualifies
+        probes=_probe_sql(),
+    )
+
+    assert result["query_result"] == [{"student_count": 1}]
+    assert result["zero_probe_results"] is None
+
+
+async def test_a_failing_probe_is_dropped_without_losing_the_main_result(
+    seeded: _Fixture,
+) -> None:
+    probes = {
+        "visible_students": "SELECT 1 / 0 AS broken",
+        **{"taught_subjects": _probe_sql()["taught_subjects"]},
+    }
+
+    result = await _execute_with_probes(
+        user_id=seeded.teacher_user_id,
+        institution_id=seeded.institution_id,
+        template_name="students_below_attendance_threshold",
+        sql_key="sql_count",
+        parameters={"threshold": 0, "shape": "count"},
+        probes=probes,
+    )
+
+    assert result["error"] is None
+    assert result["query_result"] == [{"student_count": 0}]
+    # the broken probe is simply absent; the next one still ran after its savepoint rolled back
+    assert result["zero_probe_results"] == {"taught_subjects": ["Mathematics", "Science"]}
+
+
+async def test_untaught_subject_returns_null_and_the_probe_explains_it(seeded: _Fixture) -> None:
+    result = await _execute_with_probes(
+        user_id=seeded.teacher2_user_id,  # Math only
+        institution_id=seeded.institution_id,
+        template_name="average_mastery_by_subject",
+        sql_key="sql",
+        parameters={"subject": "Science"},
+        probes={"taught_subjects": _probe_sql()["taught_subjects"]},
+    )
+
+    assert result["query_result"] == [{"average_score": None}]
+    assert result["zero_probe_results"] == {"taught_subjects": ["Mathematics"]}
