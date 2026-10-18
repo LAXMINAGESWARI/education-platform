@@ -413,9 +413,7 @@ async def test_database_to_xml_is_rejected() -> None:
 async def test_current_setting_is_rejected() -> None:
     # Reads arbitrary GUCs, including this pipeline's own RLS session variables — a
     # disclosure risk independent of the string-smuggling vector above.
-    error = await _rejected(
-        "SELECT current_setting('app.current_institution_id') FROM subjects"
-    )
+    error = await _rejected("SELECT current_setting('app.current_institution_id') FROM subjects")
     assert "current_setting" in error.lower()
 
 

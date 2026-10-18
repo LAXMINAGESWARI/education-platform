@@ -361,9 +361,7 @@ async def test_cross_institution_scope_trigger_reason_is_explicitly_flagged_as_a
     assert "not a certainty" in matching
 
 
-async def test_cross_institution_scope_trigger_reason_never_mentions_a_count_or_name() -> (
-    None
-):
+async def test_cross_institution_scope_trigger_reason_never_mentions_a_count_or_name() -> None:
     result = await sanity_check(
         _state(
             question="how does our school compare to other schools",

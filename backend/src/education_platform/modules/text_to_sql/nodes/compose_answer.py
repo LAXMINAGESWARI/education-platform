@@ -179,9 +179,7 @@ _HEDGE_REASON_PHRASES: Final[dict[str, str]] = {
     "single_row_for_list_question": (
         "the result looked smaller than expected for this kind of question"
     ),
-    "large_result_near_cap": (
-        "the result looked larger than expected for this kind of question"
-    ),
+    "large_result_near_cap": ("the result looked larger than expected for this kind of question"),
     "duplicate_entity_in_roster": "the same person appeared more than once in the results",
     "borderline_template_confidence": (
         "the question was only a borderline match to how it was answered"
@@ -595,9 +593,7 @@ def _triggered_names(audit_entry: dict[str, Any]) -> list[str]:
 def _confidence_hedge(confidence: str, triggered_names: list[str]) -> str:
     lead = _HEDGE_LEAD.get(confidence, _HEDGE_LEAD["medium"])
     reasons = [
-        _HEDGE_REASON_PHRASES[name]
-        for name in triggered_names
-        if name in _HEDGE_REASON_PHRASES
+        _HEDGE_REASON_PHRASES[name] for name in triggered_names if name in _HEDGE_REASON_PHRASES
     ]
     reason_clause = f" because {_english_join(reasons)}" if reasons else ""
     return (

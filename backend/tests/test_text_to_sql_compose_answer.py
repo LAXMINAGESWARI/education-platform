@@ -482,9 +482,7 @@ async def test_scope_narrowing_disclosure_absent_without_the_trigger(
     assert _SCOPE_NARROWING_DISCLOSURE not in _answer(result)
 
 
-async def test_scope_narrowing_disclosure_never_contains_a_number_or_institution_name() -> (
-    None
-):
+async def test_scope_narrowing_disclosure_never_contains_a_number_or_institution_name() -> None:
     # Regression guard on the constant itself, directly enforcing the "never reveal
     # whether other institutions exist, their count, or anything about them" requirement.
     assert not any(char.isdigit() for char in _SCOPE_NARROWING_DISCLOSURE)
