@@ -93,7 +93,7 @@ Full feature spec: `docs/features/struggle-flag.md`
 git checkout feature/struggle_flag
 cd frontend && npm run dev          # localhost:5173
 cd backend && uvicorn app.main:app --reload --port 8000
-# Login: student@demo.school / demo1234
+# Login: student1@alnoor.school / demo1234
 # Navigate to: localhost:5173/feedback → pick Mathematics
 ```
 

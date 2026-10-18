@@ -4,24 +4,12 @@
 *::before,
 *::after {
   box-sizing: border-box;
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 html,
 body {
   margin: 0;
   min-height: 100%;
-  -webkit-touch-callout: none;
-}
-
-input,
-textarea,
-select,
-[contenteditable]:not([contenteditable="false"]) {
-  -webkit-user-select: text;
-  user-select: text;
-  -webkit-touch-callout: default;
 }
 
 body {
@@ -207,7 +195,7 @@ a.btn--matte:hover:not(:disabled) {
 }
 
 .login__card {
-  width: min(100%, 26rem);
+  width: min(100%, 34rem);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
@@ -255,6 +243,55 @@ a.btn--matte:hover:not(:disabled) {
 .hint code {
   font-family: var(--font-mono);
   font-size: 0.82rem;
+}
+
+.login-demos ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.login-demos__label {
+  margin: 0 0 0.45rem;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.login-demos__label code,
+.login-demo code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.login-demo {
+  display: grid;
+  gap: 0.12rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.login-demo__role {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.login-demo code {
+  word-break: break-all;
+}
+
+.login-demo__detail {
+  font-size: 0.82rem;
+  color: var(--ink-muted);
 }
 
 .form {
@@ -307,6 +344,11 @@ a.btn--matte:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.app-frame--login {
+  height: auto;
+  overflow: auto;
 }
 
 /* —— Ambient chrome —— */
@@ -887,6 +929,14 @@ button:hover:not(:disabled),
     animation: none;
     opacity: 1;
   }
+}
+
+/* Login sits outside the app shell, so reuse the page-enter animation without its column layout. */
+.login .route-motion__page {
+  max-width: none;
+  width: auto;
+  flex: none;
+  min-height: 0;
 }
 
 .main__inner {
@@ -2284,6 +2334,30 @@ a.list-item__title:hover {
 .options {
   display: grid;
   gap: 0.6rem;
+}
+
+.quiz-lock,
+.quiz-lock * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.quiz-copy-toast {
+  position: fixed;
+  z-index: 30;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  margin: 0;
+  max-width: min(28rem, calc(100% - 2rem));
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.85rem;
+  box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
 .option {

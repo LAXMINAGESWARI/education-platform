@@ -1,6 +1,7 @@
 /** Adapt live learning-directory into the admin materials browse tree. */
 
 import type { LearningDirectory, SubjectNode, TopicNode } from "../api/types";
+import { DEMO_ADMIN, DEMO_PASSWORD } from "../auth/demoAccounts";
 
 /** Live catalog is published-only (API does not expose drafts). */
 export type PublishStatus = "published";
@@ -280,4 +281,4 @@ export function gradeSummary(grade: AdminGrade): {
 
 /** Clear error when a DEV fixture session tries to load live materials. */
 export const MOCK_SESSION_MATERIALS_ERROR =
-  "Materials need a real admin JWT. Sign in as admin@demo.school / demo1234 (or use Enter as admin). Fixture mock sessions cannot call the live API.";
+  `Materials need a real admin JWT. Sign in as ${DEMO_ADMIN.email} / ${DEMO_PASSWORD} (or use Enter as admin). Fixture mock sessions cannot call the live API.`;

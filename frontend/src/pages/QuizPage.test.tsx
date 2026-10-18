@@ -132,6 +132,31 @@ describe("QuizPage", () => {
     expect(screen.queryByRole("link", { name: /Back to quiz/i })).not.toBeInTheDocument();
   });
 
+  it("blocks copy, cut, and paste on the question and options", async () => {
+    render(
+      <MemoryRouter
+        initialEntries={["/quizzes/quiz-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/quizzes/:quizId" element={<QuizPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const prompt = await screen.findByText("What is a square?");
+    expect(prompt.closest(".quiz-lock")).not.toBeNull();
+    expect(fireEvent.copy(prompt)).toBe(false);
+    expect(fireEvent.paste(prompt)).toBe(false);
+    expect(fireEvent.cut(screen.getByRole("radio", { name: /A rectangle with equal sides/i }))).toBe(
+      false,
+    );
+    expect(
+      fireEvent.copy(screen.getByRole("heading", { name: "Properties of Rectangles and Squares Quiz" })),
+    ).toBe(true);
+    expect(screen.getByText("Copy and paste are disabled during quizzes")).toBeInTheDocument();
+  });
+
   it("does not submit the same attempt twice on a double click", async () => {
     render(
       <MemoryRouter

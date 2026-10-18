@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { buildSubmitPayload, startAttempt, submitAttempt } from "../api/attempts";
@@ -9,6 +9,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PushButton } from "../components/PushButton";
+import { installQuizCopyGuard, QUIZ_COPY_MESSAGE } from "../lib/copyGuard";
 import { resolvePathFromAttempt, resolvePathFromQuizId, learningPathCrumb, type LearningPath } from "../lib/learningPath";
 import { presentQuizText } from "../lib/quizText";
 
@@ -24,6 +25,18 @@ export function QuizPage() {
   const [starting, setStarting] = useState(true);
   const [lockDialog, setLockDialog] = useState<{ title: string; body: string } | null>(null);
   const submittingRef = useRef(false);
+  const quizLockRef = useRef<HTMLElement>(null);
+  const copyNoticeTimer = useRef<number | null>(null);
+  const [copyBlocked, setCopyBlocked] = useState(false);
+
+  const showCopyNotice = useCallback(() => {
+    setCopyBlocked(true);
+    if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
+    copyNoticeTimer.current = window.setTimeout(() => {
+      setCopyBlocked(false);
+      copyNoticeTimer.current = null;
+    }, 2200);
+  }, []);
 
   const question = attempt?.questions[index];
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
@@ -70,6 +83,19 @@ export function QuizPage() {
       cancelled = true;
     };
   }, [quizId]);
+
+  const quizLocked = Boolean(attempt && question);
+  useEffect(() => {
+    const root = quizLockRef.current;
+    if (!quizLocked || !root) return;
+    return installQuizCopyGuard(root, showCopyNotice);
+  }, [quizLocked, showCopyNotice]);
+
+  useEffect(() => {
+    return () => {
+      if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
+    };
+  }, []);
 
   function selectOption(label: string) {
     if (!question) return;
@@ -148,7 +174,7 @@ export function QuizPage() {
             mark {passMark}%
           </p>
 
-          <article className="panel">
+          <article ref={quizLockRef} className="panel quiz-lock">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
               <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>
@@ -180,6 +206,12 @@ export function QuizPage() {
               })}
             </div>
           </article>
+
+          {copyBlocked && (
+            <p className="quiz-copy-toast" role="status">
+              {QUIZ_COPY_MESSAGE}
+            </p>
+          )}
 
           {error && (
             <p className="form__error" role="alert">

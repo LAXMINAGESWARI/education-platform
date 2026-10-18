@@ -109,6 +109,23 @@ describe("AmbientBackdrop", () => {
     expect(screen.getByTestId("ambient-backdrop").querySelector("canvas")).not.toBeNull();
   });
 
+  it("keeps the grid without doodles on login and feedback", () => {
+    const { unmount } = renderBackdrop("/login");
+    expect(screen.getByTestId("ambient-backdrop")).toHaveAttribute("data-doodles", "false");
+    expect(screen.getByTestId("ambient-backdrop").querySelector("canvas")).not.toBeNull();
+    unmount();
+
+    renderBackdrop("/feedback");
+    expect(screen.getByTestId("ambient-backdrop")).toHaveAttribute("data-doodles", "false");
+  });
+
+  it("keeps the grid without doodles on a subject feedback page", () => {
+    renderBackdrop("/subjects/math-1/feedback");
+    const root = screen.getByTestId("ambient-backdrop");
+    expect(root).toHaveAttribute("data-doodles", "false");
+    expect(root.querySelector("canvas")).not.toBeNull();
+  });
+
   it("hides on admin and other non-student routes", () => {
     renderBackdrop("/admin/materials");
     expect(screen.queryByTestId("ambient-backdrop")).toBeNull();

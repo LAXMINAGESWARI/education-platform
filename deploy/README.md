@@ -162,10 +162,10 @@ After a synthetic seed, every account uses the password `demo1234`:
 | --- | --- |
 | `fatima.almansouri@alnoor.school` | Administrator |
 | `meera.krishnan@alnoor.school` | Teacher record. The teacher screens are still fixture data |
-| `student1@alnoor.school` | First generated student |
+| `student1@alnoor.school` | First generated student (Adnan Farooq, Grade 6). Shown on the login page |
 
 With the default school size, the planted declining student is
-`student97@alnoor.school` (Aisha Rahman, identifier `S-00097`). The migrate log
+`student97@alnoor.school` (Aisha Rahman, Grade 8, identifier `S-00097`). The login page lists her as the second student. The migrate log
 prints her identifier. If you change the section or student counts, use the
 `S-` number from that log as the email: `student{that number}@alnoor.school`.
 
