@@ -9,6 +9,7 @@ of Task 8's equivalent test.
 from __future__ import annotations
 
 import sys
+from decimal import Decimal
 from typing import Protocol, cast
 
 import pytest
@@ -969,7 +970,7 @@ async def test_untaught_subject_message_is_not_used_when_there_is_real_data(
         )
     )
 
-    assert _answer(result) == "The average score is 70.08."
+    assert _answer(result) == "The average score is 70.08%."
 
 
 # --- percentages: an `average_*_percent` column reads as a percentage ----------------------
@@ -1043,3 +1044,59 @@ async def test_a_count_is_never_given_a_percent_sign(monkeypatch: pytest.MonkeyP
     )
 
     assert _answer(result) == "The student count is 72."
+
+
+# --- free-form aggregate aliases of a percentage measure get a % and sane rounding ----------
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "expected"),
+    [
+        # the unrounded AVG a free-form query returned for "average quiz score for my students"
+        ("average_score", Decimal("71.2001388888888889"), "The average score is 71.20%."),
+        ("highest_quiz_score", Decimal("100.00"), "The highest quiz score is 100.00%."),
+        ("average_attendance", 90.8333333333, "The average attendance is 90.83%."),
+        ("lowest_mastery", Decimal("36.77"), "The lowest mastery is 36.77%."),
+        ("max_quiz_score", Decimal("99.5"), "The max quiz score is 99.5%."),
+    ],
+)
+async def test_free_form_aggregate_of_a_percentage_measure_reads_as_a_rounded_percentage(
+    monkeypatch: pytest.MonkeyPatch, column: str, value: object, expected: str
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(_base_state(query_result=[{column: value}], result_row_count=1))
+
+    assert _answer(result) == expected
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "expected"),
+    [
+        ("average_score_raw", 12.3456, "The average score raw is 12.3456."),  # points, not %
+        ("average_raw_score", 3.25, "The average raw score is 3.25."),
+        ("average_students", 24.5, "The average students is 24.5."),  # not a % measure
+        ("highest_quiz_count", 7, "The highest quiz count is 7."),
+        ("student_count", 72, "The student count is 72."),
+    ],
+)
+async def test_other_aggregates_are_not_given_a_percent_sign_or_rounded(
+    monkeypatch: pytest.MonkeyPatch, column: str, value: object, expected: str
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(_base_state(query_result=[{column: value}], result_row_count=1))
+
+    assert _answer(result) == expected
+
+
+async def test_percent_value_with_at_most_two_decimals_is_left_exactly_as_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"average_score": Decimal("70.08")}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The average score is 70.08%."

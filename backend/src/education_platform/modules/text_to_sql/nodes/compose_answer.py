@@ -134,6 +134,8 @@ would be a worse failure mode than a defensive check that should never fire.
 from __future__ import annotations
 
 import json
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 import sqlglot
@@ -232,29 +234,61 @@ def _humanize_column(name: str) -> str:
     return name.replace("_", " ").strip()
 
 
+# An aggregate (average / highest / lowest ...) of one of the percentage measures, as the
+# free-form SQL tends to alias it: `average_score`, `highest_quiz_score`, `average_attendance`,
+# `lowest_mastery`. Deliberately narrow: the name must end in score / attendance / mastery,
+# and anything marked raw is excluded (`score_raw` is points, not a percentage).
+_AGGREGATE_PERCENT_ALIAS: Final[re.Pattern[str]] = re.compile(
+    r"^(?:average|avg|highest|lowest|maximum|minimum|max|min)_(?:[a-z]+_)*(?:score|attendance|mastery)$"
+)
+
+
+def _is_percent_column(lowered: str) -> bool:
+    if lowered in PERCENTAGE_COLUMNS or lowered.endswith("_percent"):
+        return True
+    return "raw" not in lowered and _AGGREGATE_PERCENT_ALIAS.match(lowered) is not None
+
+
+def _format_percent_value(value: Any) -> str:
+    """A percentage as text: a value with more than two decimal places (an unrounded AVG such
+    as 71.2001388888888889) is rounded to two; anything already at two or fewer is untouched."""
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return str(value)
+    exponent = number.as_tuple().exponent
+    if isinstance(exponent, int) and exponent < -2:
+        number = number.quantize(Decimal("0.01"))
+    return str(number)
+
+
 def _scalar_label_and_unit(column: str) -> tuple[str, bool]:
     """The phrase naming a scalar column and whether its value is a percentage.
 
     A column is a percentage if it is one of the schema's known 0-100 columns
-    (`PERCENTAGE_COLUMNS`) or is named `*_percent`. The templates alias their averages that
-    way (`average_attendance_percent`, `average_score_percent`) so "What is the average
-    attendance rate?" reads "The average attendance is 90.83%." and not a bare "90.83".
-    For those `average_*_percent` aliases the trailing "percent" is dropped from the phrase
-    (the % sign carries it); a plain schema column keeps its established wording, e.g.
+    (`PERCENTAGE_COLUMNS`), is named `*_percent`, or is an aggregate alias of a percentage
+    measure (`_AGGREGATE_PERCENT_ALIAS`). The templates alias their averages
+    `average_attendance_percent` / `average_score_percent` so "What is the average attendance
+    rate?" reads "The average attendance is 90.83%." and not a bare "90.83"; the free-form
+    path's `average_score` / `highest_quiz_score` read the same way.
+    For `average_*_percent` aliases the trailing "percent" is dropped from the phrase (the %
+    sign carries it); a plain schema column keeps its established wording, e.g.
     "The mastery percent is 82.5%."."""
     lowered = column.lower()
     label = _humanize_column(column)
-    is_percent = lowered in PERCENTAGE_COLUMNS or lowered.endswith("_percent")
     if lowered.startswith("average_") and lowered.endswith("_percent"):
         label = label[: -len(" percent")]
-    return label, is_percent
+    return label, _is_percent_column(lowered)
 
 
 def _single_scalar_answer(column: str, value: Any, criterion: str | None = None) -> str:
     label, is_percent = _scalar_label_and_unit(column)
     if value is None:
         return f"No {label} data is available for that."
-    sentence = f"The {label} is {value}%." if is_percent else f"The {label} is {value}."
+    if is_percent:
+        sentence = f"The {label} is {_format_percent_value(value)}%."
+    else:
+        sentence = f"The {label} is {value}."
     if not criterion:
         return sentence
     # Appended verbatim, not re-typed or paraphrased — same discipline as the rest of
