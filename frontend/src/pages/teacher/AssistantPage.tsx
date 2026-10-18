@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { askQuestion, type Confidence } from "../../api/textToSql";
 import { Crumbs } from "../../components/Crumbs";
@@ -56,6 +56,15 @@ const CONFIDENCE_LABEL: Record<Confidence, string> = {
   low: "Low confidence",
 };
 
+function scrollThreadToEnd(node: HTMLElement | null) {
+  if (!node) return;
+  try {
+    node.scrollTo({ top: node.scrollHeight });
+  } catch {
+    node.scrollTop = node.scrollHeight;
+  }
+}
+
 function ConfidenceBadge({ confidence }: { confidence: Confidence | null | undefined }) {
   if (!confidence) return null;
   const modifier = confidence === "high" ? "badge--ok" : "badge--warn";
@@ -73,8 +82,12 @@ export function AssistantPage() {
   const [thread, setThread] = useState<ThreadEntry[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    scrollThreadToEnd(threadRef.current);
+  }, [thread, busy]);
 
   function onPickSuggestion(event: ChangeEvent<HTMLSelectElement>) {
     const question = event.target.value;
@@ -121,7 +134,6 @@ export function AssistantPage() {
       );
     } finally {
       setBusy(false);
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }
 
@@ -130,7 +142,7 @@ export function AssistantPage() {
       <h1 className="sr-only">Assistant</h1>
       <Crumbs parts={[{ label: "My classes", to: "/teacher" }, { label: "Assistant" }]} />
 
-      <div className="assistant-chat__thread" aria-live="polite">
+      <div className="assistant-chat__thread" ref={threadRef} aria-live="polite">
         {thread.length === 0 && (
           <p className="assistant-chat__empty muted">
             Ask about your classes. Pick a suggested question below, or type your own — e.g.
@@ -165,7 +177,6 @@ export function AssistantPage() {
             )}
           </article>
         ))}
-        <div ref={bottomRef} />
       </div>
 
       <div className="assistant-chat__suggest">
