@@ -50,6 +50,19 @@
 #   Physics subject or student_360 data exists yet; adding it would let the
 #   router accept a subject that can never return data.
 #
+# v1.2 — SUBJECT-LEVEL SCOPING IN THE SQL ITSELF:
+#   Every student_360-based template used to scope with `s.student_id IN (<teacher's
+#   students>)`. student_360 has one row per student PER SUBJECT, so that admitted each
+#   of the teacher's students' rows in EVERY subject, including subjects taught by other
+#   teachers. Only row-level security (execute_sql's restricted role) filtered those out:
+#   run as the table owner, the same SQL gave 12 "doing well" instead of 2, 39 "struggling"
+#   instead of 12, and a Mathematics average that mixed in students the teacher teaches
+#   only Science. The scope is now the (student, offering) PAIR the teacher teaches:
+#   `(s.student_id, s.grade_subject_offering_id) IN (SELECT sse.student_id,
+#   sse.grade_subject_offering_id ...)`, so the template is correct without RLS and RLS
+#   is a genuine second layer. Verified by running every such template as both the owner
+#   and the reader role and requiring identical rows.
+#
 # SCOPE — read this before adding templates:
 #   This library deliberately does NOT attempt to cover every question a
 #   teacher might ask. Per the governed-hybrid design rule: a WRONG TEMPLATE
@@ -274,7 +287,7 @@ templates:
         required_parameters: []
 
     sql: |
-      SELECT COUNT(DISTINCT sse.student_id) AS total_students
+      SELECT COUNT(DISTINCT sse.student_id) AS student_count
       FROM teaching_assignments ta
       JOIN student_subject_enrollments sse
         ON sse.grade_subject_offering_id = ta.grade_subject_offering_id
@@ -295,6 +308,8 @@ templates:
     example_questions:
       - "What is the average mastery score for my students in Mathematics?"
       - "What's my class average in Science?"
+      - "What's the average mastery in Maths for my students?"
+      - "What is the average Mathematics mastery for my students?"
     parameters:
       subject:
         type: enum
@@ -306,6 +321,9 @@ templates:
         positive_examples:
         - What is the average mastery score for my students in Mathematics?
         - What's my class average in Science?
+        - What's the average mastery in Maths for my students?
+        - What is the average Mathematics mastery for my students?
+        - Average mastery score in Social Studies?
         negative_examples:
         - Who are my top students in Mathematics?
         - Which students scored below 40% in Mathematics?
@@ -316,14 +334,14 @@ templates:
         - subject
 
     sql: |
-      SELECT AVG(s.mastery_percent) AS average_score
+      SELECT ROUND(AVG(s.mastery_percent), 2) AS average_score_percent
       FROM student_360 s
       JOIN subjects sub ON sub.id = s.subject_id
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE sub.name = :subject
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -373,7 +391,7 @@ templates:
         - quiz
 
     sql: |
-      SELECT AVG(qa.score_percent) AS average_score
+      SELECT ROUND(AVG(qa.score_percent), 2) AS average_score_percent
       FROM quiz_attempts qa
       JOIN quiz_versions qv ON qv.id = qa.quiz_version_id
       JOIN common_mastery_quizzes cmq ON cmq.id = qv.quiz_id
@@ -403,6 +421,8 @@ templates:
     example_questions:
       - "What is the average attendance rate for my students this term?"
       - "How is attendance in my classes?"
+      - "What is the attendance rate for my classes this term?"
+      - "What's the average attendance of my students?"
     parameters: {}
     requires_signoff: false
     router:
@@ -410,6 +430,8 @@ templates:
         positive_examples:
         - What is the average attendance rate for my students this term?
         - How is attendance in my classes?
+        - What is the attendance rate for my classes this term?
+        - What's the average attendance of my students?
         negative_examples:
         - Which students have poor attendance?
         - How many students have attendance below 40%?
@@ -418,12 +440,12 @@ templates:
         required_parameters: []
 
     sql: |
-      SELECT AVG(s.attendance_percent) AS average_attendance
+      SELECT ROUND(AVG(s.attendance_percent), 2) AS average_attendance_percent
       FROM student_360 s
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE ap.status = 'active'
-        AND s.student_id IN (
-        SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+        SELECT sse.student_id, sse.grade_subject_offering_id
         FROM student_subject_enrollments sse
         JOIN teaching_assignments ta
           ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -505,6 +527,11 @@ templates:
         max: 100
         required: true
     requires_signoff: false
+    # A zero here is a genuine, expected answer (the SQL carries its own scoping), so
+    # sanity_check does not downgrade confidence for it and compose_answer says it plainly.
+    # `empty_answer` is formatted with the validated parameters (and `criterion`) only.
+    zero_is_valid: true
+    empty_answer: "None of your students scored below {threshold}% in {subject}."
     router:
         intent_group: performance
         positive_examples:
@@ -519,10 +546,17 @@ templates:
         required_parameters:
         - subject
         - threshold
+        # Natural phrasings that carry no "score" word ("students under 50 in Science") are
+        # admitted by their comparison words. Safe because `subject` is still a required
+        # parameter, so "attendance below 40%" (no subject) cannot match here.
         requires_keywords:
         - score
         - scored
         - mastery
+        - marks
+        - under
+        - below
+        - less than
 
     sql: |
       SELECT sp.full_name, s.mastery_percent
@@ -533,8 +567,8 @@ templates:
       WHERE sub.name = :subject
         AND s.mastery_percent < :threshold
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -580,6 +614,10 @@ templates:
         required_parameters:
         - subject
 
+    # NOTE: intent_router substitutes the validated integer `limit` into the LIMIT below as
+    # a literal before validate_sql runs. validate_sql only honours a literal LIMIT; a bound
+    # `LIMIT :limit` / `COALESCE(:limit, 5)` used to be replaced with LIMIT 500, so "top 5"
+    # returned every row. Keep the LIMIT in one of the two shapes intent_router recognises.
     sql: |
       SELECT sp.full_name, s.mastery_percent
       FROM student_360 s
@@ -588,8 +626,8 @@ templates:
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE sub.name = :subject
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -607,6 +645,9 @@ templates:
   - name: my_subjects
     description: >
       The subjects the requesting teacher is currently assigned to teach.
+      Any question that asks which SUBJECTS the teacher teaches or is assigned to
+      ("Which subjects am I assigned to?") belongs here, not to my_sections — the
+      word "assigned" alone does not make a question about sections.
       Golden eval row 15 — free-form generation historically fabricated an
       identity placeholder here, and separately dropped one of two real
       subjects from the composed answer.
@@ -623,9 +664,16 @@ templates:
         negative_examples:
         - What subjects does the school offer?
         - How are my students doing in Mathematics?
+        - What sections am I assigned to?
         supported_operations:
         - list
         required_parameters: []
+        # "assigned to" alone is shared with my_sections ("Which subjects am I assigned
+        # to?" was once classified as my_sections and answered with sections), so a match
+        # must literally name the thing it lists: a subject, or what the teacher teaches.
+        requires_keywords:
+        - subject
+        - teach
 
     sql: |
       SELECT DISTINCT sub.name AS subject
@@ -642,8 +690,10 @@ templates:
   # ---------------------------------------------------------------------------
   - name: my_sections
     description: >
-      The sections the requesting teacher is currently assigned to. Correctly
-      handles the all-sections case (a teaching assignment with a NULL
+      The sections (classes such as 8A, 9B) the requesting teacher is currently
+      assigned to. Only for questions that ask about SECTIONS or CLASSES — a
+      question asking which subjects the teacher teaches or is assigned to is
+      my_subjects. Correctly handles the all-sections case (a teaching assignment with a NULL
       section_id means the teacher covers every section of that offering).
     example_questions:
       - "What sections am I assigned to?"
@@ -658,9 +708,15 @@ templates:
         negative_examples:
         - List my students in section 8A.
         - What subjects do I teach?
+        - Which subjects am I assigned to?
         supported_operations:
         - list
         required_parameters: []
+        # Counterpart of my_subjects' gate: this template may only answer a question that
+        # actually asks about sections/classes ("class" also matches "classes").
+        requires_keywords:
+        - section
+        - class
 
     sql: |
       SELECT DISTINCT sec.name AS section
@@ -723,6 +779,9 @@ templates:
       - "How many students are performing well?"
     parameters: {}
     requires_signoff: false
+    # A zero here is a genuine, expected answer (the SQL carries its own scoping), so
+    # sanity_check does not downgrade confidence for it and compose_answer says it plainly.
+    zero_is_valid: true
     router:
         intent_group: performance_policy
         positive_examples:
@@ -747,16 +806,21 @@ templates:
       compose_answer should surface the definition alongside the number, e.g.
       "12 students are doing well (mastery of 85% or above, with at least one
       quiz passed)." — never a bare count, since the criterion is a policy
-      choice the teacher deserves to see.
+      choice the teacher deserves to see. See `criterion` below, which
+      intent_router now threads through as state["answer_criterion"] so
+      compose_answer's deterministic single-scalar path can append it without
+      a model call — this note previously described the intent without any
+      code actually doing it.
+    criterion: mastery of 85% or above, with at least one quiz passed
     sql: |
-      SELECT COUNT(DISTINCT s.student_id) AS students_doing_well
+      SELECT COUNT(DISTINCT s.student_id) AS student_count
       FROM student_360 s
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE s.mastery_percent >= 85.00      -- ✅ APPROVED
         AND s.quizzes_passed >= 1           -- ✅ APPROVED
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -801,6 +865,11 @@ templates:
           confidence for the same underlying fact (same pattern as
           students_below_attendance_threshold's shape parameter).
     requires_signoff: false
+    # A zero here is a genuine, expected answer (the SQL carries its own scoping), so
+    # sanity_check does not downgrade confidence for it and compose_answer says it plainly.
+    # `empty_answer` is formatted with the validated parameters (and `criterion`) only.
+    zero_is_valid: true
+    empty_answer: "None of your students currently need support ({criterion})."
     router:
         intent_group: support_policy
         positive_examples:
@@ -832,11 +901,28 @@ templates:
       This is also why a chat "how many students are at risk" count can
       legitimately differ from the at-risk dashboard's own flag count: the
       dashboard additionally flags students on trend decline alone, which
-      this level-only definition cannot see.
+      this level-only definition cannot see — and, in the other direction,
+      docs/design/08-at-risk-early-warning.md §7.2 deliberately routes an
+      attendance-only flag to administrators only, never to a subject
+      teacher (attendance is a whole-student signal with no single owning
+      teacher) — a policy this template does NOT reproduce, since
+      attendance_percent is already a column on every student_360 row this
+      teacher is independently scoped to see (RLS/apply_role_scope grant
+      that access per-row, not per-flag-type), so this is a difference in
+      which *rows* get surfaced as "struggling," not a new data exposure.
+      Confirmed live against the seeded demo data: this gap alone explained
+      a teacher's chat count (12) landing above her dashboard's level-only
+      count (8) with zero actual discrepancy once traced to specific
+      students — not a bug in either path, see conversation history.
     answer_note: >
       compose_answer should state the criterion alongside the list/count, and
       should be worded supportively — this output names (or counts) specific
-      children as struggling, and how it is phrased matters.
+      children as struggling, and how it is phrased matters. See `criterion`
+      below, threaded through as state["answer_criterion"] for the
+      deterministic count path; the list path still relies on the LLM
+      summarization prompt to mention it, which is not yet guaranteed the
+      way the count path now is.
+    criterion: mastery below 60% or attendance below 80%
     sql_list: |
       SELECT DISTINCT sp.full_name, s.mastery_percent, s.attendance_percent
       FROM student_360 s
@@ -845,8 +931,8 @@ templates:
       WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
              OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -863,8 +949,8 @@ templates:
       WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
              OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -905,6 +991,11 @@ templates:
           "how many" → count). Both shapes must produce consistent confidence
           for the same underlying fact.
     requires_signoff: false
+    # A zero here is a genuine, expected answer (the SQL carries its own scoping), so
+    # sanity_check does not downgrade confidence for it and compose_answer says it plainly.
+    # `empty_answer` is formatted with the validated parameters (and `criterion`) only.
+    zero_is_valid: true
+    empty_answer: "None of your students have attendance below {threshold}%."
     router:
         intent_group: attendance
         positive_examples:
@@ -931,8 +1022,8 @@ templates:
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE s.attendance_percent < :threshold
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
@@ -948,8 +1039,8 @@ templates:
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE s.attendance_percent < :threshold
         AND ap.status = 'active'
-        AND s.student_id IN (
-          SELECT sse.student_id
+        AND (s.student_id, s.grade_subject_offering_id) IN (
+          SELECT sse.student_id, sse.grade_subject_offering_id
           FROM student_subject_enrollments sse
           JOIN teaching_assignments ta
             ON ta.grade_subject_offering_id = sse.grade_subject_offering_id

@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { askQuestion, type Confidence } from "../../api/textToSql";
 import { Crumbs } from "../../components/Crumbs";
@@ -14,6 +14,41 @@ type ThreadEntry = {
 };
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong — please try again.";
+
+/**
+ * Questions offered in the "Suggested questions" dropdown. Every one has been checked against
+ * the database for several teachers and answers correctly for any teacher, so none names a
+ * subject or section (a teacher who does not teach Science must not be offered a Science
+ * question). The wording is exact on purpose: the question router is sensitive to phrasing,
+ * so only these tested forms are used. The free-text box below stays available for anything else.
+ */
+const SUGGESTED_QUESTIONS: { group: string; questions: string[] }[] = [
+  {
+    group: "Class overview",
+    questions: [
+      "How many students do I teach in total?",
+      "Which subjects am I assigned to?",
+      "What sections am I assigned to?",
+    ],
+  },
+  {
+    group: "Performance and attendance",
+    questions: [
+      "What is the average attendance rate for my students this term?",
+      "Show me the struggling students.",
+      "How many of my students are doing well?",
+      "How many students have attendance less than 85%?",
+    ],
+  },
+  {
+    group: "Quizzes",
+    questions: [
+      "Who took the last quiz?",
+      "What is the average quiz score for my students?",
+      "What was the highest quiz score?",
+    ],
+  },
+];
 
 const CONFIDENCE_LABEL: Record<Confidence, string> = {
   high: "High confidence",
@@ -39,6 +74,17 @@ export function AssistantPage() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  function onPickSuggestion(event: ChangeEvent<HTMLSelectElement>) {
+    const question = event.target.value;
+    if (!question) return;
+    // Fill the box rather than sending: the teacher can adjust the wording (e.g. a different
+    // attendance threshold) and presses Ask when ready. The select is controlled with
+    // value="" below, so it returns to its placeholder after every pick.
+    setDraft(question);
+    inputRef.current?.focus();
+  }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -87,8 +133,8 @@ export function AssistantPage() {
       <div className="assistant-chat__thread" aria-live="polite">
         {thread.length === 0 && (
           <p className="assistant-chat__empty muted">
-            Ask about your classes — e.g. "How many students do I teach?" or "Which students
-            are below 70% mastery in Grade 8 Maths?"
+            Ask about your classes. Pick a suggested question below, or type your own — e.g.
+            "How many students do I teach in total?" or "Show me the struggling students."
           </p>
         )}
         {thread.map((entry) => (
@@ -122,15 +168,42 @@ export function AssistantPage() {
         <div ref={bottomRef} />
       </div>
 
+      <div className="assistant-chat__suggest">
+        <label className="assistant-chat__suggest-label" htmlFor="assistant-chat-suggestions">
+          Suggested questions
+        </label>
+        <select
+          id="assistant-chat-suggestions"
+          className="assistant-chat__suggest-select"
+          value=""
+          onChange={onPickSuggestion}
+          disabled={busy}
+        >
+          <option value="" disabled>
+            Choose a question…
+          </option>
+          {SUGGESTED_QUESTIONS.map(({ group, questions }) => (
+            <optgroup key={group} label={group}>
+              {questions.map((question) => (
+                <option key={question} value={question}>
+                  {question}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
       <form className="assistant-chat__composer" onSubmit={(e) => void onSubmit(e)}>
         <label className="sr-only" htmlFor="assistant-chat-input">
           Question
         </label>
         <textarea
           id="assistant-chat-input"
+          ref={inputRef}
           className="assistant-chat__input"
           rows={2}
-          placeholder="e.g. How many students do I teach?"
+          placeholder="Or type your own question, e.g. How many students do I teach in total?"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           disabled={busy}

@@ -2,7 +2,7 @@
 — and sets state["confidence"]. Observes and annotates only: never modifies the query,
 never re-runs anything, never touches `query_result` itself.
 
-Eight independent checks, each capable of downgrading confidence off a `"high"` start.
+Nine independent checks, each capable of downgrading confidence off a `"high"` start.
 More than one can fire on the same result; the recorded reasons list every trigger that
 fired, and the final confidence is the **worst** (lowest) of their individual severities
 — a "low"-severity trigger anywhere wins over any number of "medium" ones, never averaged
@@ -106,9 +106,25 @@ below, reviewable in one place:
   (free-form, or `intent_router` itself failed and fell back) never triggers this, since
   there is no routing floor to have barely cleared.
 
-All four of the last checks are guesses, not certainties — their recorded reason strings
+* **Cross-institution scope assumed** (`cross_institution_scope_assumed`, medium) — a
+  heuristic on `state["question"]`: the question's wording implies a comparison or
+  aggregation across more than one institution ("other school(s)", "across institutions",
+  "district average", "nationwide", ...), but every query this pipeline runs is *always*
+  pinned to the asking user's own institution by `apply_role_scope` — there is no code path
+  that could ever return a genuine cross-institution comparison. Unlike the other heuristic
+  checks, this one isn't guessing at whether something went *wrong* with this specific
+  result; it's a structural certainty (the pin always applies) paired with a guess about
+  what the *question* wanted, so it fires unconditionally whenever the phrasing matches,
+  independent of row count or shape. "Medium", same tier as the other phrase-heuristic
+  checks. The reason string is deliberately generic — it must never name a count of other
+  institutions, whether any actually exist, or anything else about them; it exists purely
+  so `compose_answer` can disclose that the answer is institution-scoped, not to describe
+  what was excluded. See `compose_answer._SCOPE_NARROWING_DISCLOSURE`, the fixed,
+  non-interpolated sentence this trigger drives.
+
+All five of the last checks are guesses, not certainties — their recorded reason strings
 say so explicitly (a `"heuristic (...): ..."` prefix), so the audit trail itself never
-reads as a confirmed finding for these four, unlike the row-cap/aggregate-bounds checks
+reads as a confirmed finding for these five, unlike the row-cap/aggregate-bounds checks
 above, which are facts.
 
 Routing (graph.py): `state["confidence"]` is the authoritative signal — it is fully
@@ -137,7 +153,16 @@ from education_platform.modules.text_to_sql.state import TextToSQLState
 # — that table is out of scope for text-to-SQL entirely (load_schema.EXCLUDED_TABLES), so a
 # query here can never produce it.
 PERCENTAGE_COLUMNS: Final[frozenset[str]] = frozenset(
-    {"score_percent", "mastery_percent", "attendance_percent", "pass_threshold_percent"}
+    {
+        "score_percent",
+        "mastery_percent",
+        "attendance_percent",
+        "pass_threshold_percent",
+        # The aliases the templates give an AVG of the columns above. An average of 0-100
+        # values is itself 0-100, so the same bounds check applies.
+        "average_score_percent",
+        "average_attendance_percent",
+    }
 )
 
 _LIST_SIGNAL_PHRASES: Final[tuple[str, ...]] = (
@@ -170,6 +195,35 @@ _BOUNDED_SCOPE_PHRASES: Final[tuple[str, ...]] = (
     "my section",
     "my sections",
 )
+# Phrasing that implies a comparison or aggregation across more than one institution —
+# something this pipeline structurally never does (apply_role_scope pins every query to
+# the asker's own institution). Deliberately broad rather than exhaustive: a false
+# negative here just means compose_answer stays silent on scope (today's existing
+# behavior), not a security gap — the institution pin itself doesn't depend on this list.
+_CROSS_INSTITUTION_SCOPE_PHRASES: Final[tuple[str, ...]] = (
+    "other school",
+    "other schools",
+    "another school",
+    "different school",
+    "other institution",
+    "other institutions",
+    "different institution",
+    "across schools",
+    "across institutions",
+    "across the district",
+    "across the platform",
+    "compared to other schools",
+    "compare us to",
+    "how do we compare",
+    "vs other schools",
+    "versus other schools",
+    "nationwide",
+    "statewide",
+    "district-wide",
+    "district average",
+    "national average",
+    "state average",
+)
 # "Close to" execute_sql's own row cap — not the cap itself, since a result of exactly
 # ROW_CAP could also just be genuinely large for an unbounded question.
 _LARGE_RESULT_THRESHOLD: Final[int] = round(ROW_CAP * 0.9)
@@ -188,6 +242,7 @@ _TRIGGER_SEVERITY: Final[dict[str, str]] = {
     "large_result_near_cap": "medium",
     "duplicate_entity_in_roster": "medium",
     "borderline_template_confidence": "medium",
+    "cross_institution_scope_assumed": "medium",
 }
 
 
@@ -346,11 +401,45 @@ def _borderline_template_confidence_trigger(state: TextToSQLState) -> tuple[str,
     return None
 
 
+def _cross_institution_scope_trigger(question: str) -> tuple[str, str] | None:
+    lowered = question.lower()
+    if _matches_any(lowered, _CROSS_INSTITUTION_SCOPE_PHRASES):
+        return (
+            "cross_institution_scope_assumed",
+            "heuristic (question-phrasing guess, not a certainty): question implies "
+            "scope beyond this institution, but every query this pipeline runs is "
+            "always scoped to the asking user's own institution by design",
+        )
+    return None
+
+
 def _worst_confidence(triggered_names: list[str]) -> str:
     if not triggered_names:
         return "high"
     ranks = (_SEVERITY_ORDER.index(_TRIGGER_SEVERITY[name]) for name in triggered_names)
     return _SEVERITY_ORDER[min(ranks)]
+
+
+def _zero_is_explained(state: TextToSQLState) -> bool:
+    """True when an empty/zero result has been *corroborated*, so the zero-result
+    downgrades (`zero_rows`, `zero_valued_aggregate`) don't apply. Two ways, both resting on
+    probes execute_sql ran in the same RLS-scoped transaction:
+
+    * the template declares a zero is a genuine answer (`zero_result_is_valid`) **and** the
+      `visible_students` probe shows the teacher's scope can see students. Without the
+      probe a zero is still ambiguous between "nothing matches" and "role-scoping silently
+      excluded everything" (e.g. a broken session variable), so the flag alone is not
+      enough; a missing or failed probe leaves the hedge in place;
+    * the question asked about a subject the `taught_subjects` probe shows the teacher does
+      not teach — the emptiness is fully explained, not suspicious.
+
+    Every other trigger still applies, and free_form (no probes) never qualifies."""
+    results = state.get("zero_probe_results") or {}
+    if state.get("zero_result_is_valid") and (results.get("visible_students") or 0) > 0:
+        return True
+    subject = (state.get("intent_parameters") or {}).get("subject")
+    taught = results.get("taught_subjects")
+    return bool(subject) and taught is not None and subject not in taught
 
 
 async def sanity_check(state: TextToSQLState) -> TextToSQLState:
@@ -359,18 +448,20 @@ async def sanity_check(state: TextToSQLState) -> TextToSQLState:
     if row_count is None:
         row_count = len(rows)
     question = state.get("question") or ""
+    zero_is_answer = _zero_is_explained(state)
 
     triggers = [
         trigger
         for trigger in (
-            _zero_rows_trigger(row_count),
-            _zero_valued_aggregate_trigger(rows),
+            None if zero_is_answer else _zero_rows_trigger(row_count),
+            None if zero_is_answer else _zero_valued_aggregate_trigger(rows),
             _row_cap_trigger(state),
             _aggregate_bounds_trigger(rows),
             _single_row_list_trigger(question, row_count),
             _large_result_trigger(question, row_count),
             _duplicate_entity_trigger(rows),
             _borderline_template_confidence_trigger(state),
+            _cross_institution_scope_trigger(question),
         )
         if trigger is not None
     ]

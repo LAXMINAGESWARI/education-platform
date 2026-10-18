@@ -106,35 +106,34 @@ _SHAPE_HINTS: Final[dict[type[exp.Expr], str]] = {
     exp.Set: "SET statements are not allowed — only SELECT is permitted",
 }
 
-# Session mutators / non-read helpers that can defeat RLS, poison the connection pool,
-# or hang the statement — even inside an otherwise-valid SELECT or CTE.
+# Allowlist, not a blocklist, for any function sqlglot parses as `exp.Anonymous` (i.e.
+# one it has no named node for — see `_find_disallowed_function`). Deliberately empty:
+# confirmed empirically that every function this pipeline's LLM/templates actually
+# generate (COUNT, AVG, COALESCE, CAST, ...) parses as a *named* exp.Func subclass
+# (exp.Count, exp.Avg, ...), never exp.Anonymous — so nothing legitimate needs an entry
+# here today. This replaces a blocklist that previously enumerated session-mutator/
+# non-read helpers by name (set_config, pg_advisory_*, pg_sleep, pg_terminate_backend,
+# pg_cancel_backend, lo_import, lo_export) and missed everything else: a blocklist only
+# ever catches functions someone already thought to name, which is exactly how
+# `query_to_xml(...)` got through — not in that list, and not caught even if it had been,
+# since its dangerous payload (a nested `set_config(...)` call) is smuggled inside a
+# string-literal argument, never a SQL AST node this module walks at all. No function-
+# name check — blocklist or allowlist — can parse/validate what's inside an arbitrary
+# string argument; the only sound fix is denying the outer Anonymous call outright,
+# which this allowlist does by construction (nothing admits it). This also matches this
+# module's own existing posture elsewhere (`SCOPED_TABLES`, built from a reviewed
+# allowlist, not a table blocklist) rather than reintroducing the bug class blocklists
+# invite. Extending this set is a deliberate, reviewable, one-line change for the day a
+# genuinely needed Postgres function turns out to have no named sqlglot node — exactly
+# the same posture as adding a table to `load_schema.REQUIRED_TABLES`.
 #
-# `query_to_xml` / `query_to_xmlschema` / `cursor_to_xml*` are blocked because their
-# string (or cursor) argument is opaque to the AST walker: an inner `set_config(...)`
-# never appears as `exp.Anonymous`, so the blocklist below would otherwise miss it.
-# Confirmed live: `text_to_sql_reader` has EXECUTE on these by default (PUBLIC), and
-# `query_to_xml($$SELECT set_config('app.current_institution_id', …) …$$, …)` rewrites
-# RLS GUCs mid-statement and returns cross-tenant rows. Blocking the outer call closes
-# that channel; a companion migration also REVOKEs EXECUTE as a DB-level backstop.
-_BLOCKED_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {
-        "set_config",
-        "pg_advisory_lock",
-        "pg_advisory_xact_lock",
-        "pg_advisory_unlock",
-        "pg_advisory_unlock_all",
-        "pg_sleep",
-        "pg_terminate_backend",
-        "pg_cancel_backend",
-        "lo_import",
-        "lo_export",
-        "query_to_xml",
-        "query_to_xmlschema",
-        "query_to_xml_and_xmlschema",
-        "cursor_to_xml",
-        "cursor_to_xmlschema",
-    }
-)
+# Confirmed live: `text_to_sql_reader` has EXECUTE on `query_to_xml` / `query_to_xmlschema` /
+# `query_to_xml_and_xmlschema` / `cursor_to_xml*` by default (PUBLIC), and
+# `query_to_xml($$SELECT set_config('app.current_institution_id', …) …$$, …)` rewrites RLS
+# GUCs mid-statement and returns cross-tenant rows. The allowlist denies that whole family
+# (and any sibling not yet named) by construction; migration `f9a0b1c2d3e4` also REVOKEs
+# EXECUTE on the XML helpers from the reader role as a DB-level backstop.
+_ALLOWED_ANONYMOUS_FUNCTIONS: Final[frozenset[str]] = frozenset()
 
 
 def _is_in_recursive_union_term(table_node: exp.Table, cte: exp.CTE) -> bool:
@@ -354,11 +353,16 @@ def _anonymous_function_name(node: exp.Anonymous) -> str | None:
     return None
 
 
-def _find_blocked_function(tree: exp.Expr) -> str | None:
+def _find_disallowed_function(tree: exp.Expr) -> str | None:
+    """First `exp.Anonymous` call not in `_ALLOWED_ANONYMOUS_FUNCTIONS`, or `None` if
+    every one is. Fail-closed on a name sqlglot couldn't even resolve
+    (`_anonymous_function_name` returning `None`) — rejected here, not skipped, unlike
+    the membership check this replaces which implicitly let an unresolvable name through.
+    """
     for node in tree.find_all(exp.Anonymous):
         name = _anonymous_function_name(node)
-        if name is not None and name in _BLOCKED_FUNCTIONS:
-            return name
+        if name is None or name not in _ALLOWED_ANONYMOUS_FUNCTIONS:
+            return name or "<unnamed>"
     return None
 
 
@@ -427,14 +431,19 @@ async def validate_sql(state: TextToSQLState) -> TextToSQLState:
     if column_error is not None:
         return {**state, "error": format_error(VALIDATION_ERROR, column_error)}
 
-    # 5. Block session-mutating / non-read functions (set_config, advisory locks, …).
-    blocked = _find_blocked_function(tree)
-    if blocked is not None:
+    # 5. Any function sqlglot parses as exp.Anonymous must be in the (empty) allowlist —
+    # see _ALLOWED_ANONYMOUS_FUNCTIONS. Catches session mutators / non-read helpers
+    # (set_config, advisory locks, pg_sleep, …) and anything else with no named sqlglot
+    # node (query_to_xml, current_setting, pg_read_file, dblink, …), including a
+    # dangerous call smuggled inside another function's string-literal argument — the
+    # outer call itself is still exp.Anonymous and still gets rejected here.
+    disallowed = _find_disallowed_function(tree)
+    if disallowed is not None:
         return {
             **state,
             "error": format_error(
                 VALIDATION_ERROR,
-                f"function `{blocked}` is not allowed in text-to-SQL queries",
+                f"function `{disallowed}` is not allowed in text-to-SQL queries",
             ),
         }
 

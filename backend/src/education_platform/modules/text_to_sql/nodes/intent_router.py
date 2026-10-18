@@ -113,6 +113,46 @@ def _matches_required_keywords(template: dict[str, Any], question: str) -> bool:
     return any(keyword.lower() in lowered for keyword in keywords)
 
 
+_NUMBER = re.compile(r"\d")
+
+
+def _has_unsupported_qualifier(
+    template: dict[str, Any], question: str, catalog: dict[str, Any]
+) -> bool:
+    """True when the question narrows its subject matter in a way this template has no
+    parameter to honour, so answering from the template would silently drop the narrowing.
+
+    The router's own rule ("unsupported qualifiers force free_form") was only a prompt
+    instruction and the classifier did not reliably follow it: "How many students are doing
+    well *in Mathematics*?" matched `students_meeting_performance_bar` (no subject
+    parameter) and was answered with a figure covering all of the teacher's subjects, and
+    "How many students have attendance below *40%*?" was once matched to
+    `students_needing_support` (no number parameter), answering under a different
+    criterion. Enforced here instead, deterministically:
+
+    * a subject name (or alias) in the question needs a `subject` parameter;
+    * a digit in the question needs a number/integer/string parameter to carry it — so
+      "section 8A" (string parameter) and "top 10" (integer) are unaffected, while a
+      number given to a template that takes none (count, support, doing-well, ...) is.
+
+    Refusing only ever falls back to the free-form path; it can never produce a wrong
+    template answer.
+    """
+    parameters = template.get("parameters", {}) or {}
+    if "subject" not in parameters:
+        rules = catalog.get("intent_router", {}).get("normalization", {}).get("subject", {})
+        names = [*rules.get("canonical_values", []), *rules.get("aliases", {})]
+        if names:
+            pattern = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+            if re.search(rf"\b(?:{pattern})\b", question, re.IGNORECASE):
+                return True
+    takes_a_value = any(
+        definition.get("type") in {"number", "integer", "string"}
+        for definition in parameters.values()
+    )
+    return not takes_a_value and _NUMBER.search(question) is not None
+
+
 def _valid_parameters(template: dict[str, Any], parameters: dict[str, Any]) -> bool:
     definitions = template.get("parameters", {})
     router = template.get("router", {})
@@ -120,9 +160,14 @@ def _valid_parameters(template: dict[str, Any], parameters: dict[str, Any]) -> b
         if name not in parameters or parameters[name] in (None, ""):
             return False
     for name, definition in definitions.items():
-        if name not in parameters:
+        # An explicit null from the classifier means the same as an omitted key: "the
+        # question did not state this". Without this, `{"subject": null}` for the optional
+        # `latest_quiz_attempt.subject` was checked against the enum, rejected, and every
+        # unqualified "Who took the last quiz?" fell through to free-form.
+        if parameters.get(name) is None:
             if definition.get("required", False):
                 return False
+            parameters.pop(name, None)
             if "default" in definition:
                 parameters[name] = definition["default"]
             continue
@@ -143,6 +188,36 @@ def _valid_parameters(template: dict[str, Any], parameters: dict[str, Any]) -> b
         ):
             return False
     return True
+
+
+# `LIMIT :limit` or `LIMIT COALESCE(:limit, <n>)` — the only two shapes a template may use
+# for a caller-supplied row limit.
+_PARAMETERIZED_LIMIT = re.compile(
+    r"\bLIMIT\s+(?:COALESCE\s*\(\s*:limit\s*,\s*\d+\s*\)|:limit\b)", re.IGNORECASE
+)
+
+
+def _inline_limit(sql: str, template: dict[str, Any], parameters: dict[str, Any]) -> str | None:
+    """Replace a parameterized `LIMIT` with the validated integer as a literal, or `None`
+    if the SQL still carries a bind placeholder for it afterwards (caller routes to free-form).
+
+    `validate_sql` only recognizes a literal `LIMIT n` (`_limit_value`); anything else is
+    treated as "no limit" and overwritten with `LIMIT {DEFAULT_ROW_LIMIT}`, so a bound
+    `LIMIT :limit` / `COALESCE(:limit, 5)` silently returned every row for "top 5". The value
+    is safe to splice in as text: `_valid_parameters` has already checked it is a real
+    `int` (not a bool) within the template's declared `min`/`max`, and a missing or null
+    value falls back to the template's declared `default`.
+    """
+    definition = template.get("parameters", {}).get("limit")
+    if definition is None:
+        return sql
+    value = parameters.get("limit")
+    if value is None:
+        value = definition.get("default")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    inlined = _PARAMETERIZED_LIMIT.sub(f"LIMIT {value}", sql)
+    return None if ":limit" in inlined else inlined
 
 
 def template_route_min_confidence() -> float:
@@ -181,6 +256,8 @@ def _select_template(
             return None
         if not _matches_required_keywords(template, question):
             return None
+        if _has_unsupported_qualifier(template, question, catalog):
+            return None
         parameters = _normalize_parameters(decision.parameters, catalog)
         if not _valid_parameters(template, parameters):
             return None
@@ -196,7 +273,58 @@ def _free_form(state: TextToSQLState, decision: _RouterDecision | None = None) -
         "intent_confidence": decision.confidence if decision else 0.0,
         "intent_parameters": decision.parameters if decision else {},
         "query_source": None,
+        # No single fixed definition to name on the free-form path — and clears any
+        # stale value a prior template-matched attempt on this same state may have set.
+        "answer_criterion": None,
+        # Same reasoning: a zero from generated SQL stays ambiguous, so its hedge applies.
+        "zero_result_is_valid": False,
+        "empty_answer": None,
+        "zero_probe_sql": {},
+        "zero_probe_results": None,
     }
+
+
+def _zero_probes(
+    template: dict[str, Any], parameters: dict[str, Any], catalog: dict[str, Any]
+) -> dict[str, str]:
+    """Reference queries execute_sql should run if (and only if) this template's result
+    comes back empty or zero, so the answer can say *why* instead of just hedging.
+
+    Both are existing governed templates, reused verbatim rather than a second copy of
+    their SQL: `count_my_students` shows the teacher's scope can see students at all (what
+    makes a confident "none" trustworthy), and `my_subjects` shows whether an asked-about
+    subject is one they teach."""
+    by_name = {t.get("name"): t for t in catalog["templates"]}
+    probes: dict[str, str] = {}
+
+    def _sql(name: str) -> str | None:
+        sql = (by_name.get(name) or {}).get("sql")
+        return sql.strip() if isinstance(sql, str) and sql.strip() else None
+
+    if template.get("zero_is_valid") and (sql := _sql("count_my_students")):
+        probes["visible_students"] = sql
+    asks_about_subject = "subject" in (template.get("parameters") or {}) and parameters.get(
+        "subject"
+    )
+    if asks_about_subject and (sql := _sql("my_subjects")):
+        probes["taught_subjects"] = sql
+    return probes
+
+
+def _empty_answer(
+    template: dict[str, Any], parameters: dict[str, Any], criterion: Any
+) -> str | None:
+    """The template's `empty_answer` sentence formatted with its validated parameters (and
+    `criterion`), or `None` if it declares none or it can't be formatted. Only validated
+    parameters are interpolated (enum / bounded number / pattern-checked string)."""
+    text = template.get("empty_answer")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    values = {**parameters, "criterion": criterion if isinstance(criterion, str) else ""}
+    try:
+        return text.format(**values)
+    except (KeyError, IndexError, ValueError):
+        return None
 
 
 async def intent_router(state: TextToSQLState) -> TextToSQLState:
@@ -240,6 +368,10 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
     sql = template.get(sql_key)
     if not isinstance(sql, str) or not sql.strip():
         return _free_form(state, decision)
+    sql = _inline_limit(sql, template, parameters)
+    if sql is None:
+        return _free_form(state, decision)
+    criterion = template.get("criterion")
     return {
         **state,
         "intent_route": "template",
@@ -248,6 +380,11 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
         "intent_parameters": parameters,
         "query_source": "template",
         "generated_sql": sql.strip(),
+        "answer_criterion": criterion if isinstance(criterion, str) and criterion.strip() else None,
+        "zero_result_is_valid": bool(template.get("zero_is_valid")),
+        "empty_answer": _empty_answer(template, parameters, criterion),
+        "zero_probe_sql": _zero_probes(template, parameters, catalog),
+        "zero_probe_results": None,
         "error": None,
     }
 
