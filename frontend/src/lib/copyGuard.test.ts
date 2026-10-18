@@ -1,42 +1,53 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { installCopyGuard, isEditableTarget, shouldBlockCopy } from "./copyGuard";
+import { installQuizCopyGuard } from "./copyGuard";
 
-describe("copyGuard", () => {
+const CLIPBOARD = ["copy", "cut", "paste", "contextmenu"] as const;
+
+describe("installQuizCopyGuard", () => {
   afterEach(() => {
     document.body.replaceChildren();
   });
 
-  it("treats page content as blocked and form fields as editable", () => {
-    const paragraph = document.createElement("p");
+  it("blocks clipboard and selection events inside the quiz root, including inputs", () => {
+    const root = document.createElement("section");
     const input = document.createElement("input");
-    const textarea = document.createElement("textarea");
-    document.body.append(paragraph, input, textarea);
+    const prompt = document.createElement("p");
+    prompt.textContent = "What is a square?";
+    root.append(prompt, input);
+    const outside = document.createElement("p");
+    outside.textContent = "lesson notes";
+    document.body.append(root, outside);
+    const onBlocked = vi.fn();
+    const uninstall = installQuizCopyGuard(root, onBlocked);
 
-    expect(shouldBlockCopy(paragraph)).toBe(true);
-    expect(isEditableTarget(input)).toBe(true);
-    expect(shouldBlockCopy(textarea)).toBe(false);
-  });
+    for (const type of CLIPBOARD) {
+      const onPrompt = new Event(type, { bubbles: true, cancelable: true });
+      prompt.dispatchEvent(onPrompt);
+      expect(onPrompt.defaultPrevented).toBe(true);
 
-  it("prevents copy and context menu on page text but not in inputs", () => {
-    const paragraph = document.createElement("p");
-    paragraph.textContent = "lesson text";
-    const input = document.createElement("input");
-    document.body.append(paragraph, input);
-    const uninstall = installCopyGuard();
+      const onInput = new Event(type, { bubbles: true, cancelable: true });
+      input.dispatchEvent(onInput);
+      expect(onInput.defaultPrevented).toBe(true);
 
-    const copyPage = new Event("copy", { bubbles: true, cancelable: true });
-    paragraph.dispatchEvent(copyPage);
-    expect(copyPage.defaultPrevented).toBe(true);
+      const onOutside = new Event(type, { bubbles: true, cancelable: true });
+      outside.dispatchEvent(onOutside);
+      expect(onOutside.defaultPrevented).toBe(false);
+    }
 
-    const menuPage = new Event("contextmenu", { bubbles: true, cancelable: true });
-    paragraph.dispatchEvent(menuPage);
-    expect(menuPage.defaultPrevented).toBe(true);
+    const selectInside = new Event("selectstart", { bubbles: true, cancelable: true });
+    input.dispatchEvent(selectInside);
+    expect(selectInside.defaultPrevented).toBe(true);
 
-    const copyInput = new Event("copy", { bubbles: true, cancelable: true });
-    input.dispatchEvent(copyInput);
-    expect(copyInput.defaultPrevented).toBe(false);
+    const selectOutside = new Event("selectstart", { bubbles: true, cancelable: true });
+    outside.dispatchEvent(selectOutside);
+    expect(selectOutside.defaultPrevented).toBe(false);
+
+    expect(onBlocked).toHaveBeenCalledTimes(CLIPBOARD.length * 2);
 
     uninstall();
+    const after = new Event("paste", { bubbles: true, cancelable: true });
+    input.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
   });
 });

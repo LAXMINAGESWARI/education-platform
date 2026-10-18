@@ -6,12 +6,9 @@ import { BrowserRouter } from "react-router-dom";
 import { AmbientBackdrop } from "./components/AmbientBackdrop";
 import { App } from "./App";
 import { AuthProvider } from "./auth/AuthContext";
-import { installCopyGuard } from "./lib/copyGuard";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "katex/dist/katex.min.css";
-
-installCopyGuard();
 
 const root = document.getElementById("root");
 if (!root) {

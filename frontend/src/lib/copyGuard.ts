@@ -1,35 +1,29 @@
-/** Block copy, cut, and the context menu except inside form fields. */
+/** Clipboard lock for the in-progress student quiz. Listeners stay on that subtree. */
 
-const EDITABLE_SELECTOR =
-  "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+export const QUIZ_COPY_MESSAGE = "Copy and paste are disabled during quizzes";
 
-export function isEditableTarget(target: EventTarget | null): boolean {
-  if (target instanceof Element) {
-    return Boolean(target.closest(EDITABLE_SELECTOR));
-  }
-  if (target instanceof Node && target.parentElement) {
-    return Boolean(target.parentElement.closest(EDITABLE_SELECTOR));
-  }
-  return false;
-}
+const CLIPBOARD_EVENTS = ["copy", "cut", "paste", "contextmenu"] as const;
 
-export function shouldBlockCopy(target: EventTarget | null): boolean {
-  return !isEditableTarget(target);
-}
-
-export function installCopyGuard(root: Document | HTMLElement = document): () => void {
-  const block = (event: Event) => {
-    if (!shouldBlockCopy(event.target)) return;
+export function installQuizCopyGuard(
+  root: HTMLElement,
+  onBlocked?: () => void,
+): () => void {
+  const blockClipboard = (event: Event) => {
+    event.preventDefault();
+    onBlocked?.();
+  };
+  const blockSelection = (event: Event) => {
     event.preventDefault();
   };
 
-  const events = ["copy", "cut", "contextmenu", "selectstart"] as const;
-  for (const name of events) {
-    root.addEventListener(name, block);
+  for (const name of CLIPBOARD_EVENTS) {
+    root.addEventListener(name, blockClipboard);
   }
+  root.addEventListener("selectstart", blockSelection);
   return () => {
-    for (const name of events) {
-      root.removeEventListener(name, block);
+    for (const name of CLIPBOARD_EVENTS) {
+      root.removeEventListener(name, blockClipboard);
     }
+    root.removeEventListener("selectstart", blockSelection);
   };
 }
