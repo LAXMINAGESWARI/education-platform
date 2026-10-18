@@ -5,6 +5,7 @@ import { resetDemoProgress } from "../api/demo";
 import { ApiError } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { MobileNav } from "./MobileNav";
 import { RouteMotion } from "./RouteMotion";
 
 const IS_DEV = import.meta.env.DEV;
@@ -176,21 +177,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         </aside>
 
         <div className="app__content">
-          <div className="topbar">
-            <div className="topbar__row">
-              <Link to="/" className="topbar__brand">
-                CurioEd
-              </Link>
-            </div>
-            <nav className="rail__nav rail__nav--horizontal" aria-label="Mobile student">
-              <Link to="/" className={`rail__link ${onHome ? "is-active" : ""}`}>
-                Home
-              </Link>
-              <Link to="/feedback" className={`rail__link ${onFeedback ? "is-active" : ""}`}>
-                Feedback
-              </Link>
-            </nav>
-          </div>
+          <MobileNav
+            brandTo="/"
+            navLabel="Student"
+            items={[
+              { to: "/", label: "Home", active: onHome },
+              { to: "/feedback", label: "Feedback", active: onFeedback },
+            ]}
+          />
 
           <main className="main">
             <RouteMotion>{page}</RouteMotion>

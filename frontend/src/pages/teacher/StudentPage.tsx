@@ -189,7 +189,7 @@ export function StudentPage() {
 
         {student.attempts.length > 0 && (
           <div className="table-scroll">
-            <table className="data-table student-history">
+            <table className="data-table data-table--cards student-history">
               <thead>
                 <tr>
                   <th scope="col">Submitted</th>
@@ -202,20 +202,20 @@ export function StudentPage() {
               <tbody>
                 {student.attempts.map((attempt) => (
                   <tr key={attempt.attempt_id}>
-                    <td>{formatDay(attempt.submitted_at)}</td>
-                    <td>{attempt.subject}</td>
-                    <td>
+                    <td data-label="Submitted">{formatDay(attempt.submitted_at)}</td>
+                    <td data-label="Subject">{attempt.subject}</td>
+                    <td data-label="Quiz">
                       {attempt.quiz_title}
                       {attempt.attempt_number > 1 && (
                         <span className="badge"> attempt {attempt.attempt_number}</span>
                       )}
                     </td>
-                    <td>
+                    <td data-label="Score">
                       {attempt.score_percent === null
                         ? "—"
                         : `${Math.round(attempt.score_percent)}%`}
                     </td>
-                    <td>
+                    <td data-label="Result">
                       {attempt.passed === null ? (
                         <span className="badge">Not marked</span>
                       ) : (

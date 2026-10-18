@@ -93,7 +93,7 @@ export function TopicItemStats({ topicId }: TopicItemStatsProps) {
         </p>
       ) : (
         <div className="table-scroll">
-          <table className="data-table">
+          <table className="data-table data-table--cards">
             <thead>
               <tr>
                 <th scope="col">Question</th>
@@ -106,16 +106,16 @@ export function TopicItemStats({ topicId }: TopicItemStatsProps) {
             <tbody>
               {ready.map((item) => (
                 <tr key={item.question_version_id}>
-                  <td>
+                  <td data-label="Question">
                     <p className="topic-item-stats__prompt">
                       <strong>Q{item.sequence}.</strong> {item.prompt}
                     </p>
                     <p className="muted topic-item-stats__options">{optionSummary(item)}</p>
                   </td>
-                  <td>{item.n}</td>
-                  <td>{formatRate(item.p_correct)}</td>
-                  <td>{formatDiscrimination(item.discrimination)}</td>
-                  <td>
+                  <td data-label="Responses">{item.n}</td>
+                  <td data-label="Correct">{formatRate(item.p_correct)}</td>
+                  <td data-label="Discrimination">{formatDiscrimination(item.discrimination)}</td>
+                  <td data-label="Flags">
                     {item.flags.length === 0 ? (
                       <span className="muted">None</span>
                     ) : (

@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "../auth/AuthContext";
+import { MobileNav } from "./MobileNav";
 import { PushButton } from "./PushButton";
 import { RouteMotion } from "./RouteMotion";
 
@@ -42,6 +43,13 @@ export function TeacherShell() {
   const onAssistant = location.pathname.startsWith("/teacher/assistant");
   const onQuestions = location.pathname.startsWith("/teacher/questions");
   const onAtRisk = location.pathname.startsWith("/teacher/at-risk");
+  const mobileItems = [
+    { to: "/teacher", label: "My classes", active: onClasses },
+    { to: "/teacher/analytics", label: "Analytics", active: onAnalytics },
+    { to: "/teacher/assistant", label: "Assistant", active: onAssistant },
+    { to: "/teacher/questions", label: "Question bank", active: onQuestions },
+    { to: "/teacher/at-risk", label: "At-risk flags", active: onAtRisk },
+  ];
 
   return (
     <div className="app-frame">
@@ -138,42 +146,16 @@ export function TeacherShell() {
         </aside>
 
         <div className="app__content">
-          <div className="topbar">
-            <div className="topbar__row">
-              <Link to="/teacher" className="topbar__brand">
-                CurioEd
-              </Link>
+          <MobileNav
+            brandTo="/teacher"
+            navLabel="Teacher"
+            items={mobileItems}
+            trailing={
               <PushButton variant="outline" size="sm" onClick={() => void signOut()}>
                 Sign out
               </PushButton>
-            </div>
-            <nav className="rail__nav rail__nav--horizontal" aria-label="Mobile teacher">
-              <Link to="/teacher" className={`rail__link ${onClasses ? "is-active" : ""}`}>
-                My classes
-              </Link>
-              <Link
-                to="/teacher/analytics"
-                className={`rail__link ${onAnalytics ? "is-active" : ""}`}
-              >
-                Analytics
-              </Link>
-              <Link
-                to="/teacher/assistant"
-                className={`rail__link ${onAssistant ? "is-active" : ""}`}
-              >
-                Assistant
-              </Link>
-              <Link
-                to="/teacher/questions"
-                className={`rail__link ${onQuestions ? "is-active" : ""}`}
-              >
-                Question bank
-              </Link>
-              <Link to="/teacher/at-risk" className={`rail__link ${onAtRisk ? "is-active" : ""}`}>
-                At-risk flags
-              </Link>
-            </nav>
-          </div>
+            }
+          />
 
           <main className="main">
             <RouteMotion>
