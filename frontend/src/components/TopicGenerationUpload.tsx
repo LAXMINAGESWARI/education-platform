@@ -22,6 +22,7 @@ import {
   type RunPhase,
 } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
+import { claimHaptic, triggerHaptic } from "../lib/haptics";
 import { ROLE_ADMIN } from "../auth/roles";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PushButton } from "./PushButton";
@@ -413,6 +414,7 @@ export function TopicGenerationUpload({
 
   async function onApprove() {
     if (!run || !workspace?.open_round || busy) return;
+    claimHaptic();
     setBusy(true);
     setError(null);
     try {
@@ -422,7 +424,9 @@ export function TopicGenerationUpload({
         snapshot_hash: workspace.active_revision.snapshot_hash,
       });
       await refreshWorkspace(run.id);
+      triggerHaptic("success");
     } catch (err) {
+      triggerHaptic("error");
       setError(errorMessage(err, "Could not submit the approval."));
     } finally {
       setBusy(false);
@@ -582,6 +586,7 @@ export function TopicGenerationUpload({
 
   async function onPublish() {
     if (!run || busy) return;
+    claimHaptic();
     setConfirm(null);
     setBusy(true);
     setError(null);
@@ -599,7 +604,9 @@ export function TopicGenerationUpload({
         });
       }
       onPublished?.();
+      triggerHaptic("success");
     } catch (err) {
+      triggerHaptic("error");
       setError(errorMessage(err, "Could not publish this run."));
     } finally {
       setBusy(false);

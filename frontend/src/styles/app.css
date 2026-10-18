@@ -956,6 +956,8 @@ button:hover:not(:disabled),
 
 .crumbs-host {
   flex: none;
+  min-width: 0;
+  max-width: 100%;
   /* Exiting breadcrumb items are taken out of flow during the trail animation.
      Clip them so a phone-width page does not grow a horizontal scrollbar. */
   overflow: clip;
@@ -5227,6 +5229,7 @@ body {
   .nav-drawer {
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
     position: fixed;
     z-index: 45;
     top: 0;
@@ -5251,6 +5254,26 @@ body {
     display: grid;
     align-content: start;
     gap: 0.25rem;
+  }
+
+  .haptic-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin-top: auto;
+    padding: 0.75rem 0.35rem 0.15rem;
+    min-height: 2.75rem;
+    color: var(--ink);
+    font-size: 1rem;
+    cursor: pointer;
+  }
+
+  .haptic-toggle input {
+    width: 1.15rem;
+    height: 1.15rem;
+    margin: 0;
+    accent-color: var(--accent);
+    flex: none;
   }
 
   .nav-drawer .rail__link,

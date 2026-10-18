@@ -12,6 +12,7 @@ import {
   type ConversationSummary,
 } from "../../api/chats";
 import { Crumbs } from "../../components/Crumbs";
+import { claimHaptic, triggerHaptic } from "../../lib/haptics";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 
@@ -258,6 +259,7 @@ export function PolicyChatPage() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || busy || !activeId) return;
+    claimHaptic();
 
     setDraft("");
     setBusy(true);
@@ -278,7 +280,9 @@ export function PolicyChatPage() {
       });
       setContext(result.context);
       await refreshList();
+      triggerHaptic("success");
     } catch (err) {
+      triggerHaptic("error");
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
@@ -413,7 +417,14 @@ export function PolicyChatPage() {
               disabled={busy || !activeId}
             />
             <ContextMeter context={context} />
-            <PushButton type="submit" disabled={busy || !draft.trim() || !activeId} loading={busy}>
+            <PushButton
+              type="submit"
+              disabled={busy || !draft.trim() || !activeId}
+              loading={busy}
+              onClick={() => {
+                if (!busy && draft.trim() && activeId) claimHaptic();
+              }}
+            >
               Send
             </PushButton>
           </form>
