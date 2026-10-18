@@ -48,6 +48,21 @@ export async function recordSlideEngagement(
  * Returns the engagement rate for a subtopic (engaged slides / total slides).
  * Returns null on any error so the feedback page degrades gracefully.
  */
+/**
+ * GET /api/v1/subjects/{subjectId}/engagement-rates
+ * Every lesson in the subject in one response. Returns [] on error so the
+ * feedback page can still render scores.
+ */
+export async function getSubjectEngagementRates(subjectId: string): Promise<EngagementRate[]> {
+  try {
+    return await apiRequest<EngagementRate[]>(
+      `/subjects/${encodeURIComponent(subjectId)}/engagement-rates`,
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function getEngagementRate(
   subtopicId: string,
 ): Promise<EngagementRate | null> {

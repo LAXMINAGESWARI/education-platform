@@ -21,7 +21,8 @@ from education_platform.modules.assessments.feedback_service import (
     learning_trajectory,
     subtopics_due_for_review,
 )
-from education_platform.modules.assessments.models import QuestionDifficulty
+from education_platform.modules.assessments.feedback_summary import _refresh_in_flight
+from education_platform.modules.assessments.models import QuestionDifficulty, SubjectFeedbackSummary
 from education_platform.modules.assessments.schemas import SubtopicAttemptScore
 
 SUBTOPIC_A = uuid4()
@@ -479,19 +480,33 @@ def test_review_interval_schedule_grows_with_streak(streak: int, expected_days: 
     assert _review_interval_days(streak) == expected_days
 
 
-async def _no_remediation(_session: object, _subtopic_id: UUID) -> None:
-    return None
+def test_refresh_lease_treats_naive_timestamps_as_utc() -> None:
+    row = SubjectFeedbackSummary(
+        student_id=uuid4(),
+        subject_id=uuid4(),
+        requested_hash="abc",
+        facts_hash=None,
+        summary=None,
+    )
+    row.updated_at = datetime(2026, 10, 18, 12, 0)
+    assert _refresh_in_flight(row, "abc", datetime(2026, 10, 18, 12, 0, 10, tzinfo=UTC)) is True
+    assert _refresh_in_flight(row, "abc", datetime(2026, 10, 18, 12, 2, tzinfo=UTC)) is False
+    assert _refresh_in_flight(row, "other", datetime(2026, 10, 18, 12, 0, tzinfo=UTC)) is False
+
+
+async def _no_remediations(_session: object, _subtopic_ids: list[UUID]) -> dict[UUID, object]:
+    return {}
 
 
 async def test_due_for_review_just_passed_is_not_due(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(feedback_service, "_remediation_for_subtopic", _no_remediation)
+    monkeypatch.setattr(feedback_service, "_remediations_for_subtopics", _no_remediations)
     rows = [_row(submitted_at=T1, is_correct=True)]
     result = await subtopics_due_for_review(None, rows, pass_mark=Decimal("70"), now=T1)
     assert result == []
 
 
 async def test_due_for_review_past_interval_is_due(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(feedback_service, "_remediation_for_subtopic", _no_remediation)
+    monkeypatch.setattr(feedback_service, "_remediations_for_subtopics", _no_remediations)
     rows = [_row(submitted_at=T1, is_correct=True)]
     now = T1 + timedelta(days=10)
     result = await subtopics_due_for_review(None, rows, pass_mark=Decimal("70"), now=now)
@@ -505,7 +520,7 @@ async def test_due_for_review_more_consolidation_longer_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Three consecutive passes -> a 21-day interval, not the first-pass 3-day one."""
-    monkeypatch.setattr(feedback_service, "_remediation_for_subtopic", _no_remediation)
+    monkeypatch.setattr(feedback_service, "_remediations_for_subtopics", _no_remediations)
     rows = [
         _row(attempt_id=ATTEMPT_1, submitted_at=T1, is_correct=True, question_version_id=Q1),
         _row(attempt_id=ATTEMPT_2, submitted_at=T2, is_correct=True, question_version_id=Q1),
@@ -520,7 +535,7 @@ async def test_due_for_review_more_consolidation_longer_interval(
 async def test_due_for_review_currently_failing_is_never_due(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(feedback_service, "_remediation_for_subtopic", _no_remediation)
+    monkeypatch.setattr(feedback_service, "_remediations_for_subtopics", _no_remediations)
     rows = [_row(submitted_at=T1, is_correct=False, marks_awarded="0")]
     now = T1 + timedelta(days=90)
     result = await subtopics_due_for_review(None, rows, pass_mark=Decimal("70"), now=now)
