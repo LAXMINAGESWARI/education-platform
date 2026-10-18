@@ -334,7 +334,7 @@ templates:
         - subject
 
     sql: |
-      SELECT ROUND(AVG(s.mastery_percent), 2) AS average_score
+      SELECT ROUND(AVG(s.mastery_percent), 2) AS average_score_percent
       FROM student_360 s
       JOIN subjects sub ON sub.id = s.subject_id
       JOIN academic_periods ap ON ap.id = s.academic_period_id
@@ -391,7 +391,7 @@ templates:
         - quiz
 
     sql: |
-      SELECT ROUND(AVG(qa.score_percent), 2) AS average_score
+      SELECT ROUND(AVG(qa.score_percent), 2) AS average_score_percent
       FROM quiz_attempts qa
       JOIN quiz_versions qv ON qv.id = qa.quiz_version_id
       JOIN common_mastery_quizzes cmq ON cmq.id = qv.quiz_id
@@ -440,7 +440,7 @@ templates:
         required_parameters: []
 
     sql: |
-      SELECT ROUND(AVG(s.attendance_percent), 2) AS average_attendance
+      SELECT ROUND(AVG(s.attendance_percent), 2) AS average_attendance_percent
       FROM student_360 s
       JOIN academic_periods ap ON ap.id = s.academic_period_id
       WHERE ap.status = 'active'

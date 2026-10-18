@@ -519,7 +519,7 @@ async def test_average_mastery_by_subject_reflects_section_scoping(seeded: _Fixt
         institution_id=seeded.institution_id,
         parameters={"subject": "Mathematics"},
     )
-    assert round(float(teacher_result["query_result"][0]["average_score"]), 2) == 85.00
+    assert round(float(teacher_result["query_result"][0]["average_score_percent"]), 2) == 85.00
 
     # Teacher2's Math grant is all-sections -> student_a_math (85) + student_b_math (45)
     # -> average 65. A template that silently dropped its section predicate would return
@@ -531,7 +531,7 @@ async def test_average_mastery_by_subject_reflects_section_scoping(seeded: _Fixt
         institution_id=seeded.institution_id,
         parameters={"subject": "Mathematics"},
     )
-    assert round(float(teacher2_result["query_result"][0]["average_score"]), 2) == 65.00
+    assert round(float(teacher2_result["query_result"][0]["average_score_percent"]), 2) == 65.00
 
 
 async def test_average_subtopic_quiz_score_executes(seeded: _Fixture) -> None:
@@ -555,7 +555,7 @@ async def test_average_attendance_rate_reflects_section_scoping(seeded: _Fixture
         user_id=seeded.teacher_user_id,
         institution_id=seeded.institution_id,
     )
-    assert round(float(teacher_result["query_result"][0]["average_attendance"]), 2) == 85.00
+    assert round(float(teacher_result["query_result"][0]["average_attendance_percent"]), 2) == 85.00
 
     # Teacher2: student_a_math (90%) + student_b_math (50%) -> average 70.
     teacher2_result = await _run_template(
@@ -563,7 +563,9 @@ async def test_average_attendance_rate_reflects_section_scoping(seeded: _Fixture
         user_id=seeded.teacher2_user_id,
         institution_id=seeded.institution_id,
     )
-    assert round(float(teacher2_result["query_result"][0]["average_attendance"]), 2) == 70.00
+    assert (
+        round(float(teacher2_result["query_result"][0]["average_attendance_percent"]), 2) == 70.00
+    )
 
 
 # --- 5. list_students_in_section -----------------------------------------------------------
@@ -952,5 +954,5 @@ async def test_untaught_subject_returns_null_and_the_probe_explains_it(seeded: _
         probes={"taught_subjects": _probe_sql()["taught_subjects"]},
     )
 
-    assert result["query_result"] == [{"average_score": None}]
+    assert result["query_result"] == [{"average_score_percent": None}]
     assert result["zero_probe_results"] == {"taught_subjects": ["Mathematics"]}

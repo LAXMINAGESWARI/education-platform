@@ -970,3 +970,76 @@ async def test_untaught_subject_message_is_not_used_when_there_is_real_data(
     )
 
     assert _answer(result) == "The average score is 70.08."
+
+
+# --- percentages: an `average_*_percent` column reads as a percentage ----------------------
+
+
+async def test_average_attendance_percent_reads_as_a_percentage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"average_attendance_percent": 90.83}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The average attendance is 90.83%."
+
+
+async def test_average_score_percent_reads_as_a_percentage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"average_score_percent": 70.08}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The average score is 70.08%."
+
+
+async def test_average_percent_with_no_data_reads_naturally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"average_score_percent": None}], result_row_count=1)
+    )
+
+    assert _answer(result).startswith("No average score data is available for that.")
+
+
+async def test_any_percent_suffixed_column_gets_a_percent_sign(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"pass_rate_percent": 64.5}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The pass rate percent is 64.5%."
+
+
+async def test_plain_schema_percent_column_keeps_its_established_wording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"mastery_percent": 82.5}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The mastery percent is 82.5%."
+
+
+async def test_a_count_is_never_given_a_percent_sign(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+
+    result = await compose_answer(
+        _base_state(query_result=[{"student_count": 72}], result_row_count=1)
+    )
+
+    assert _answer(result) == "The student count is 72."

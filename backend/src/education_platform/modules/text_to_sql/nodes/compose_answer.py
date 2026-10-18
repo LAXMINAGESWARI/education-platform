@@ -232,14 +232,29 @@ def _humanize_column(name: str) -> str:
     return name.replace("_", " ").strip()
 
 
-def _single_scalar_answer(column: str, value: Any, criterion: str | None = None) -> str:
+def _scalar_label_and_unit(column: str) -> tuple[str, bool]:
+    """The phrase naming a scalar column and whether its value is a percentage.
+
+    A column is a percentage if it is one of the schema's known 0-100 columns
+    (`PERCENTAGE_COLUMNS`) or is named `*_percent`. The templates alias their averages that
+    way (`average_attendance_percent`, `average_score_percent`) so "What is the average
+    attendance rate?" reads "The average attendance is 90.83%." and not a bare "90.83".
+    For those `average_*_percent` aliases the trailing "percent" is dropped from the phrase
+    (the % sign carries it); a plain schema column keeps its established wording, e.g.
+    "The mastery percent is 82.5%."."""
+    lowered = column.lower()
     label = _humanize_column(column)
+    is_percent = lowered in PERCENTAGE_COLUMNS or lowered.endswith("_percent")
+    if lowered.startswith("average_") and lowered.endswith("_percent"):
+        label = label[: -len(" percent")]
+    return label, is_percent
+
+
+def _single_scalar_answer(column: str, value: Any, criterion: str | None = None) -> str:
+    label, is_percent = _scalar_label_and_unit(column)
     if value is None:
         return f"No {label} data is available for that."
-    if column.lower() in PERCENTAGE_COLUMNS:
-        sentence = f"The {label} is {value}%."
-    else:
-        sentence = f"The {label} is {value}."
+    sentence = f"The {label} is {value}%." if is_percent else f"The {label} is {value}."
     if not criterion:
         return sentence
     # Appended verbatim, not re-typed or paraphrased — same discipline as the rest of

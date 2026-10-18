@@ -502,3 +502,20 @@ async def test_zero_rows_without_the_flag_still_downgrade() -> None:
     result = await sanity_check(state)
 
     assert result["confidence"] == "medium"
+
+
+# --- the templates' averaged percentage aliases get the same 0-100 bounds check --------------
+
+
+async def test_average_attendance_percent_above_100_is_flagged_low() -> None:
+    result = await sanity_check(_state(query_result=[{"average_attendance_percent": 140.0}]))
+
+    assert result["confidence"] == "low"
+    assert _triggers(result)[0].startswith("aggregate_out_of_bounds:")
+
+
+async def test_average_score_percent_within_bounds_is_not_flagged() -> None:
+    result = await sanity_check(_state(query_result=[{"average_score_percent": 70.08}]))
+
+    assert result["confidence"] == "high"
+    assert _triggers(result) == []

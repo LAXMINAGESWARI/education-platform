@@ -153,7 +153,16 @@ from education_platform.modules.text_to_sql.state import TextToSQLState
 # — that table is out of scope for text-to-SQL entirely (load_schema.EXCLUDED_TABLES), so a
 # query here can never produce it.
 PERCENTAGE_COLUMNS: Final[frozenset[str]] = frozenset(
-    {"score_percent", "mastery_percent", "attendance_percent", "pass_threshold_percent"}
+    {
+        "score_percent",
+        "mastery_percent",
+        "attendance_percent",
+        "pass_threshold_percent",
+        # The aliases the templates give an AVG of the columns above. An average of 0-100
+        # values is itself 0-100, so the same bounds check applies.
+        "average_score_percent",
+        "average_attendance_percent",
+    }
 )
 
 _LIST_SIGNAL_PHRASES: Final[tuple[str, ...]] = (
