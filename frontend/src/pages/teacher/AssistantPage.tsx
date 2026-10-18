@@ -2,6 +2,7 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { askQuestion, type Confidence } from "../../api/textToSql";
 import { Crumbs } from "../../components/Crumbs";
+import { claimHaptic, triggerHaptic } from "../../lib/haptics";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 
@@ -90,6 +91,7 @@ export function AssistantPage() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || busy) return;
+    claimHaptic();
 
     const id = `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setDraft("");
@@ -112,10 +114,12 @@ export function AssistantPage() {
             : entry,
         ),
       );
+      triggerHaptic("success");
     } catch {
       // A real HTTP-layer failure (403/500/504/network) — distinct from a normal 200
       // response that happens to carry a low-confidence or refusal answer, which never
       // reaches this branch at all since it doesn't throw.
+      triggerHaptic("error");
       setThread((prev) =>
         prev.map((entry) => (entry.id === id ? { ...entry, status: "error" } : entry)),
       );
@@ -208,7 +212,14 @@ export function AssistantPage() {
           onChange={(e) => setDraft(e.target.value)}
           disabled={busy}
         />
-        <PushButton type="submit" disabled={busy || !draft.trim()} loading={busy}>
+        <PushButton
+          type="submit"
+          disabled={busy || !draft.trim()}
+          loading={busy}
+          onClick={() => {
+            if (!busy && draft.trim()) claimHaptic();
+          }}
+        >
           Ask
         </PushButton>
       </form>

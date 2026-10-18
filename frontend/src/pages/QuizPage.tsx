@@ -10,6 +10,7 @@ import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PushButton } from "../components/PushButton";
 import { installQuizCopyGuard, QUIZ_COPY_MESSAGE } from "../lib/copyGuard";
+import { claimHaptic, triggerHaptic } from "../lib/haptics";
 import { resolvePathFromAttempt, resolvePathFromQuizId, learningPathCrumb, type LearningPath } from "../lib/learningPath";
 import { presentQuizText } from "../lib/quizText";
 
@@ -30,6 +31,7 @@ export function QuizPage() {
   const [copyBlocked, setCopyBlocked] = useState(false);
 
   const showCopyNotice = useCallback(() => {
+    triggerHaptic("error");
     setCopyBlocked(true);
     if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
     copyNoticeTimer.current = window.setTimeout(() => {
@@ -104,16 +106,19 @@ export function QuizPage() {
 
   async function onSubmit() {
     if (!attempt || !allAnswered || submittingRef.current) return;
+    claimHaptic();
     submittingRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const result = await submitAttempt(attempt.id, buildSubmitPayload(answers));
+      triggerHaptic("success");
       navigate(`/attempts/${result.id}`, {
         replace: true,
         state: { result, path },
       });
     } catch (err) {
+      triggerHaptic("error");
       submittingRef.current = false;
       setError(err instanceof ApiError ? err.message : "Could not submit quiz.");
       setBusy(false);
