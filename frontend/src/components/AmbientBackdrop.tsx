@@ -67,9 +67,11 @@ function readChromeAnchor(): DOMRect | null {
   return el.getBoundingClientRect();
 }
 
-/** Student routes, login, and feedback that show the sage grid (no doodles except `/`). */
-export function isStudentBackdropPath(pathname: string): boolean {
+/** Routes that show the sage grid. Doodles stay on the subjects home page only. */
+export function isAmbientBackdropPath(pathname: string): boolean {
   if (pathname === "/" || pathname === "/login" || pathname === "/feedback") return true;
+  if (pathname === "/teacher" || pathname.startsWith("/teacher/")) return true;
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) return true;
   if (matchPath({ path: "/subjects/:subjectId", end: true }, pathname)) return true;
   if (matchPath({ path: "/subjects/:subjectId/feedback", end: true }, pathname)) return true;
   if (
@@ -91,14 +93,16 @@ export function isSubjectsHomePath(pathname: string): boolean {
 }
 
 /**
- * Fixed full-viewport sage grid. Portfolio doodles + user sketch strokes run
- * only on the subjects home page (`/`). Login, feedback, subject, lesson,
- * slides, quiz history, quiz, and result pages keep the grid. Hidden on
- * admin/teacher routes. Reduced motion and coarse pointers use the static grid.
+ * One fixed full-viewport sage grid, mounted above the app in `main.tsx`.
+ * Pointer moves only update coordinates; the canvas redraws on the animation
+ * frame, so the page tree does not re-render. Portfolio doodles and sketch
+ * strokes run only on the subjects home page. Login, teacher, admin, feedback,
+ * subject, lesson, quiz, and result pages keep the grid. Reduced motion and
+ * coarse pointers use the static CSS grid.
  */
 export function AmbientBackdrop() {
   const { pathname } = useLocation();
-  const active = isStudentBackdropPath(pathname);
+  const active = isAmbientBackdropPath(pathname);
   const doodlesEnabled = isSubjectsHomePath(pathname);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);

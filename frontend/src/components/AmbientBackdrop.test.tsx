@@ -126,8 +126,27 @@ describe("AmbientBackdrop", () => {
     expect(root.querySelector("canvas")).not.toBeNull();
   });
 
-  it("hides on admin and other non-student routes", () => {
+  it("keeps the grid without doodles on teacher pages", () => {
+    const { unmount } = renderBackdrop("/teacher");
+    expect(screen.getByTestId("ambient-backdrop")).toHaveAttribute("data-doodles", "false");
+    expect(screen.getByTestId("ambient-backdrop").querySelector("canvas")).not.toBeNull();
+    unmount();
+
+    renderBackdrop("/teacher/analytics");
+    expect(screen.getByTestId("ambient-backdrop")).toHaveAttribute("data-doodles", "false");
+    expect(screen.getByTestId("ambient-backdrop").querySelector("canvas")).not.toBeNull();
+  });
+
+  it("keeps the grid without doodles on nested admin pages", () => {
     renderBackdrop("/admin/materials");
+    const root = screen.getByTestId("ambient-backdrop");
+    expect(root).toHaveAttribute("data-doodles", "false");
+    expect(root).toHaveAttribute("data-static", "false");
+    expect(root.querySelector("canvas")).not.toBeNull();
+  });
+
+  it("hides on routes outside the shared backdrop", () => {
+    renderBackdrop("/enroll");
     expect(screen.queryByTestId("ambient-backdrop")).toBeNull();
   });
 
@@ -136,11 +155,17 @@ describe("AmbientBackdrop", () => {
       "(prefers-reduced-motion: reduce)": true,
       "(pointer: coarse)": false,
     });
-    renderBackdrop("/");
+    const { unmount } = renderBackdrop("/");
     const root = screen.getByTestId("ambient-backdrop");
     expect(root).toHaveAttribute("data-static", "true");
     expect(root.className).toContain("ambient-backdrop--static");
     expect(root.querySelector("canvas")).toBeNull();
+    unmount();
+
+    renderBackdrop("/admin/dashboard");
+    const admin = screen.getByTestId("ambient-backdrop");
+    expect(admin).toHaveAttribute("data-static", "true");
+    expect(admin.querySelector("canvas")).toBeNull();
   });
 
   it("uses static CSS fallback on coarse pointer", () => {
