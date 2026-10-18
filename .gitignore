@@ -27,6 +27,10 @@ pnpm-debug.log*
 # Testing
 coverage/
 .nyc_output/
+frontend/e2e/artifacts/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
 
 # Python
 __pycache__/

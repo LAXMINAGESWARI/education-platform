@@ -219,7 +219,7 @@ export function QuizPage() {
             </p>
           )}
 
-          <div className="actions" style={{ marginTop: 0 }}>
+          <div className="actions quiz-actions" style={{ marginTop: 0 }}>
             <PushButton
               variant="outline"
               size="sm"

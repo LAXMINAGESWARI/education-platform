@@ -39,7 +39,7 @@ type AtRiskFlagsTableProps = {
 export function AtRiskFlagsTable({ flags, busyId, onDismiss }: AtRiskFlagsTableProps) {
   return (
     <div className="table-scroll">
-      <table className="data-table">
+      <table className="data-table data-table--cards">
         <thead>
           <tr>
             <th scope="col">Student</th>
@@ -52,12 +52,12 @@ export function AtRiskFlagsTable({ flags, busyId, onDismiss }: AtRiskFlagsTableP
         <tbody>
           {flags.map((flag) => (
             <tr key={flag.id} className={flag.tier === "urgent" ? "at-risk-row--urgent" : ""}>
-              <td>{flag.student_name}</td>
-              <td>{flag.subject ?? <span className="badge">Attendance</span>}</td>
-              <td>
+              <td data-label="Student">{flag.student_name}</td>
+              <td data-label="Subject">{flag.subject ?? <span className="badge">Attendance</span>}</td>
+              <td data-label="Tier">
                 <AtRiskTierBadge tier={flag.tier} />
               </td>
-              <td className="at-risk-why">
+              <td className="at-risk-why" data-label="Why">
                 <ul className="at-risk-drivers">
                   {flag.drivers.map((driver, index) => (
                     <li key={index}>
@@ -69,7 +69,7 @@ export function AtRiskFlagsTable({ flags, busyId, onDismiss }: AtRiskFlagsTableP
                   ))}
                 </ul>
               </td>
-              <td>
+              <td data-label="Action">
                 <PushButton
                   variant="outline"
                   size="sm"

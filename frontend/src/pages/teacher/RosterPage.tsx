@@ -153,10 +153,10 @@ function RosterRow({ student, sectionId }: { student: TeacherClassStudent; secti
 
   return (
     <div className="teacher-roster__row" role="row">
-      <span className="teacher-roster__roll" role="cell">
+      <span className="teacher-roster__roll" role="cell" data-label="Roll">
         {student.identifier}
       </span>
-      <span className="teacher-roster__name" role="cell">
+      <span className="teacher-roster__name" role="cell" data-label="Name">
         {/* The name is the way in. A roster you cannot click is a dead end, and the
             student page is the screen a teacher opens every day. */}
         <Link to={`/teacher/classes/${sectionId}/students/${student.id}`}>
@@ -170,14 +170,14 @@ function RosterRow({ student, sectionId }: { student: TeacherClassStudent; secti
           </span>
         )}
       </span>
-      <span role="cell">
+      <span role="cell" data-label="Mastery">
         {mastery === null ? (
           <span className="badge">No quizzes yet</span>
         ) : (
           <span className="badge">{mastery.toFixed(0)}%</span>
         )}
       </span>
-      <span role="cell">
+      <span role="cell" data-label="Attendance">
         {attendance === null ? (
           <span className="badge">Not recorded</span>
         ) : (

@@ -372,7 +372,7 @@ export function QuestionBankPage() {
                   )}
 
                   {tab === "drafts" && (
-                    <div className="meta-row">
+                    <div className="meta-row draft-card__actions">
                       <PushButton
                         size="sm"
                         onClick={() => void decide(question, true)}

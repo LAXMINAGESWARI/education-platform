@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import { useState } from "react";
 
 import { useAuth } from "../auth/AuthContext";
+import { MobileNav } from "./MobileNav";
 import { PushButton } from "./PushButton";
 import { RouteMotion } from "./RouteMotion";
 
@@ -99,23 +100,20 @@ export function AdminShell() {
         </aside>
 
         <div className="app__content">
-          <div className="topbar">
-            <div className="topbar__row">
-              <Link to="/admin/dashboard" className="topbar__brand">
-                CurioEd
-              </Link>
+          <MobileNav
+            brandTo="/admin/dashboard"
+            navLabel="Admin"
+            items={NAV_ITEMS.map((item) => ({
+              to: item.to,
+              label: item.label,
+              active: location.pathname.startsWith(item.to),
+            }))}
+            trailing={
               <PushButton variant="outline" size="sm" onClick={() => void signOut()}>
                 Sign out
               </PushButton>
-            </div>
-            <nav className="rail__nav rail__nav--horizontal" aria-label="Mobile admin">
-              {NAV_ITEMS.map((item) => (
-                <Link key={item.to} to={item.to} className={linkClass(item.to)}>
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
-          </div>
+            }
+          />
 
           <main className="main">
             <RouteMotion>

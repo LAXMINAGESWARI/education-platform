@@ -821,6 +821,7 @@ function ReportCard({
           </div>
         </div>
 
+        <div className="table-scroll">
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
           <thead>
             <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border)" }}>
@@ -859,6 +860,7 @@ function ReportCard({
             })}
           </tbody>
         </table>
+        </div>
 
         <p style={{ margin: "16px 0 0 0", fontSize: "0.72rem", color: "var(--ink-muted)" }}>
           Engagement reflects active time spent on lesson slides before the quiz. Scores show the
