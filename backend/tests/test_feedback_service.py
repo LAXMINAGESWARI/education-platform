@@ -21,8 +21,7 @@ from education_platform.modules.assessments.feedback_service import (
     learning_trajectory,
     subtopics_due_for_review,
 )
-from education_platform.modules.assessments.feedback_summary import _refresh_in_flight
-from education_platform.modules.assessments.models import QuestionDifficulty, SubjectFeedbackSummary
+from education_platform.modules.assessments.models import QuestionDifficulty
 from education_platform.modules.assessments.schemas import SubtopicAttemptScore
 
 SUBTOPIC_A = uuid4()
@@ -478,20 +477,6 @@ def test_review_interval_schedule_grows_with_streak(streak: int, expected_days: 
     """More consolidation (a longer passing streak) -> a longer interval, capped at the last
     tier once a streak exceeds this platform's realistic max (quizzes allow 3 attempts)."""
     assert _review_interval_days(streak) == expected_days
-
-
-def test_refresh_lease_treats_naive_timestamps_as_utc() -> None:
-    row = SubjectFeedbackSummary(
-        student_id=uuid4(),
-        subject_id=uuid4(),
-        requested_hash="abc",
-        facts_hash=None,
-        summary=None,
-    )
-    row.updated_at = datetime(2026, 10, 18, 12, 0)
-    assert _refresh_in_flight(row, "abc", datetime(2026, 10, 18, 12, 0, 10, tzinfo=UTC)) is True
-    assert _refresh_in_flight(row, "abc", datetime(2026, 10, 18, 12, 2, tzinfo=UTC)) is False
-    assert _refresh_in_flight(row, "other", datetime(2026, 10, 18, 12, 0, tzinfo=UTC)) is False
 
 
 async def _no_remediations(_session: object, _subtopic_ids: list[UUID]) -> dict[UUID, object]:

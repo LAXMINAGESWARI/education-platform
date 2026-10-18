@@ -6,12 +6,11 @@ change to the upstream question/subtopic/topic tables has exactly one query to u
 
 The prose summary is not generated inside the request. A matching cached summary is
 returned when the score facts are unchanged; otherwise the response carries the template
-and `run_summary_refresh` fills the cache after the response is sent.
+with `summary_status=pending` and a worker job writes the model text.
 """
 
 from __future__ import annotations
 
-import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
-from education_platform.core.llm import OpenRouterError, chat_completion_json
 from education_platform.modules.academics.models import (
     GradeSubjectOffering,
     Subject,
@@ -32,13 +30,7 @@ from education_platform.modules.academics.models import (
     Topic,
 )
 from education_platform.modules.assessments import goals_service
-from education_platform.modules.assessments.feedback_summary import (
-    SummaryRefresh,
-    cached_summary,
-    claim_refresh,
-    facts_hash,
-    store_refresh_result,
-)
+from education_platform.modules.assessments.feedback_summary import facts_hash, resolve_summary
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
     CommonMasteryQuiz,
@@ -67,10 +59,7 @@ from education_platform.modules.materials.models import (
     SourceMaterialVersionStatus,
 )
 
-logger = logging.getLogger(__name__)
-
 _RELEASED_STATUSES = (QuizAttemptStatus.SCORED, QuizAttemptStatus.RELEASED)
-_SUMMARY_TIMEOUT_SECONDS = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,26 +607,6 @@ def _template_summary(strong: SubtopicPerformance | None, weak: list[SubtopicPer
     return " ".join(parts)
 
 
-async def _openrouter_summary_writer(prompt: str) -> str:
-    payload = await chat_completion_json(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You write short, encouraging feedback summaries for a student, based only "
-                    "on the facts given. Never invent claims not present in the facts. Return "
-                    'JSON only, in this exact shape: {"summary": "..."}'
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
-        timeout=_SUMMARY_TIMEOUT_SECONDS,
-    )
-    summary = payload.get("summary")
-    return str(summary) if isinstance(summary, str) and summary.strip() else ""
-
-
 def _prompt_for(
     subject_name: str,
     strong: SubtopicPerformance | None,
@@ -711,21 +680,9 @@ def _prompt_for(
     return "\n".join(lines)
 
 
-async def run_summary_refresh(job: SummaryRefresh) -> None:
-    """Generate prose for a facts hash and store it when that hash is still current."""
-    try:
-        summary = await _openrouter_summary_writer(job.prompt)
-    except OpenRouterError as exc:
-        logger.warning("feedback summary generation failed: %s", exc)
-        summary = ""
-    if not summary.strip():
-        summary = job.template_summary
-    await store_refresh_result(job, summary)
-
-
 async def get_subject_feedback(
     session: AsyncSession, scope: Scope, subject_id: UUID
-) -> tuple[SubjectFeedbackDashboard, SummaryRefresh | None]:
+) -> SubjectFeedbackDashboard:
     if scope.self_student_id is None:
         raise DomainError("Student enrollment required", status_code=403)
     student_id = scope.self_student_id
@@ -862,21 +819,20 @@ async def get_subject_feedback(
         regressions_by_subtopic,
     )
     template = _template_summary(passing_strength, weak_list)
-    summary = template
-    refresh: SummaryRefresh | None = None
     if attempt_ids:
-        digest = facts_hash(prompt)
-        cached = await cached_summary(session, student_id, subject.id, digest)
-        if cached is not None:
-            summary = cached
-        elif await claim_refresh(session, student_id, subject.id, digest):
-            refresh = SummaryRefresh(
-                student_id=student_id,
-                subject_id=subject.id,
-                facts_hash=digest,
-                prompt=prompt,
-                template_summary=template,
-            )
+        resolved = await resolve_summary(
+            session,
+            student_id,
+            subject.id,
+            facts_hash(prompt),
+            prompt,
+            template,
+        )
+        summary = resolved.text
+        summary_status = resolved.status
+    else:
+        summary = template
+        summary_status = "fallback"
 
     regressions = [
         RegressionOut(
@@ -898,5 +854,6 @@ async def get_subject_feedback(
         top_focus_subtopic_ids=[p.subtopic_id for p in weak_list[:3]],
         regressions=regressions,
         summary=summary,
+        summary_status=summary_status,
     )
-    return dashboard, refresh
+    return dashboard

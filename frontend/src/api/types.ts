@@ -213,6 +213,8 @@ export type FeedbackHighlights = {
   trajectories: TrajectoryOut[];
 };
 
+export type FeedbackSummaryStatus = "ready" | "pending" | "fallback";
+
 export type SubjectFeedbackDashboard = {
   subject_id: string;
   subject_name: string;
@@ -223,6 +225,7 @@ export type SubjectFeedbackDashboard = {
   top_focus_subtopic_ids: string[];
   regressions: RegressionOut[];
   summary: string;
+  summary_status: FeedbackSummaryStatus;
 };
 
 export type LessonSlide = {

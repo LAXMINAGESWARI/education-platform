@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -8,21 +8,32 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.llm import OpenRouterError
 from education_platform.modules.academics.models import Subject
-from education_platform.modules.assessments import feedback_service
+from education_platform.modules.assessments import feedback_summary
 from education_platform.modules.assessments.models import (
+    FeedbackSummaryJob,
+    FeedbackSummaryJobStatus,
+    FeedbackSummaryOrigin,
     QuestionAnswerKey,
     QuizItem,
     SubjectFeedbackSummary,
 )
 from education_platform.modules.materials.seed import POC_INSTITUTION_NAME, POC_SUBJECT_CODE
+from education_platform.workers.runner import poll_once
 
 
 @pytest.fixture(autouse=True)
 def _fake_summary_writer(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake(_prompt: str) -> str:
+    def _fake(_prompt: str) -> str:
         return "Fake summary for tests."
 
-    monkeypatch.setattr(feedback_service, "_openrouter_summary_writer", _fake)
+    monkeypatch.setattr(feedback_summary, "write_summary", _fake)
+
+
+def _finish_summary(seeded_db: Session) -> None:
+    seeded_db.expire_all()
+    claimed = poll_once(session=seeded_db)
+    assert claimed is not None
+    seeded_db.expire_all()
 
 
 def _submit_attempt(
@@ -116,14 +127,22 @@ def test_subject_feedback_reflects_scored_attempt(
     assert float(payload["overall_percent"]) == 100.0
     assert len(payload["subtopics"]) == 1
     assert payload["subtopics"][0]["is_weak"] is False
-    # The response is sent before OpenRouter runs. The first body is the template;
-    # the background task stores the model summary for the next read of the same facts.
+    assert payload["summary_status"] == "pending"
     assert payload["summary"].startswith("You're doing well in")
     assert payload["summary"] != "Fake summary for tests."
+    job = seeded_db.scalar(select(FeedbackSummaryJob))
+    assert job is not None
+    assert "Mathematics" in job.prompt
+    assert "100" in job.prompt
 
+    _finish_summary(seeded_db)
     cached = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
     assert cached.status_code == 200, cached.text
+    assert cached.json()["summary_status"] == "ready"
     assert cached.json()["summary"] == "Fake summary for tests."
+    stored = seeded_db.scalar(select(FeedbackSummaryJob))
+    assert stored is not None
+    assert stored.status == FeedbackSummaryJobStatus.SUCCEEDED
 
 
 def test_subject_feedback_404_for_unenrolled_subject(
@@ -160,15 +179,16 @@ def test_subject_feedback_404_for_unenrolled_subject(
 def test_feedback_without_attempts_does_not_call_the_summary_writer(
     client: TestClient,
     enrolled_student_headers: dict[str, str],
+    seeded_db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = {"n": 0}
 
-    async def _fake(_prompt: str) -> str:
+    def _fake(_prompt: str) -> str:
         calls["n"] += 1
         return "should not run"
 
-    monkeypatch.setattr(feedback_service, "_openrouter_summary_writer", _fake)
+    monkeypatch.setattr(feedback_summary, "write_summary", _fake)
     directory = client.get("/api/v1/me/learning-directory", headers=enrolled_student_headers)
     assert directory.status_code == 200, directory.text
     subject_id = directory.json()["subjects"][0]["id"]
@@ -178,6 +198,8 @@ def test_feedback_without_attempts_does_not_call_the_summary_writer(
     )
     assert feedback.status_code == 200, feedback.text
     assert feedback.json()["attempt_count"] == 0
+    assert feedback.json()["summary_status"] == "fallback"
+    assert seeded_db.scalar(select(FeedbackSummaryJob)) is None
     assert calls["n"] == 0
 
 
@@ -189,22 +211,31 @@ def test_summary_writer_failure_is_cached_as_the_template(
 ) -> None:
     calls = {"n": 0}
 
-    async def _boom(_prompt: str) -> str:
+    def _boom(_prompt: str) -> str:
         calls["n"] += 1
         raise OpenRouterError("down")
 
-    monkeypatch.setattr(feedback_service, "_openrouter_summary_writer", _boom)
+    monkeypatch.setattr(feedback_summary, "write_summary", _boom)
     subject_id, _attempt_id = _submit_perfect_attempt(client, enrolled_student_headers, seeded_db)
 
     first = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
     assert first.status_code == 200, first.text
+    assert first.json()["summary_status"] == "pending"
     assert first.json()["summary"].startswith("You're doing well in")
+    assert calls["n"] == 0
+
+    _finish_summary(seeded_db)
     assert calls["n"] == 1
 
     second = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
     assert second.status_code == 200, second.text
+    assert second.json()["summary_status"] == "fallback"
     assert second.json()["summary"] == first.json()["summary"]
     assert calls["n"] == 1
+    seeded_db.expire_all()
+    stored = seeded_db.scalars(select(FeedbackSummaryJob)).all()
+    assert len(stored) == 1
+    assert stored[0].status == FeedbackSummaryJobStatus.SUCCEEDED
 
 
 def _enroll(client: TestClient, email: str, identifier: str) -> dict[str, str]:
@@ -257,7 +288,7 @@ def test_classmate_average_and_weak_remediation_use_batched_queries(
     assert subtopic["remediation"]["material_title"]
 
 
-def test_in_flight_summary_refresh_is_not_started_twice(
+def test_in_flight_summary_job_is_not_enqueued_twice(
     client: TestClient,
     enrolled_student_headers: dict[str, str],
     seeded_db: Session,
@@ -265,25 +296,101 @@ def test_in_flight_summary_refresh_is_not_started_twice(
 ) -> None:
     calls = {"n": 0}
 
-    async def _fake(_prompt: str) -> str:
+    def _fake(_prompt: str) -> str:
         calls["n"] += 1
         return "Generated once."
 
-    monkeypatch.setattr(feedback_service, "_openrouter_summary_writer", _fake)
+    monkeypatch.setattr(feedback_summary, "write_summary", _fake)
     subject_id, _attempt_id = _submit_perfect_attempt(client, enrolled_student_headers, seeded_db)
     first = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
     assert first.status_code == 200, first.text
-    assert calls["n"] == 1
-
-    row = seeded_db.scalar(select(SubjectFeedbackSummary))
-    assert row is not None and row.facts_hash is not None
-    row.requested_hash = row.facts_hash
-    row.facts_hash = None
-    row.summary = None
-    row.updated_at = datetime.now(UTC)
-    seeded_db.commit()
+    assert first.json()["summary_status"] == "pending"
+    assert calls["n"] == 0
 
     second = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
     assert second.status_code == 200, second.text
-    assert second.json()["summary"].startswith("You're doing well in")
+    assert second.json()["summary_status"] == "pending"
+    seeded_db.expire_all()
+    assert len(seeded_db.scalars(select(FeedbackSummaryJob)).all()) == 1
+    assert calls["n"] == 0
+
+    _finish_summary(seeded_db)
     assert calls["n"] == 1
+    ready = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
+    assert ready.status_code == 200, ready.text
+    assert ready.json()["summary_status"] == "ready"
+    assert ready.json()["summary"] == "Generated once."
+    assert poll_once(session=seeded_db) is None
+    assert calls["n"] == 1
+
+
+def test_exhausted_summary_job_stores_the_template(
+    client: TestClient,
+    enrolled_student_headers: dict[str, str],
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def _fake(_prompt: str) -> str:
+        calls["n"] += 1
+        return "should not run"
+
+    monkeypatch.setattr(feedback_summary, "write_summary", _fake)
+    subject_id, _attempt_id = _submit_perfect_attempt(client, enrolled_student_headers, seeded_db)
+    first = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
+    assert first.status_code == 200, first.text
+
+    seeded_db.expire_all()
+    job = seeded_db.scalar(select(FeedbackSummaryJob))
+    assert job is not None
+    job.status = FeedbackSummaryJobStatus.RUNNING
+    job.attempts = job.max_attempts
+    job.locked_until = datetime.now(UTC) - timedelta(seconds=5)
+    seeded_db.commit()
+
+    claimed = poll_once(session=seeded_db)
+    assert claimed == job.id
+    assert calls["n"] == 0
+    seeded_db.expire_all()
+    failed = seeded_db.get(FeedbackSummaryJob, job.id)
+    assert failed is not None
+    assert failed.status == FeedbackSummaryJobStatus.FAILED
+
+    second = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
+    assert second.status_code == 200, second.text
+    assert second.json()["summary_status"] == "fallback"
+    assert second.json()["summary"] == first.json()["summary"]
+    seeded_db.expire_all()
+    origin = seeded_db.scalar(select(SubjectFeedbackSummary.summary_origin))
+    assert origin == FeedbackSummaryOrigin.TEMPLATE
+
+
+def test_writer_bug_releases_the_job_for_another_claim(
+    client: TestClient,
+    enrolled_student_headers: dict[str, str],
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(_prompt: str) -> str:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(feedback_summary, "write_summary", _boom)
+    subject_id, _attempt_id = _submit_perfect_attempt(client, enrolled_student_headers, seeded_db)
+    first = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
+    assert first.json()["summary_status"] == "pending"
+
+    assert poll_once(session=seeded_db) is not None
+    seeded_db.expire_all()
+    job = seeded_db.scalar(select(FeedbackSummaryJob))
+    assert job is not None
+    assert job.status == FeedbackSummaryJobStatus.RUNNING
+    assert job.locked_until is not None
+    assert job.locked_until < datetime.now(UTC)
+
+    monkeypatch.setattr(feedback_summary, "write_summary", lambda _prompt: "Recovered.")
+    assert poll_once(session=seeded_db) == job.id
+    ready = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
+    assert ready.status_code == 200, ready.text
+    assert ready.json()["summary_status"] == "ready"
+    assert ready.json()["summary"] == "Recovered."

@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.api.deps import get_scope
@@ -63,14 +63,10 @@ async def get_quiz_attempt(
 @router.get("/subjects/{subject_id}/feedback", response_model=SubjectFeedbackDashboard)
 async def get_subject_feedback(
     subject_id: UUID,
-    background_tasks: BackgroundTasks,
     scope: Scope = Depends(get_scope),
     session: AsyncSession = Depends(get_session),
 ) -> SubjectFeedbackDashboard:
-    dashboard, refresh = await feedback_service.get_subject_feedback(session, scope, subject_id)
-    if refresh is not None:
-        background_tasks.add_task(feedback_service.run_summary_refresh, refresh)
-    return dashboard
+    return await feedback_service.get_subject_feedback(session, scope, subject_id)
 
 
 @router.get("/me/feedback-highlights", response_model=FeedbackHighlights)
