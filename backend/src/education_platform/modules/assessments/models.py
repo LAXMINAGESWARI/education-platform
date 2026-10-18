@@ -13,6 +13,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -400,12 +401,25 @@ class StudentSubtopicGoal(UUIDTimestampMixin, Base):
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class FeedbackSummaryOrigin(str, enum.Enum):
+    MODEL = "model"
+    TEMPLATE = "template"
+
+
+class FeedbackSummaryJobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class SubjectFeedbackSummary(UUIDTimestampMixin, Base):
     """LLM prose for one student and subject, keyed by a hash of the score facts.
 
     The feedback page reads this row instead of calling OpenRouter during the request.
-    `requested_hash` is the facts hash a refresh is generating; `facts_hash` is the hash
-    the stored `summary` was written for.
+    `requested_hash` is the facts hash the latest job is writing. `facts_hash` and
+    `summary_origin` describe the stored `summary`: model prose, or the template
+    kept after generation failed.
     """
 
     __tablename__ = "subject_feedback_summaries"
@@ -422,3 +436,43 @@ class SubjectFeedbackSummary(UUIDTimestampMixin, Base):
     facts_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     requested_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_origin: Mapped[FeedbackSummaryOrigin | None] = mapped_column(
+        str_enum(FeedbackSummaryOrigin, "feedback_summary_origin", length=16),
+        nullable=True,
+    )
+
+
+class FeedbackSummaryJob(UUIDTimestampMixin, Base):
+    """Durable queue row for one student-subject feedback summary.
+
+    The API enqueues this and returns immediately. The worker claims it with the
+    same lease used for ingest and generation jobs, so a restart does not drop
+    the request.
+    """
+
+    __tablename__ = "feedback_summary_jobs"
+    __table_args__ = (
+        partial_unique_index(
+            "uq_feedback_summary_jobs_one_in_flight",
+            "student_id",
+            "subject_id",
+            where="status IN ('queued', 'running')",
+        ),
+        Index("ix_feedback_summary_jobs_status_created_at", "status", "created_at"),
+    )
+
+    student_id: Mapped[UUID] = mapped_column(ForeignKey("student_profiles.id"), index=True)
+    subject_id: Mapped[UUID] = mapped_column(ForeignKey("subjects.id"), index=True)
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    prompt: Mapped[str] = mapped_column(Text)
+    template_summary: Mapped[str] = mapped_column(Text)
+    status: Mapped[FeedbackSummaryJobStatus] = mapped_column(
+        str_enum(FeedbackSummaryJobStatus, "feedback_summary_job_status", length=32),
+        default=FeedbackSummaryJobStatus.QUEUED,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

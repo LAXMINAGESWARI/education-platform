@@ -1702,6 +1702,86 @@ a.list-item__title:hover {
   color: var(--warning);
 }
 
+.feedback-summary {
+  margin: 0 0 1.25rem;
+  padding: 1.15rem 1.35rem 1.25rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent-soft) 78%, transparent),
+      color-mix(in srgb, var(--surface) 72%, transparent) 70%
+    );
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.feedback-summary__kicker {
+  margin: 0 0 0.4rem;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.feedback-summary__text {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 1.125rem;
+  line-height: 1.55;
+  animation: route-page-in 0.35s ease-out both;
+}
+
+.feedback-summary__status {
+  margin: 0 0 0.7rem;
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+}
+
+.feedback-summary__shimmer {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.feedback-summary__shimmer span {
+  display: block;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--accent) 12%, var(--surface-2)) 20%,
+    color-mix(in srgb, var(--accent) 32%, var(--surface)) 42%,
+    color-mix(in srgb, var(--accent) 12%, var(--surface-2)) 64%
+  );
+  background-size: 200% 100%;
+  animation: feedback-summary-shimmer 1.4s ease-in-out infinite;
+}
+
+.feedback-summary__shimmer span:nth-child(2) {
+  width: 92%;
+}
+
+.feedback-summary__shimmer span:nth-child(3) {
+  width: 68%;
+}
+
+@keyframes feedback-summary-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedback-summary__text,
+  .feedback-summary__shimmer span {
+    animation: none;
+  }
+}
+
 /* —— Subject material panes —— */
 .main:has(.subject-view) {
   padding-right: 0;

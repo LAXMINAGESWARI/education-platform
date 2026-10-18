@@ -37,6 +37,7 @@ const dashboard = {
   top_focus_subtopic_ids: [],
   regressions: [],
   summary: "Template summary.",
+  summary_status: "ready" as const,
   subtopics: [
     {
       subtopic_id: "st-1",
@@ -98,5 +99,59 @@ describe("SubjectFeedbackPage", () => {
     expect(getSelfEvaluation).toHaveBeenCalledWith("math-1");
     expect(getEngagementRate).not.toHaveBeenCalled();
     expect(await screen.findByText(/50% engaged/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Your feedback summary" })).toHaveTextContent(
+      "Template summary.",
+    );
+    expect(getSubjectFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the writing state with the model summary", async () => {
+    vi.mocked(getSubjectFeedback)
+      .mockResolvedValueOnce({
+        ...dashboard,
+        summary_status: "pending",
+        summary: "You're doing well in Square numbers.",
+      })
+      .mockResolvedValueOnce({
+        ...dashboard,
+        summary_status: "ready",
+        summary: "You nailed square numbers.",
+      });
+
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Writing your feedback…")).toBeInTheDocument();
+    expect(await screen.findByText("You nailed square numbers.", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText("Writing your feedback…")).not.toBeInTheDocument();
+    expect(getSubjectFeedback).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the template when generation fell back", async () => {
+    vi.mocked(getSubjectFeedback).mockResolvedValue({
+      ...dashboard,
+      summary_status: "fallback",
+      summary: "Focus your next study session on: Fractions.",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText("Focus your next study session on: Fractions."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Writing your feedback…")).not.toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(getSubjectFeedback).toHaveBeenCalledTimes(1);
   });
 });

@@ -10,6 +10,7 @@ import {
   type ConfidenceLevel,
 } from "../api/selfEvaluation";
 import type {
+  FeedbackSummaryStatus,
   GoalOut,
   RegressionOut,
   SubjectFeedbackDashboard,
@@ -25,6 +26,50 @@ function pct(value: string | number | null): number | null {
 }
 
 const PASS_THRESHOLD = 70;
+const SUMMARY_POLL_INITIAL_MS = 400;
+const SUMMARY_POLL_MAX_MS = 5000;
+const SUMMARY_POLL_DEADLINE_MS = 60_000;
+
+function FeedbackSummaryCard({
+  summary,
+  status,
+  settled,
+}: {
+  summary: string;
+  status: FeedbackSummaryStatus;
+  settled: boolean;
+}) {
+  const waiting = status === "pending" && !settled;
+  if (waiting) {
+    return (
+      <section
+        className="feedback-summary feedback-summary--pending"
+        aria-busy="true"
+        aria-label="Your feedback summary"
+      >
+        <p className="feedback-summary__kicker">From your quizzes</p>
+        <p className="feedback-summary__status" role="status">
+          Writing your feedback…
+        </p>
+        <div className="feedback-summary__shimmer" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+      </section>
+    );
+  }
+  if (status === "ready" || status === "fallback" || status === "pending") {
+    return (
+      <section className="feedback-summary" aria-label="Your feedback summary">
+        <p className="feedback-summary__kicker">From your quizzes</p>
+        <p className="feedback-summary__text">{summary}</p>
+      </section>
+    );
+  }
+  const unreachable: never = status;
+  return unreachable;
+}
 
 function attemptTitle(
   attempts: number,
@@ -924,19 +969,52 @@ export function SubjectFeedbackPage() {
     new Map(),
   );
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
+  const [summarySettled, setSummarySettled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    let timer = 0;
     setDashboard(null);
     setError(null);
     setEngagementBySubtopic(new Map());
     setConfidence(null);
+    setSummarySettled(false);
 
     // Scores, lesson engagement, and the self-check start together. The dashboard
     // renders as soon as feedback returns; it does not wait on the other two.
     void getSubjectFeedback(subjectId)
       .then((data) => {
-        if (!cancelled) setDashboard(data);
+        if (cancelled) return;
+        setDashboard(data);
+        if (data.summary_status !== "pending") return;
+
+        const started = Date.now();
+        let delay = SUMMARY_POLL_INITIAL_MS;
+        const poll = () => {
+          if (cancelled) return;
+          if (Date.now() - started >= SUMMARY_POLL_DEADLINE_MS) {
+            setSummarySettled(true);
+            return;
+          }
+          timer = window.setTimeout(() => {
+            void getSubjectFeedback(subjectId)
+              .then((next) => {
+                if (cancelled) return;
+                setDashboard((prev) =>
+                  prev
+                    ? { ...prev, summary: next.summary, summary_status: next.summary_status }
+                    : next,
+                );
+                if (next.summary_status !== "pending") return;
+                delay = Math.min(Math.round(delay * 1.8), SUMMARY_POLL_MAX_MS);
+                poll();
+              })
+              .catch(() => {
+                if (!cancelled) setSummarySettled(true);
+              });
+          }, delay);
+        };
+        poll();
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -955,6 +1033,7 @@ export function SubjectFeedbackPage() {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [subjectId]);
 
@@ -1064,6 +1143,12 @@ export function SubjectFeedbackPage() {
             </div>
           ) : (
             <>
+              <FeedbackSummaryCard
+                summary={dashboard.summary}
+                status={dashboard.summary_status}
+                settled={summarySettled}
+              />
+
               {/* ─── NEW: Score Hero ──────────────────────────────────────── */}
               <ScoreHero dashboard={dashboard} engagementBySubtopic={engagementBySubtopic} />
 

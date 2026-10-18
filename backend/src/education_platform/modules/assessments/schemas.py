@@ -153,6 +153,7 @@ class SubjectFeedbackDashboard(BaseModel):
     top_focus_subtopic_ids: list[UUID]
     regressions: list[RegressionOut] = Field(default_factory=list)
     summary: str
+    summary_status: Literal["ready", "pending", "fallback"]
 
 
 class ReviewNudgeOut(BaseModel):

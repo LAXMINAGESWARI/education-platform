@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.db import models as _orm_tables
 from education_platform.db.session import sync_session
+from education_platform.modules.assessments.models import FeedbackSummaryJob
 from education_platform.modules.generation.adk import CurriculumRunner
 from education_platform.modules.generation.blind_solve import BlindSolver
 from education_platform.modules.generation.curriculum_worker import (
@@ -25,6 +26,10 @@ from education_platform.modules.generation.worker import (
     process_generation_job_sync,
 )
 from education_platform.modules.rag.models import IngestJob
+from education_platform.workers.feedback_summary import (
+    fail_exhausted_feedback_summary_job,
+    process_feedback_summary_job_sync,
+)
 from education_platform.workers.ingest import (
     ParsePdfFn,
     fail_exhausted_ingest_job,
@@ -68,10 +73,22 @@ def poll_once(
     blind_solver: BlindSolver | None = None,
     session: Session | None = None,
 ) -> UUID | None:
-    """Claim at most one ingest, topic-generation, or curriculum-generation job."""
+    """Claim at most one feedback, ingest, topic-generation, or curriculum job.
+
+    Feedback prose is short and student-visible, so it is claimed before a PDF
+    ingest that can hold the worker for a long parse.
+    """
     owns_session = session is None
     db = session or _sync_session()
     try:
+        feedback = claim(db, FeedbackSummaryJob)
+        if isinstance(feedback, Exhausted):
+            fail_exhausted_feedback_summary_job(db, feedback.job_id)
+            return feedback.job_id
+        if isinstance(feedback, Claimed):
+            with heartbeat(FeedbackSummaryJob, feedback.job_id):
+                process_feedback_summary_job_sync(feedback.job_id)
+            return feedback.job_id
         ingest = claim(db, IngestJob)
         if isinstance(ingest, Exhausted):
             fail_exhausted_ingest_job(db, ingest.job_id)
@@ -110,10 +127,10 @@ def poll_once(
 
 
 def run_forever(*, poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS) -> None:
-    """Poll ingest_jobs, then generation_jobs."""
+    """Poll feedback summaries, then ingest jobs, then generation jobs."""
     logging.basicConfig(level=logging.INFO)
     logger.info(
-        "Worker started (poll every %.1fs; ingest, then generation jobs)",
+        "Worker started (poll every %.1fs; feedback, then ingest, then generation)",
         poll_interval_seconds,
     )
     while True:
