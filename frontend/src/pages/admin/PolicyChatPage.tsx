@@ -16,6 +16,37 @@ import { claimHaptic, triggerHaptic } from "../../lib/haptics";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 
+const COMPACT_CHAT_QUERY = "(max-width: 860px)";
+
+function prefersCompactChats(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(COMPACT_CHAT_QUERY).matches;
+}
+
+function useCompactChats(): boolean {
+  const [compact, setCompact] = useState(prefersCompactChats);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(COMPACT_CHAT_QUERY);
+    const onChange = () => setCompact(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  return compact;
+}
+
+function scrollThreadToEnd(node: HTMLElement | null) {
+  if (!node) return;
+  try {
+    node.scrollTo({ top: node.scrollHeight });
+  } catch {
+    node.scrollTop = node.scrollHeight;
+  }
+}
+
 function emptyContext(): ContextUsage {
   return { used_tokens: 0, limit_tokens: 20_000, used_percent: 0 };
 }
@@ -118,8 +149,10 @@ export function PolicyChatPage() {
   const [busy, setBusy] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const compact = useCompactChats();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(prefersCompactChats);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const wasCompact = useRef(compact);
 
   const refreshList = useCallback(async () => {
     const rows = await listChats();
@@ -164,8 +197,13 @@ export function PolicyChatPage() {
   }, [loadConversation, refreshList]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollThreadToEnd(threadRef.current);
   }, [messages, busy]);
+
+  useEffect(() => {
+    if (compact && !wasCompact.current) setSidebarCollapsed(true);
+    wasCompact.current = compact;
+  }, [compact]);
 
   async function onNewChat() {
     setBusy(true);
@@ -187,6 +225,7 @@ export function PolicyChatPage() {
     setError(null);
     try {
       await loadConversation(id);
+      if (compact) setSidebarCollapsed(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open chat");
     } finally {
@@ -263,6 +302,14 @@ export function PolicyChatPage() {
       )}
 
       <div className={`policy-chat__layout${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
+        {compact && !sidebarCollapsed ? (
+          <button
+            type="button"
+            className="policy-chat__sheet-backdrop"
+            aria-label="Close chats"
+            onClick={() => setSidebarCollapsed(true)}
+          />
+        ) : null}
         <aside className="policy-chat__sidebar" aria-label="Conversations">
           <div className="policy-chat__sidebar-head">
             <h2>Chats</h2>
@@ -272,9 +319,9 @@ export function PolicyChatPage() {
                 size="sm"
                 className="policy-chat__sidebar-new"
                 onClick={() => void onNewChat()}
-                disabled={busy || sidebarCollapsed}
-                aria-hidden={sidebarCollapsed}
-                tabIndex={sidebarCollapsed ? -1 : undefined}
+                disabled={busy || (sidebarCollapsed && !compact)}
+                aria-hidden={sidebarCollapsed && !compact ? true : undefined}
+                tabIndex={sidebarCollapsed && !compact ? -1 : undefined}
               >
                 New
               </PushButton>
@@ -332,7 +379,7 @@ export function PolicyChatPage() {
         </aside>
 
         <div className="policy-chat__main">
-          <div className="policy-chat__thread" aria-live="polite">
+          <div className="policy-chat__thread" ref={threadRef} aria-live="polite">
             {messages.map((msg) => (
               <article
                 key={msg.id}
@@ -354,7 +401,6 @@ export function PolicyChatPage() {
                 Running safety checks and retrieval…
               </p>
             )}
-            <div ref={bottomRef} />
           </div>
 
           <form className="policy-chat__composer" onSubmit={(e) => void onSubmit(e)}>

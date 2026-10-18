@@ -115,6 +115,36 @@ describe("PolicyChatPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("starts with chats collapsed into the header on a phone-width viewport", async () => {
+    const original = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+
+    try {
+      render(
+        <MemoryRouter>
+          <PolicyChatPage />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Expand chats" })).toHaveAttribute(
+          "aria-expanded",
+          "false",
+        );
+      });
+      expect(screen.queryByText("Attendance", { selector: ".policy-chat__conv-title" })).not.toBeVisible();
+      expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
   it("collapses and expands the conversation sidebar", async () => {
     const user = userEvent.setup();
     render(
