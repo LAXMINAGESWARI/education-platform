@@ -398,3 +398,27 @@ class StudentSubtopicGoal(UUIDTimestampMixin, Base):
     subtopic_id: Mapped[UUID] = mapped_column(ForeignKey("subtopics.id"), index=True)
     target_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2))
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SubjectFeedbackSummary(UUIDTimestampMixin, Base):
+    """LLM prose for one student and subject, keyed by a hash of the score facts.
+
+    The feedback page reads this row instead of calling OpenRouter during the request.
+    `requested_hash` is the facts hash a refresh is generating; `facts_hash` is the hash
+    the stored `summary` was written for.
+    """
+
+    __tablename__ = "subject_feedback_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id",
+            "subject_id",
+            name="uq_subject_feedback_summaries_student_subject",
+        ),
+    )
+
+    student_id: Mapped[UUID] = mapped_column(ForeignKey("student_profiles.id"), index=True)
+    subject_id: Mapped[UUID] = mapped_column(ForeignKey("subjects.id"), index=True)
+    facts_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)

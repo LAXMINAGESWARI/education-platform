@@ -51,6 +51,7 @@ async def chat_completion(
     settings: Settings | None = None,
     temperature: float = 0.0,
     response_json: bool = False,
+    timeout: float | None = None,
 ) -> str:
     cfg = settings or get_settings()
     client = build_openrouter_client(cfg)
@@ -61,6 +62,8 @@ async def chat_completion(
     }
     if response_json:
         kwargs["response_format"] = {"type": "json_object"}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     try:
         response = await client.chat.completions.create(**kwargs)
     except OpenAIError as exc:
@@ -76,12 +79,14 @@ async def chat_completion_json(
     *,
     settings: Settings | None = None,
     temperature: float = 0.0,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     raw = await chat_completion(
         messages,
         settings=settings,
         temperature=temperature,
         response_json=True,
+        timeout=timeout,
     )
     data = json.loads(raw)
     if not isinstance(data, dict):

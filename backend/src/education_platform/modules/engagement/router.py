@@ -58,6 +58,20 @@ async def get_slide_engagement(
 
 
 @router.get(
+    "/subjects/{subject_id}/engagement-rates",
+    response_model=list[EngagementRateOut],
+    summary="Get engagement rates for a subject's lessons",
+)
+async def get_subject_engagement_rates(
+    subject_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> list[EngagementRateOut]:
+    """One response for the feedback page instead of a request per subtopic."""
+    return await service.get_subject_engagement_rates(session, scope, subject_id)
+
+
+@router.get(
     "/me/lessons/{subtopic_id}/engagement-rate",
     response_model=EngagementRateOut,
     summary="Get engagement rate for a subtopic",

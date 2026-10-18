@@ -3,15 +3,20 @@
 `answer_rows_for_attempts` is the single join from attempt answers down to topic/subtopic
 names. Every other function here consumes its output rather than re-joining, so a future
 change to the upstream question/subtopic/topic tables has exactly one query to update.
+
+The prose summary is not generated inside the request. A matching cached summary is
+returned when the score facts are unchanged; otherwise the response carries the template
+and `run_summary_refresh` fills the cache after the response is sent.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal, cast
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -25,6 +30,14 @@ from education_platform.modules.academics.models import (
     Subject,
     Subtopic,
     Topic,
+)
+from education_platform.modules.assessments import goals_service
+from education_platform.modules.assessments.feedback_summary import (
+    SummaryRefresh,
+    cached_summary,
+    claim_refresh,
+    facts_hash,
+    store_refresh_result,
 )
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
@@ -48,9 +61,16 @@ from education_platform.modules.assessments.schemas import (
     TrajectoryOut,
 )
 from education_platform.modules.authorization.scope import Scope
-from education_platform.modules.materials.queries import published_material_version
+from education_platform.modules.materials.models import (
+    SourceMaterial,
+    SourceMaterialVersion,
+    SourceMaterialVersionStatus,
+)
+
+logger = logging.getLogger(__name__)
 
 _RELEASED_STATUSES = (QuizAttemptStatus.SCORED, QuizAttemptStatus.RELEASED)
+_SUMMARY_TIMEOUT_SECONDS = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,74 +311,99 @@ def find_repeated_distractor_pattern(
     return label if count >= min_repeats else None
 
 
-async def _subtopic_mastery_quiz(
-    session: AsyncSession, subtopic_id: UUID
-) -> CommonMasteryQuiz | None:
-    return cast(
-        "CommonMasteryQuiz | None",
-        await session.scalar(
-            select(CommonMasteryQuiz).where(
-                CommonMasteryQuiz.subtopic_id == subtopic_id,
-                CommonMasteryQuiz.quiz_scope == QuizScope.SUBTOPIC_MASTERY,
+async def _classmate_percents_by_subtopic(
+    session: AsyncSession, subtopic_ids: list[UUID], exclude_student_id: UUID
+) -> dict[UUID, list[Decimal]]:
+    """Percent-per-attempt for other students, one query for every subtopic on the page.
+
+    Each list is one percent per scored attempt, matching the old per-subtopic lookup:
+    marks are limited to questions in that subtopic, and attempts with no available
+    marks are skipped.
+    """
+    if not subtopic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                CommonMasteryQuiz.subtopic_id,
+                QuizAttempt.id,
+                AttemptAnswer.marks_awarded,
+                QuestionVersion.marks,
             )
-        ),
-    )
-
-
-async def _classmate_percents_for_subtopic(
-    session: AsyncSession, subtopic_id: UUID, exclude_student_id: UUID
-) -> list[Decimal]:
-    """Percent-per-attempt for every other student's scored attempts on this subtopic's quiz."""
-    quiz = await _subtopic_mastery_quiz(session, subtopic_id)
-    if quiz is None:
-        return []
-    version_ids = list(
-        await session.scalars(select(QuizVersion.id).where(QuizVersion.quiz_id == quiz.id))
-    )
-    if not version_ids:
-        return []
-    attempt_ids = list(
-        await session.scalars(
-            select(QuizAttempt.id).where(
-                QuizAttempt.quiz_version_id.in_(version_ids),
+            .join(QuizVersion, QuizVersion.quiz_id == CommonMasteryQuiz.id)
+            .join(QuizAttempt, QuizAttempt.quiz_version_id == QuizVersion.id)
+            .join(AttemptAnswer, AttemptAnswer.attempt_id == QuizAttempt.id)
+            .join(QuestionVersion, QuestionVersion.id == AttemptAnswer.question_version_id)
+            .join(Question, Question.id == QuestionVersion.question_id)
+            .where(
+                CommonMasteryQuiz.subtopic_id.in_(subtopic_ids),
+                CommonMasteryQuiz.quiz_scope == QuizScope.SUBTOPIC_MASTERY,
                 QuizAttempt.student_id != exclude_student_id,
                 QuizAttempt.status.in_(_RELEASED_STATUSES),
+                Question.subtopic_id == CommonMasteryQuiz.subtopic_id,
             )
         )
-    )
-    if not attempt_ids:
-        return []
-    rows = [
-        row
-        for row in await answer_rows_for_attempts(session, attempt_ids)
-        if row.subtopic_id == subtopic_id
-    ]
-    by_attempt: dict[UUID, list[AnswerOutcomeRow]] = defaultdict(list)
-    for row in rows:
-        by_attempt[row.attempt_id].append(row)
+    ).all()
 
-    percents: list[Decimal] = []
-    for attempt_rows in by_attempt.values():
-        earned = sum((row.marks_awarded for row in attempt_rows), Decimal("0"))
-        available = sum((row.marks_available for row in attempt_rows), Decimal("0"))
+    grouped: dict[tuple[UUID, UUID], list[tuple[Decimal, Decimal]]] = defaultdict(list)
+    for subtopic_id, attempt_id, awarded, available in rows:
+        if subtopic_id is None:
+            continue
+        grouped[(subtopic_id, attempt_id)].append((awarded or Decimal("0"), available))
+
+    percents: dict[UUID, list[Decimal]] = defaultdict(list)
+    for (subtopic_id, _attempt_id), pairs in grouped.items():
+        earned = sum((awarded for awarded, _available in pairs), Decimal("0"))
+        available = sum((marks for _awarded, marks in pairs), Decimal("0"))
         if available > 0:
-            percents.append((earned / available * Decimal("100")).quantize(Decimal("0.01")))
+            percents[subtopic_id].append(
+                (earned / available * Decimal("100")).quantize(Decimal("0.01"))
+            )
     return percents
 
 
-async def _remediation_for_subtopic(
-    session: AsyncSession, subtopic_id: UUID
-) -> RemediationOut | None:
-    """A lesson to review and/or a retake-just-this-subtopic quiz, for a flagged weak subtopic."""
-    material_version = await published_material_version(session, subtopic_id)
-    quiz = await _subtopic_mastery_quiz(session, subtopic_id)
-    if material_version is None and quiz is None:
-        return None
-    return RemediationOut(
-        material_id=material_version.source_material_id if material_version else None,
-        material_title=material_version.title if material_version else None,
-        retake_quiz_id=quiz.id if quiz else None,
+async def _remediations_for_subtopics(
+    session: AsyncSession, subtopic_ids: list[UUID]
+) -> dict[UUID, RemediationOut]:
+    """Latest published lesson and mastery quiz for each subtopic, in two queries."""
+    if not subtopic_ids:
+        return {}
+    material_rows = (
+        await session.execute(
+            select(SourceMaterial.subtopic_id, SourceMaterialVersion)
+            .join(SourceMaterial, SourceMaterial.id == SourceMaterialVersion.source_material_id)
+            .where(
+                SourceMaterial.subtopic_id.in_(subtopic_ids),
+                SourceMaterialVersion.lifecycle_status == SourceMaterialVersionStatus.PUBLISHED,
+            )
+            .order_by(SourceMaterialVersion.version_number.desc())
+        )
+    ).all()
+    latest_material: dict[UUID, SourceMaterialVersion] = {}
+    for subtopic_id, version in material_rows:
+        if subtopic_id is not None and subtopic_id not in latest_material:
+            latest_material[subtopic_id] = version
+
+    quizzes = await session.scalars(
+        select(CommonMasteryQuiz).where(
+            CommonMasteryQuiz.subtopic_id.in_(subtopic_ids),
+            CommonMasteryQuiz.quiz_scope == QuizScope.SUBTOPIC_MASTERY,
+        )
     )
+    quiz_by_subtopic = {quiz.subtopic_id: quiz for quiz in quizzes if quiz.subtopic_id is not None}
+
+    remediations: dict[UUID, RemediationOut] = {}
+    for subtopic_id in subtopic_ids:
+        material_version = latest_material.get(subtopic_id)
+        quiz = quiz_by_subtopic.get(subtopic_id)
+        if material_version is None and quiz is None:
+            continue
+        remediations[subtopic_id] = RemediationOut(
+            material_id=material_version.source_material_id if material_version else None,
+            material_title=material_version.title if material_version else None,
+            retake_quiz_id=quiz.id if quiz else None,
+        )
+    return remediations
 
 
 _REVIEW_SCHEDULE_DAYS = (3, 10, 21)
@@ -422,7 +467,7 @@ async def subtopics_due_for_review(
     history = attempt_history_by_subtopic(rows)
     performance = aggregate_by_subtopic(rows)
 
-    nudges: list[ReviewNudgeOut] = []
+    due: list[tuple[UUID, int, int, SubtopicPerformance]] = []
     for subtopic_id, attempts in history.items():
         if not attempts:
             continue
@@ -436,16 +481,21 @@ async def subtopics_due_for_review(
         perf = performance.get(subtopic_id)
         if perf is None:
             continue
-        nudges.append(
-            ReviewNudgeOut(
-                subtopic_id=subtopic_id,
-                subtopic_name=perf.subtopic_name,
-                topic_name=perf.topic_name,
-                days_since_last_attempt=days_since,
-                due_interval_days=interval,
-                remediation=await _remediation_for_subtopic(session, subtopic_id),
-            )
+        due.append((subtopic_id, days_since, interval, perf))
+
+    due_ids = [subtopic_id for subtopic_id, _, _, _ in due]
+    remediations = await _remediations_for_subtopics(session, due_ids)
+    nudges = [
+        ReviewNudgeOut(
+            subtopic_id=subtopic_id,
+            subtopic_name=perf.subtopic_name,
+            topic_name=perf.topic_name,
+            days_since_last_attempt=days_since,
+            due_interval_days=interval,
+            remediation=remediations.get(subtopic_id),
         )
+        for subtopic_id, days_since, interval, perf in due
+    ]
     nudges.sort(key=lambda n: n.days_since_last_attempt - n.due_interval_days, reverse=True)
     return nudges
 
@@ -582,6 +632,7 @@ async def _openrouter_summary_writer(prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         temperature=0.3,
+        timeout=_SUMMARY_TIMEOUT_SECONDS,
     )
     summary = payload.get("summary")
     return str(summary) if isinstance(summary, str) and summary.strip() else ""
@@ -660,9 +711,21 @@ def _prompt_for(
     return "\n".join(lines)
 
 
+async def run_summary_refresh(job: SummaryRefresh) -> None:
+    """Generate prose for a facts hash and store it when that hash is still current."""
+    try:
+        summary = await _openrouter_summary_writer(job.prompt)
+    except OpenRouterError as exc:
+        logger.warning("feedback summary generation failed: %s", exc)
+        summary = ""
+    if not summary.strip():
+        summary = job.template_summary
+    await store_refresh_result(job, summary)
+
+
 async def get_subject_feedback(
     session: AsyncSession, scope: Scope, subject_id: UUID
-) -> SubjectFeedbackDashboard:
+) -> tuple[SubjectFeedbackDashboard, SummaryRefresh | None]:
     if scope.self_student_id is None:
         raise DomainError("Student enrollment required", status_code=403)
     student_id = scope.self_student_id
@@ -703,11 +766,15 @@ async def get_subject_feedback(
     strongest: SubtopicPerformance | None = None
     weak_list: list[SubtopicPerformance] = []
     distractor_labels: dict[UUID, str] = {}
+    subtopic_ids = list(performance)
+    classmate_percents_by_subtopic = await _classmate_percents_by_subtopic(
+        session, subtopic_ids, student_id
+    )
+    goals_by_subtopic = await goals_service.goals_for_subtopics(session, student_id, subtopic_ids)
 
+    classified: list[tuple[SubtopicPerformance, bool | None, list[Decimal]]] = []
     for perf in performance.values():
-        classmate_percents = await _classmate_percents_for_subtopic(
-            session, perf.subtopic_id, student_id
-        )
+        classmate_percents = classmate_percents_by_subtopic.get(perf.subtopic_id, [])
         is_weak = _classify_weak(
             perf.percent,
             perf.question_count,
@@ -717,6 +784,13 @@ async def get_subject_feedback(
             min_class_n=settings.feedback_min_class_n,
             min_student_n=settings.feedback_min_student_n,
         )
+        classified.append((perf, is_weak, classmate_percents))
+
+    remediations = await _remediations_for_subtopics(
+        session, [perf.subtopic_id for perf, is_weak, _percents in classified if is_weak]
+    )
+
+    for perf, is_weak, classmate_percents in classified:
         class_avg = (
             (sum(classmate_percents, Decimal("0")) / len(classmate_percents)).quantize(
                 Decimal("0.01")
@@ -725,18 +799,13 @@ async def get_subject_feedback(
             else None
         )
         prior_percent, delta = trend.get(perf.subtopic_id, (None, None))
-        remediation = (
-            await _remediation_for_subtopic(session, perf.subtopic_id) if is_weak else None
-        )
+        remediation = remediations.get(perf.subtopic_id) if is_weak else None
         if is_weak:
             distractor_label = find_repeated_distractor_pattern(rows, perf.subtopic_id)
             if distractor_label:
                 distractor_labels[perf.subtopic_id] = distractor_label
 
-        # Deferred import: goals_service imports this module for its own percent lookup.
-        from education_platform.modules.assessments import goals_service
-
-        goal_row = await goals_service.goal_for_subtopic(session, student_id, perf.subtopic_id)
+        goal_row = goals_by_subtopic.get(perf.subtopic_id)
         goal = (
             goals_service.goal_out(goal_row, perf.subtopic_name, perf.percent)
             if goal_row is not None
@@ -792,12 +861,22 @@ async def get_subject_feedback(
         distractor_labels,
         regressions_by_subtopic,
     )
-    try:
-        summary = await _openrouter_summary_writer(prompt)
-    except OpenRouterError:
-        summary = ""
-    if not summary:
-        summary = _template_summary(passing_strength, weak_list)
+    template = _template_summary(passing_strength, weak_list)
+    summary = template
+    refresh: SummaryRefresh | None = None
+    if attempt_ids:
+        digest = facts_hash(prompt)
+        cached = await cached_summary(session, student_id, subject.id, digest)
+        if cached is not None:
+            summary = cached
+        elif await claim_refresh(session, student_id, subject.id, digest):
+            refresh = SummaryRefresh(
+                student_id=student_id,
+                subject_id=subject.id,
+                facts_hash=digest,
+                prompt=prompt,
+                template_summary=template,
+            )
 
     regressions = [
         RegressionOut(
@@ -809,7 +888,7 @@ async def get_subject_feedback(
         if (count := regressions_by_subtopic.get(perf.subtopic_id))
     ]
 
-    return SubjectFeedbackDashboard(
+    dashboard = SubjectFeedbackDashboard(
         subject_id=subject.id,
         subject_name=subject.name,
         overall_percent=overall_percent,
@@ -820,3 +899,4 @@ async def get_subject_feedback(
         regressions=regressions,
         summary=summary,
     )
+    return dashboard, refresh

@@ -21,7 +21,6 @@ from education_platform.modules.academics.service import (
     load_subtopic_node,
     require_subject_enrollment,
 )
-from education_platform.modules.assessments import feedback_service
 from education_platform.modules.assessments.models import (
     QuizAttempt,
     QuizAttemptStatus,
@@ -60,9 +59,27 @@ async def goal_for_subtopic(
     )
 
 
+async def goals_for_subtopics(
+    session: AsyncSession, student_id: UUID, subtopic_ids: list[UUID]
+) -> dict[UUID, StudentSubtopicGoal]:
+    """One lookup for every subtopic on a feedback dashboard."""
+    if not subtopic_ids:
+        return {}
+    rows = await session.scalars(
+        select(StudentSubtopicGoal).where(
+            StudentSubtopicGoal.student_id == student_id,
+            StudentSubtopicGoal.subtopic_id.in_(subtopic_ids),
+        )
+    )
+    return {row.subtopic_id: row for row in rows}
+
+
 async def current_percent_for_subtopic(
     session: AsyncSession, student_id: UUID, subtopic_id: UUID
 ) -> Decimal | None:
+    # Local import: feedback_service imports this module to attach goals to the dashboard.
+    from education_platform.modules.assessments import feedback_service
+
     attempt_ids = list(
         await session.scalars(
             select(QuizAttempt.id).where(
@@ -80,9 +97,10 @@ async def current_percent_for_subtopic(
 def goal_out(
     goal: StudentSubtopicGoal, subtopic_name: str, current_percent: Decimal | None
 ) -> GoalOut:
-    """Build the response shape for a goal row — also used by feedback_service to attach a
-    subtopic's goal onto its dashboard entry (deferred-imported there to avoid a cycle, since
-    this module imports feedback_service for its own percent calculation)."""
+    """Build the response shape for a goal row.
+
+    feedback_service uses this to attach a subtopic's goal onto its dashboard entry.
+    """
     return GoalOut(
         subtopic_id=goal.subtopic_id,
         subtopic_name=subtopic_name,

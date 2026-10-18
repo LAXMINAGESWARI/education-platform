@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { deleteSubtopicGoal, getSubjectFeedback, setSubtopicGoal } from "../api/feedback";
-import { getEngagementRate, type EngagementRate } from "../api/engagement";
+import { getSubjectEngagementRates, type EngagementRate } from "../api/engagement";
 import { useAuth } from "../auth/AuthContext";
 import {
   getSelfEvaluation,
@@ -829,23 +829,18 @@ function SelfCheck({
   subjectId,
   subjectName,
   overallScore,
+  initialConfidence,
 }: {
   subjectId: string;
   subjectName: string;
   overallScore: number | null;
+  initialConfidence: ConfidenceLevel | null;
 }) {
-  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
+  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(initialConfidence);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const result = await getSelfEvaluation(subjectId);
-      if (!cancelled && result) setConfidence(result.confidence);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [subjectId]);
+    setConfidence(initialConfidence);
+  }, [initialConfidence]);
 
   async function choose(level: ConfidenceLevel) {
     setConfidence(level); // optimistic
@@ -928,48 +923,40 @@ export function SubjectFeedbackPage() {
   const [engagementBySubtopic, setEngagementBySubtopic] = useState<Map<string, EngagementRate>>(
     new Map(),
   );
+  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setDashboard(null);
     setError(null);
-    void (async () => {
-      try {
-        const data = await getSubjectFeedback(subjectId);
+    setEngagementBySubtopic(new Map());
+    setConfidence(null);
+
+    // Scores, lesson engagement, and the self-check start together. The dashboard
+    // renders as soon as feedback returns; it does not wait on the other two.
+    void getSubjectFeedback(subjectId)
+      .then((data) => {
         if (!cancelled) setDashboard(data);
-      } catch (err) {
+      })
+      .catch((err: unknown) => {
         if (!cancelled) {
           setError(err instanceof ApiError ? err.message : "Could not load feedback.");
         }
-      }
-    })();
+      });
+
+    void getSubjectEngagementRates(subjectId).then((rates) => {
+      if (cancelled) return;
+      setEngagementBySubtopic(new Map(rates.map((rate) => [rate.subtopic_id, rate])));
+    });
+
+    void getSelfEvaluation(subjectId).then((evaluation) => {
+      if (!cancelled) setConfidence(evaluation?.confidence ?? null);
+    });
+
     return () => {
       cancelled = true;
     };
   }, [subjectId]);
-
-  // ─── NEW: fetch engagement rate for each subtopic once the dashboard loads ──
-  useEffect(() => {
-    if (!dashboard) return;
-    let cancelled = false;
-    void (async () => {
-      const entries = await Promise.all(
-        dashboard.subtopics.map(async (s) => {
-          const rate = await getEngagementRate(s.subtopic_id);
-          return [s.subtopic_id, rate] as const;
-        }),
-      );
-      if (cancelled) return;
-      const map = new Map<string, EngagementRate>();
-      for (const [id, rate] of entries) {
-        if (rate) map.set(id, rate);
-      }
-      setEngagementBySubtopic(map);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dashboard]);
 
   const regressionsBySubtopic = new Map(
     (dashboard?.regressions ?? []).map((r) => [r.subtopic_id, r]),
@@ -1105,6 +1092,7 @@ export function SubjectFeedbackPage() {
                 subjectId={subjectId}
                 subjectName={dashboard.subject_name}
                 overallScore={overallScore}
+                initialConfidence={confidence}
               />
 
               {/* ─── NEW: Report card (collapsed behind a toggle) ─────────── */}
