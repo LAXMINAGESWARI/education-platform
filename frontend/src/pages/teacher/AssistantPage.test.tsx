@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,6 +139,135 @@ describe("AssistantPage", () => {
     expect(textToSqlApi.askQuestion).toHaveBeenNthCalledWith(1, "First question");
     expect(textToSqlApi.askQuestion).toHaveBeenNthCalledWith(2, "Second question");
     expect(textToSqlApi.askQuestion).toHaveBeenCalledTimes(2);
+  });
+
+  describe("suggested questions dropdown", () => {
+    const EXPECTED_QUESTIONS = [
+      "How many students do I teach in total?",
+      "Which subjects am I assigned to?",
+      "What sections am I assigned to?",
+      "What is the average attendance rate for my students this term?",
+      "Show me the struggling students.",
+      "How many of my students are doing well?",
+      "How many students have attendance less than 85%?",
+      "Who took the last quiz?",
+    ];
+
+    it("offers the eight tested questions, grouped, plus a placeholder", () => {
+      renderPage();
+
+      const select = screen.getByLabelText("Suggested questions");
+      const options = within(select).getAllByRole("option");
+      // placeholder first, then the eight questions
+      expect(options[0]).toHaveTextContent("Choose a question…");
+      expect(options[0]).toBeDisabled();
+      expect(options.slice(1).map((option) => option.textContent)).toEqual(EXPECTED_QUESTIONS);
+      expect(within(select).getAllByRole("group")).toHaveLength(3);
+    });
+
+    it("picking a question fills the box with its exact text and does not send it", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.selectOptions(
+        screen.getByLabelText("Suggested questions"),
+        "Show me the struggling students.",
+      );
+
+      expect(screen.getByLabelText("Question")).toHaveValue("Show me the struggling students.");
+      expect(textToSqlApi.askQuestion).not.toHaveBeenCalled();
+      // focus moves to the box so the teacher can edit or just press Ask
+      expect(screen.getByLabelText("Question")).toHaveFocus();
+    });
+
+    it("returns to the placeholder after a pick so the same question can be chosen again", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      const select = screen.getByLabelText("Suggested questions");
+      await user.selectOptions(select, "Who took the last quiz?");
+
+      expect(select).toHaveValue("");
+    });
+
+    it("sends exactly the picked question when Ask is pressed", async () => {
+      vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
+        natural_answer: "The student count is 72.",
+        confidence: "high",
+        provenance: null,
+      });
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.selectOptions(
+        screen.getByLabelText("Suggested questions"),
+        "How many students do I teach in total?",
+      );
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+
+      await waitFor(() => expect(screen.getByText("The student count is 72.")).toBeInTheDocument());
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledTimes(1);
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("How many students do I teach in total?");
+    });
+
+    it("sends the edited text when the teacher changes the picked question first", async () => {
+      vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
+        natural_answer: "The student count is 4.",
+        confidence: "high",
+        provenance: null,
+      });
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.selectOptions(
+        screen.getByLabelText("Suggested questions"),
+        "How many students have attendance less than 85%?",
+      );
+      const box = screen.getByLabelText("Question");
+      await user.clear(box);
+      await user.type(box, "How many students have attendance less than 75%?");
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+
+      await waitFor(() => expect(textToSqlApi.askQuestion).toHaveBeenCalledTimes(1));
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith(
+        "How many students have attendance less than 75%?",
+      );
+    });
+
+    it("leaves free-text questions working exactly as before", async () => {
+      vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
+        natural_answer: "A free-text answer.",
+        confidence: "medium",
+        provenance: null,
+      });
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.type(screen.getByLabelText("Question"), "Something I typed myself");
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+
+      await waitFor(() => expect(screen.getByText("A free-text answer.")).toBeInTheDocument());
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("Something I typed myself");
+    });
+
+    it("is disabled while a question is in flight", async () => {
+      let resolveAnswer: (value: textToSqlApi.AskResponse) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestion).mockReturnValue(
+        new Promise((resolve) => {
+          resolveAnswer = resolve;
+        }),
+      );
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.type(screen.getByLabelText("Question"), "A slow question");
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+
+      expect(screen.getByLabelText("Suggested questions")).toBeDisabled();
+
+      resolveAnswer({ natural_answer: "Done.", confidence: "high", provenance: null });
+      await waitFor(() => expect(screen.getByLabelText("Suggested questions")).toBeEnabled());
+    });
   });
 });
 
