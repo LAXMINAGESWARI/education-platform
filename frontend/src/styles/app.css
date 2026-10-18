@@ -582,11 +582,14 @@ button:hover:not(:disabled),
   padding-left: calc(var(--rail-collapsed-width) + 1.5rem);
 }
 
-.app:has(.policy-chat) .app__content {
+.app:has(.policy-chat) .app__content,
+.app:has(.assistant-chat) .app__content {
   padding-left: calc(var(--rail-inset) + var(--rail-width));
+  overflow: hidden;
 }
 
-.app:has(.policy-chat).is-rail-collapsed .app__content {
+.app:has(.policy-chat).is-rail-collapsed .app__content,
+.app:has(.assistant-chat).is-rail-collapsed .app__content {
   padding-left: calc(var(--rail-inset) + var(--rail-collapsed-width));
 }
 
@@ -953,7 +956,9 @@ button:hover:not(:disabled),
 
 .crumbs-host {
   flex: none;
-  overflow: visible;
+  /* Exiting breadcrumb items are taken out of flow during the trail animation.
+     Clip them so a phone-width page does not grow a horizontal scrollbar. */
+  overflow: clip;
 }
 
 .crumbs {
@@ -2675,10 +2680,20 @@ a.list-item__title:hover {
     grid-template-rows: auto 1fr;
   }
 
+  /* The side rail is hidden on a phone, so it is not a grid row. A single
+     `auto` row would size the chat to its content and leave the composer
+     floating mid-page. Give the chat column the leftover viewport instead. */
+  .app:has(.policy-chat),
+  .app:has(.assistant-chat) {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .app__content,
   .app.is-rail-collapsed .app__content,
   .app:has(.policy-chat) .app__content,
-  .app:has(.policy-chat).is-rail-collapsed .app__content {
+  .app:has(.policy-chat).is-rail-collapsed .app__content,
+  .app:has(.assistant-chat) .app__content,
+  .app:has(.assistant-chat).is-rail-collapsed .app__content {
     padding-left: 0;
   }
 
@@ -3778,6 +3793,8 @@ button.admin-published-row {
 .main:has(.policy-chat),
 .main:has(.assistant-chat) {
   padding: var(--rail-inset);
+  padding-bottom: max(var(--rail-inset), env(safe-area-inset-bottom));
+  overflow: hidden;
 }
 
 .main__inner:has(.policy-chat),
@@ -3801,6 +3818,7 @@ button.admin-published-row {
 }
 
 .policy-chat__layout {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
@@ -3808,6 +3826,16 @@ button.admin-published-row {
   gap: var(--rail-inset);
   align-items: stretch;
   transition: grid-template-columns 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.policy-chat__sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border: 0;
+  padding: 0;
+  background: rgb(28 42 34 / 0.28);
+  cursor: pointer;
 }
 
 .policy-chat__layout.is-sidebar-collapsed {
@@ -3951,8 +3979,8 @@ button.admin-published-row {
 }
 
 .policy-chat__main {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 0.65rem;
   min-width: 0;
   min-height: 0;
@@ -4027,6 +4055,7 @@ button.admin-published-row {
 }
 
 .policy-chat__thread {
+  flex: 1 1 auto;
   display: grid;
   gap: 0.75rem;
   align-content: start;
@@ -4035,16 +4064,21 @@ button.admin-published-row {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   min-height: 0;
+  min-width: 0;
 }
 
 .policy-chat__bubble {
   position: relative;
-  max-width: min(85%, 40rem);
+  max-width: min(92%, 40rem);
+  min-width: 0;
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   background: var(--bg);
+  overflow-wrap: anywhere;
 }
 
 .policy-chat__bubble::after {
@@ -4080,11 +4114,16 @@ button.admin-published-row {
 
 .policy-chat__body {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .policy-chat__body.markdown {
   white-space: normal;
+  overflow-x: auto;
 }
 
 .policy-chat__body.markdown > :first-child {
@@ -4093,6 +4132,19 @@ button.admin-published-row {
 
 .policy-chat__body.markdown > :last-child {
   margin-bottom: 0;
+}
+
+.policy-chat__body.markdown table,
+.assistant-chat__body.markdown table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+}
+
+.policy-chat__body.markdown pre,
+.assistant-chat__body.markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .policy-chat__sources {
@@ -4182,21 +4234,39 @@ button.admin-published-row {
 }
 
 .policy-chat__composer {
+  flex: none;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "input meter send";
   gap: 0.65rem;
   align-items: end;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.policy-chat__composer .policy-chat__input {
+  grid-area: input;
+}
+
+.policy-chat__composer .policy-chat__context {
+  grid-area: meter;
+}
+
+.policy-chat__composer .btn {
+  grid-area: send;
+  min-height: 2.75rem;
 }
 
 .policy-chat__input {
   width: 100%;
   resize: vertical;
-  min-height: 3.25rem;
+  min-height: 2.75rem;
+  max-height: 8rem;
   padding: 0.7rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
+  font-size: 1rem;
 }
 
 .policy-chat__input:disabled {
@@ -4204,29 +4274,20 @@ button.admin-published-row {
 }
 
 @media (max-width: 40rem) {
-  .policy-chat__layout,
-  .policy-chat__layout.is-sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
-
-  .policy-chat__sidebar {
-    max-height: 14rem;
-    transition:
-      padding 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-      gap 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-      max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  .policy-chat__layout.is-sidebar-collapsed .policy-chat__sidebar {
-    max-height: 3.1rem;
-  }
-
   .policy-chat__composer {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "meter"
+      "input"
+      "send";
   }
 
-  .policy-chat__input {
-    grid-column: 1 / -1;
+  .policy-chat__context {
+    justify-self: end;
+  }
+
+  .policy-chat__composer .btn {
+    width: 100%;
   }
 }
 
@@ -4262,14 +4323,17 @@ button.admin-published-row {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   min-height: 0;
+  min-width: 0;
 }
 
 .assistant-chat__empty {
-  margin: auto;
-  text-align: center;
-  max-width: 28rem;
+  margin: 0;
+  text-align: start;
+  max-width: 36rem;
 }
 
 .assistant-chat__exchange {
@@ -4279,10 +4343,12 @@ button.admin-published-row {
 
 .assistant-chat__bubble {
   position: relative;
-  max-width: min(85%, 40rem);
+  max-width: min(92%, 40rem);
+  min-width: 0;
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   background: var(--bg);
+  overflow-wrap: anywhere;
 }
 
 .assistant-chat__bubble--user {
@@ -4301,11 +4367,16 @@ button.admin-published-row {
 
 .assistant-chat__body {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .assistant-chat__body.markdown {
   white-space: normal;
+  overflow-x: auto;
 }
 
 .assistant-chat__body.markdown > :first-child {
@@ -4324,6 +4395,7 @@ button.admin-published-row {
 }
 
 .assistant-chat__suggest {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4337,14 +4409,20 @@ button.admin-published-row {
 }
 
 .assistant-chat__suggest-select {
-  flex: 1 1 18rem;
+  flex: 1 1 16rem;
+  align-self: center;
+  width: auto;
   min-width: 0;
   max-width: 100%;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  max-height: 3rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
+  font-size: 1rem;
 }
 
 .assistant-chat__suggest-select:disabled {
@@ -4352,21 +4430,29 @@ button.admin-published-row {
 }
 
 .assistant-chat__composer {
+  flex: none;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.65rem;
   align-items: end;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.assistant-chat__composer .btn {
+  min-height: 2.75rem;
 }
 
 .assistant-chat__input {
   width: 100%;
   resize: vertical;
-  min-height: 3.25rem;
+  min-height: 2.75rem;
+  max-height: 8rem;
   padding: 0.7rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
+  font-size: 1rem;
 }
 
 .assistant-chat__input:disabled {
@@ -5182,12 +5268,43 @@ body {
 
   .policy-chat__layout,
   .policy-chat__layout.is-sidebar-collapsed {
+    position: relative;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .policy-chat__sidebar {
-    max-height: 11.5rem;
+  .policy-chat__sidebar,
+  .policy-chat__layout.is-sidebar-collapsed .policy-chat__sidebar {
+    max-height: none;
+    overflow: visible;
+    z-index: 4;
+  }
+
+  .policy-chat__layout.is-sidebar-collapsed .policy-chat__sidebar-head {
+    justify-content: space-between;
+  }
+
+  .policy-chat__layout.is-sidebar-collapsed .policy-chat__sidebar-head h2 {
+    display: block;
+  }
+
+  .policy-chat__layout.is-sidebar-collapsed .policy-chat__sidebar-new {
+    display: inline-flex;
+  }
+
+  .policy-chat__layout:not(.is-sidebar-collapsed) .policy-chat__sidebar-body {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    z-index: 5;
+    max-height: min(50dvh, 18rem);
+    overflow: auto;
+    padding: 0.55rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
   }
 
   .login {
@@ -5210,7 +5327,15 @@ body {
     flex-direction: column;
   }
 
-  .assistant-chat__suggest-select,
+  .assistant-chat__suggest-select {
+    flex: none;
+    align-self: stretch;
+    width: 100%;
+    height: 2.75rem;
+    min-height: 2.75rem;
+    max-height: 3rem;
+  }
+
   .assistant-chat__composer .btn {
     width: 100%;
     min-height: 2.75rem;
