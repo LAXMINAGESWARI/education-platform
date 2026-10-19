@@ -32,6 +32,9 @@ from education_platform.modules.assistant.strategy import (
 )
 from education_platform.modules.assistant.tokens import context_percent, estimate_tokens
 from education_platform.modules.authorization.principal import Principal
+from education_platform.modules.guard.reminder import hardened_prompt
+from education_platform.modules.guard.service import SURFACE_POLICY, screen_chat
+from education_platform.modules.guard.service_types import GuardTurn
 
 
 def _context_out(conv: ChatConversation) -> ContextUsageOut:
@@ -246,17 +249,34 @@ async def post_message(
     session.add(user_msg)
     await session.flush()
 
-    reply = await graph_for(AssistantKind.POLICY).run_turn(
-        session=session,
-        principal=principal,
-        context=PolicyAssistantContext(kind="policy", institution_id=principal.institution_id),
-        history=tuple(history_turns),
+    outcome = await screen_chat(
+        session,
+        user_id=principal.user_id,
+        institution_id=principal.institution_id,
+        role="administrator",
+        surface=SURFACE_POLICY,
         message=text,
+        history=[GuardTurn(role=turn.role, content=turn.content) for turn in history_turns[-3:]],
     )
-    assistant_text = reply.content
-    citations_raw = [
-        {"id": item.id, "label": item.label, "excerpt": item.excerpt} for item in reply.citations
-    ]
+    if outcome.reply is not None:
+        assistant_text = outcome.reply
+        citations_raw: list[dict[str, str]] = []
+    else:
+        with hardened_prompt(outcome.hardened):
+            reply = await graph_for(AssistantKind.POLICY).run_turn(
+                session=session,
+                principal=principal,
+                context=PolicyAssistantContext(
+                    kind="policy", institution_id=principal.institution_id
+                ),
+                history=tuple(history_turns),
+                message=text,
+            )
+        assistant_text = reply.content
+        citations_raw = [
+            {"id": item.id, "label": item.label, "excerpt": item.excerpt}
+            for item in reply.citations
+        ]
     prompt_tokens = estimate_tokens(text) + sum(
         estimate_tokens(turn.content) for turn in history_turns
     )

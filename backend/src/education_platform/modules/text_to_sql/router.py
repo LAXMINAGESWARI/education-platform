@@ -54,8 +54,12 @@ from typing import Final
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.api.deps import Principal, require_role
+from education_platform.db.session import get_session
+from education_platform.modules.guard.reminder import hardened_prompt
+from education_platform.modules.guard.service import SURFACE_TEXT_TO_SQL, screen_chat
 from education_platform.modules.text_to_sql.graph import build_text_to_sql_graph
 from education_platform.modules.text_to_sql.state import TextToSQLState
 
@@ -112,19 +116,35 @@ def _initial_state(*, question: str, principal: Principal) -> TextToSQLState:
 async def ask(
     body: AskIn,
     principal: Principal = Depends(require_role("teacher")),
+    session: AsyncSession = Depends(get_session),
 ) -> AskOut:
     """Answer a natural-language question about the caller's own teaching scope.
 
     Teacher-only for now — see module docstring for why student/admin/parent access is a
     deliberately separate, unmade decision rather than an oversight.
     """
-    initial = _initial_state(question=body.question, principal=principal)
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question is empty")
+    outcome = await screen_chat(
+        session,
+        user_id=principal.user_id,
+        institution_id=principal.institution_id,
+        role="teacher",
+        surface=SURFACE_TEXT_TO_SQL,
+        message=question,
+    )
+    if outcome.reply is not None:
+        return AskOut(natural_answer=outcome.reply, confidence=None, provenance=None)
+
+    initial = _initial_state(question=question, principal=principal)
 
     try:
-        result = await asyncio.wait_for(
-            _GRAPH.ainvoke(initial, config={"recursion_limit": _RECURSION_LIMIT}),
-            timeout=_GRAPH_TIMEOUT_SECONDS,
-        )
+        with hardened_prompt(outcome.hardened):
+            result = await asyncio.wait_for(
+                _GRAPH.ainvoke(initial, config={"recursion_limit": _RECURSION_LIMIT}),
+                timeout=_GRAPH_TIMEOUT_SECONDS,
+            )
     except TimeoutError:
         logger.error(
             "text_to_sql.ask: graph run exceeded %.0fs, user_id=%s",

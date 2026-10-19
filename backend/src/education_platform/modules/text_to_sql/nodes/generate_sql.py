@@ -28,6 +28,7 @@ import re
 
 from education_platform.core.config import get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion
+from education_platform.modules.guard.reminder import with_hardened_reminder
 from education_platform.modules.text_to_sql.state import LLM_ERROR, TextToSQLState, format_error
 
 _SYSTEM_PROMPT = """You are a SQL generation assistant for CurioEd's \
@@ -216,7 +217,7 @@ def _build_messages(
             f"Rejection reason:\n{prior_error or '(not given)'}"
         )
     return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": with_hardened_reminder(_SYSTEM_PROMPT)},
         {"role": "user", "content": user_content},
     ]
 

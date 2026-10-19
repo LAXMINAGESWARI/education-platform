@@ -33,6 +33,9 @@ from education_platform.modules.generation.types import (
     ReviewTarget,
     RunPhase,
 )
+from education_platform.modules.guard.reminder import hardened_prompt
+from education_platform.modules.guard.service import SURFACE_GENERATION, role_name, screen_chat
+from education_platform.modules.guard.service_types import GuardTurn
 
 _HISTORY_TURNS = 8
 
@@ -80,18 +83,31 @@ async def post_review_chat(
     await session.flush()
 
     before_decisions = await _decision_count(session, run.id)
-    reply = await graph_for(AssistantKind.GENERATION_REVIEW).run_turn(
-        session=session,
-        principal=principal,
-        context=GenerationAssistantContext(
-            kind="generation_review",
-            run_id=run.id,
-            revision_id=revision_row.id,
-            target=target,
-        ),
-        history=history,
+    outcome = await screen_chat(
+        session,
+        user_id=principal.user_id,
+        institution_id=principal.institution_id,
+        role=role_name(principal.roles),
+        surface=SURFACE_GENERATION,
         message=text,
+        history=[GuardTurn(role=turn.role, content=turn.content) for turn in history[-3:]],
     )
+    if outcome.reply is not None:
+        reply = AssistantReply(content=outcome.reply, citations=(), draft_change_request=None)
+    else:
+        with hardened_prompt(outcome.hardened):
+            reply = await graph_for(AssistantKind.GENERATION_REVIEW).run_turn(
+                session=session,
+                principal=principal,
+                context=GenerationAssistantContext(
+                    kind="generation_review",
+                    run_id=run.id,
+                    revision_id=revision_row.id,
+                    target=target,
+                ),
+                history=history,
+                message=text,
+            )
     after_decisions = await _decision_count(session, run.id)
     if after_decisions != before_decisions:
         raise GenerationError("Generation review chat cannot submit a decision.", status_code=500)

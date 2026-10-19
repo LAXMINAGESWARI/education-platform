@@ -158,6 +158,9 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_API_KEY` | unset | Required for live LLM stages (Policy assistant, ADK generation) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
+| `JEV_MODEL` | `typesafe/jev-1.14` | Decisions model for the chat guard |
+| `JEV_BLOCK_THRESHOLD` | `0.85` | Injection or exfiltration probability that blocks |
+| `JEV_FLAG_THRESHOLD` | `0.5` | Probability that flags and hardens the system prompt |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |
 | `CHAT_CONTEXT_LIMIT_TOKENS` | `20000` | Context meter denominator |

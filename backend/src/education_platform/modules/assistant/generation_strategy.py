@@ -47,6 +47,7 @@ from education_platform.modules.generation.types import (
     QuizItemTarget,
     ReviewTarget,
 )
+from education_platform.modules.guard.reminder import with_hardened_reminder
 
 _INJECTION_PATTERNS = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instructions|"
@@ -333,7 +334,9 @@ def _llm_messages(
     ]
     evidence = "\n\n".join(evidence_blocks) if evidence_blocks else "(no intake chunks)"
     target_json = _target_json(target)
-    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM}]
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": with_hardened_reminder(_SYSTEM)}
+    ]
     for turn in history[-_HISTORY_TURNS:]:
         messages.append({"role": turn.role, "content": turn.content})
     messages.append(

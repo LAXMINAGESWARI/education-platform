@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
+    # TypeSafe Jev via the OpenRouter Decisions API. Output tokens are free.
+    jev_model: str = "typesafe/jev-1.14"
+    jev_decisions_url: str = ""
+    jev_timeout_seconds: float = 5.0
+    jev_block_threshold: float = 0.85
+    jev_flag_threshold: float = 0.5
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300

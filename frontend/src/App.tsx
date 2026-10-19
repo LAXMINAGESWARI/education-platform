@@ -21,6 +21,7 @@ import { TopicLessonPage } from "./pages/TopicLessonPage";
 import { TopicPageRedirect } from "./pages/TopicPageRedirect";
 import { WelcomePage } from "./pages/WelcomePage";
 import { AdminAtRiskPage } from "./pages/admin/AdminAtRiskPage";
+import { AdminGuardPage } from "./pages/admin/AdminGuardPage";
 import { AdminDashboardPage } from "./pages/admin/AdminDashboardPage";
 import { AdminDocumentsPage } from "./pages/admin/AdminDocumentsPage";
 import { AdminMaterialsGradesPage } from "./pages/admin/AdminMaterialsGradesPage";
@@ -79,6 +80,7 @@ export function App() {
         <Route path="documents" element={<AdminDocumentsPage />} />
         <Route path="policy" element={<PolicyChatPage />} />
         <Route path="at-risk" element={<AdminAtRiskPage />} />
+        <Route path="guard" element={<AdminGuardPage />} />
       </Route>
 
       <Route
