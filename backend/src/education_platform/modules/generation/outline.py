@@ -36,6 +36,8 @@ _ANY_METHOD = re.compile(r"^method\s+\d+\s*:?$", re.IGNORECASE)
 _KEPT_METHOD = re.compile(r"^method\s+[1-4]\s*:?$", re.IGNORECASE)
 _POSSESSIVE_METHOD = re.compile(r".+['\u2019]s method\s*:?$", re.IGNORECASE)
 _SECTION_PREFIX = re.compile(r"^(?:\d+\.)+\d*\.?\s+")
+_NUMBERED_SECTION = re.compile(r"^\d+(?:\.\d+)+\.?\s+\S")
+_EXERCISE_HEADING = re.compile(r"^exercises?(?:\s+\d+(?:\.\d+)*)?$", re.IGNORECASE)
 _TRAILING_PUNCT = re.compile(r"[\s:.;,!?]+$")
 _WHITESPACE = re.compile(r"\s+")
 # Activity boxes, worked examples, exercises, summaries, and captions are not
@@ -200,20 +202,161 @@ def _sentence_case(text: str) -> str:
     return lowered
 
 
+def _number_key(heading: str) -> tuple[int, ...] | None:
+    """Section number from a heading like '9.4.2 Cube'. None for prose headings."""
+    text = heading.strip()
+    if _NUMBERED_SECTION.match(text) is None:
+        return None
+    raw = text.split()[0].rstrip(".")
+    return tuple(int(part) for part in raw.split("."))
+
+
+def _numbered_parent_heading(sections: Sequence[SourceSection], leaf: str) -> str | None:
+    """9.4.3 belongs under 9.4, even when a box heading was stored as its parent."""
+    number = _number_key(leaf)
+    if number is None or len(number) < 2:
+        return None
+    prefix = number[:-1]
+    for section in reversed(sections):
+        if _number_key(section.heading) == prefix:
+            return section.heading
+        if section.parent_heading is not None and _number_key(section.parent_heading) == prefix:
+            return section.parent_heading
+    return None
+
+
+def _heading_already_present(sections: Sequence[SourceSection], heading: str) -> bool:
+    """True when this heading is already a section or already parents one.
+
+    6.1 parents Pinch before "6.1 > Figure it Out" arrives, so that box stays
+    on Pinch. 9.4.2 has not appeared at all when its first box arrives, so
+    that section is still opened.
+    """
+    return any(
+        section.heading == heading or section.parent_heading == heading for section in sections
+    )
+
+
+def _parent_for_leaf(sections: Sequence[SourceSection], parts: list[str], leaf: str) -> str | None:
+    """Parent of a real section. Activity headings are never parents.
+
+    A numbered leaf uses its section-number prefix (9.4.2 → 9.4). Any other
+    leaf keeps the nearest non-activity ancestor in the stored path.
+    """
+    numbered = _numbered_parent_heading(sections, leaf)
+    if numbered is not None:
+        return numbered
+    ancestors = [part for part in parts[:-1] if not is_activity_noise_heading(part)]
+    if ancestors:
+        return ancestors[-1]
+    return None
+
+
+def _open_numbered_section(sections: list[SourceSection], heading: str) -> int | None:
+    """Create a numbered section that so far appears only inside a box path.
+
+    A heading that already parents a child is the container those children
+    already use. Opening it again would steal the box from the preceding child.
+    """
+    for index, section in enumerate(sections):
+        if section.heading == heading:
+            return index
+    if any(section.parent_heading == heading for section in sections):
+        return None
+    parent = _numbered_parent_heading(sections, heading)
+    sections.append(SourceSection(heading, (), 0, parent))
+    return len(sections) - 1
+
+
+def _box_owner_index(sections: Sequence[SourceSection], key: str) -> int:
+    """Exercises skip Method / possessive-method sections and feed the concept."""
+    leaf = key.split(HEADING_PATH_SEPARATOR)[-1]
+    if _EXERCISE_HEADING.match(heading_key(leaf)):
+        for cursor in range(len(sections) - 1, -1, -1):
+            if not _protected_method(sections[cursor].heading):
+                return cursor
+    return len(sections) - 1
+
+
+def _attach_box(
+    sections: list[SourceSection],
+    pending: list[tuple[str, str, int]],
+    key: str,
+    text: str,
+    tokens: int,
+) -> None:
+    """Give a box chunk to the concept that precedes it in reading order.
+
+    The same heading ('TRY THESE') occurs many times. Matching those chunks
+    by heading text would merge pages 2–15 into one node. The owner is the
+    section this row follows, and the original path stays on source_headings.
+    """
+    parts = [part.strip() for part in key.split(HEADING_PATH_SEPARATOR) if part.strip()]
+    concepts = [part for part in parts[:-1] if not is_activity_noise_heading(part)]
+    immediate = concepts[-1] if concepts else None
+    opened_new = (
+        immediate is not None
+        and _number_key(immediate) is not None
+        and not _heading_already_present(sections, immediate)
+    )
+    if opened_new:
+        for part in concepts:
+            if _number_key(part) is not None:
+                _open_numbered_section(sections, part)
+        index = next(
+            index for index, section in enumerate(sections) if section.heading == immediate
+        )
+    elif not sections:
+        pending.append((key, text, tokens))
+        return
+    else:
+        index = _box_owner_index(sections, key)
+    owner = sections[index]
+    extra = SourceSection(
+        heading=owner.heading,
+        texts=(text,) if text else (),
+        token_mass=tokens,
+        parent_heading=owner.parent_heading,
+        source_headings=(key,),
+    )
+    sections[index] = _union_sections(owner, extra, extra_first=False)
+
+
+def _take_pending_boxes(
+    section: SourceSection, pending: list[tuple[str, str, int]]
+) -> SourceSection:
+    for key, text, tokens in pending:
+        extra = SourceSection(
+            heading=section.heading,
+            texts=(text,) if text else (),
+            token_mass=tokens,
+            parent_heading=section.parent_heading,
+            source_headings=(key,),
+        )
+        section = _union_sections(section, extra, extra_first=True)
+    pending.clear()
+    return section
+
+
 def source_sections(rows: Iterable[tuple[str | None, str, int]]) -> list[SourceSection]:
-    """One run per heading path, in document order.
+    """One run per concept heading, in document order.
 
     "6.1 Some Properties > Increments in Products" is the leaf Increments in
-    Products under the parent 6.1. A path with one part is a top-level section.
-    A leaf that ends with ":" and is not Method 1–4 or a possessive method
-    ("Tadang's method:") is body text and joins the previous sibling under the
-    same parent. A Hint: chunk is not a section: the label is removed and the
-    text joins the next sibling under the same parent, or the previous sibling
-    when the next heading has a different parent. Everything from the first
+    Products under the parent 6.1. A numbered leaf such as 9.4.2 is parented
+    by its section-number prefix, never by a box (TRY THESE, DO THIS,
+    THINK, DISCUSS AND WRITE) that the PDF heading stack put above it.
+    Each box chunk joins the concept section that precedes it in reading
+    order. Repeated box headings stay apart. A leaf that ends with ":" and
+    is not Method 1–4 or a possessive method ("Tadang's method:") is body
+    text and joins the previous sibling under the same parent. A Hint:
+    chunk is not a section: the label is removed and the text joins the
+    next sibling under the same parent, or the previous sibling when the
+    next heading has a different parent. Everything from the first
     answer-key heading ("Ans.", "Page No.") onward is dropped.
     """
     sections: list[SourceSection] = []
     pending_hints: list[tuple[str | None, str, int]] = []
+    pending_boxes: list[tuple[str, str, int]] = []
     for heading, text, tokens in rows:
         parts = [part.strip() for part in (heading or "").split(HEADING_PATH_SEPARATOR)]
         parts = [part for part in parts if part]
@@ -222,31 +365,38 @@ def source_sections(rows: Iterable[tuple[str | None, str, int]]) -> list[SourceS
         if any(_APPENDIX_HEADING.match(part) for part in parts):
             break
         leaf = parts[-1]
-        parent = parts[0] if len(parts) > 1 else None
-        # Answer-key parents are already cut off above. Activity parents stay so
-        # their chunks can be folded onto a concept instead of discarded.
-        if (
-            parent is not None
-            and is_outline_noise_heading(parent)
-            and not is_activity_noise_heading(parent)
+        if any(
+            is_outline_noise_heading(part) and not is_activity_noise_heading(part)
+            for part in parts[:-1]
         ):
             continue
         if _HINT_HEADING.match(leaf):
-            pending_hints.append((parent, _strip_hint_label(text), tokens))
+            pending_hints.append(
+                (_parent_for_leaf(sections, parts, leaf), _strip_hint_label(text), tokens)
+            )
             continue
         if is_activity_noise_heading(leaf):
-            sections.append(SourceSection(leaf, (text,), tokens, parent))
+            _attach_box(
+                sections,
+                pending_boxes,
+                HEADING_PATH_SEPARATOR.join(parts),
+                text,
+                tokens,
+            )
             continue
         if _is_colon_sentence(leaf):
-            _absorb_colon_sentence(sections, leaf, text, tokens, parent)
+            _absorb_colon_sentence(
+                sections, leaf, text, tokens, _parent_for_leaf(sections, parts, leaf)
+            )
             continue
         if is_outline_noise_heading(leaf):
             continue
-        section = _section_with_pending_hints(
-            SourceSection(leaf, (text,), tokens, parent),
-            pending_hints,
-            sections,
+        parent = _parent_for_leaf(sections, parts, leaf)
+        section = _take_pending_boxes(
+            SourceSection(leaf, (text,) if text else (), tokens, parent),
+            pending_boxes,
         )
+        section = _section_with_pending_hints(section, pending_hints, sections)
         pending_hints.clear()
         previous = sections[-1] if sections else None
         if previous is not None and previous.heading == leaf and previous.parent_heading == parent:
@@ -254,6 +404,21 @@ def source_sections(rows: Iterable[tuple[str | None, str, int]]) -> list[SourceS
         else:
             sections.append(section)
     _flush_hints(sections, pending_hints)
+    if pending_boxes and sections:
+        for key, box_text, box_tokens in pending_boxes:
+            _attach_box(sections, [], key, box_text, box_tokens)
+    elif pending_boxes:
+        for key, box_text, box_tokens in pending_boxes:
+            box_leaf = key.split(HEADING_PATH_SEPARATOR)[-1]
+            sections.append(
+                SourceSection(
+                    box_leaf,
+                    (box_text,) if box_text else (),
+                    box_tokens,
+                    None,
+                    source_headings=(key,),
+                )
+            )
     return sections
 
 
@@ -331,12 +496,7 @@ def _merge_tiny_siblings(sections: Sequence[SourceSection], min_tokens: int) -> 
             pending = section if pending is None else _join_sections(pending, section)
             continue
         if pending is not None:
-            section = SourceSection(
-                heading=section.heading,
-                texts=pending.texts + section.texts,
-                token_mass=pending.token_mass + section.token_mass,
-                parent_heading=section.parent_heading,
-            )
+            section = _union_sections(section, pending, extra_first=True)
             pending = None
         merged.append(section)
     if pending is not None:
@@ -347,7 +507,8 @@ def _merge_tiny_siblings(sections: Sequence[SourceSection], min_tokens: int) -> 
 def _folds_away(section: SourceSection, min_tokens: int, section_count: int) -> bool:
     if section_count <= 1 or section.token_mass >= min_tokens:
         return False
-    return _KEPT_METHOD.match(section.heading.strip()) is None
+    text = section.heading.strip()
+    return _KEPT_METHOD.match(text) is None and _NUMBERED_SECTION.match(text) is None
 
 
 def _is_colon_sentence(heading: str) -> bool:
@@ -418,6 +579,7 @@ def _section_with_pending_hints(
         texts=tuple(matched_texts) + section.texts,
         token_mass=section.token_mass + matched_tokens,
         parent_heading=section.parent_heading,
+        source_headings=section.source_headings,
     )
 
 
@@ -439,6 +601,7 @@ def _attach_hint(sections: list[SourceSection], parent: str | None, text: str, t
         texts=current.texts + extra,
         token_mass=current.token_mass + tokens,
         parent_heading=current.parent_heading,
+        source_headings=current.source_headings,
     )
 
 
@@ -452,9 +615,12 @@ def _flush_tiny(merged: list[SourceSection], pending: SourceSection) -> None:
 def _container_cluster(heading: str, exclusive: SourceSection | None) -> HeadingCluster:
     samples = () if exclusive is None else tuple(text[:400] for text in exclusive.texts[:3])
     keys = _source_keys(exclusive) if exclusive is not None else (heading,)
+    # A numbered parent that has its own chunks keeps that mass. Zeroing it
+    # dropped the 9.4 and 9.5 introductions.
+    mass = 0 if exclusive is None else exclusive.token_mass
     return HeadingCluster(
         heading=heading,
-        token_mass=0,
+        token_mass=mass,
         sample_texts=samples,
         parent_heading=None,
         source_headings=keys,
@@ -588,7 +754,11 @@ def _merge_smallest_short_leaf(sections: Sequence[SourceSection]) -> list[Source
     parent_names = {section.parent_heading for section in sections if section.parent_heading}
     candidates: list[tuple[int, int, int]] = []
     for index, section in enumerate(sections):
-        if section.token_mass > BREADTH_MERGE_TOKENS or _protected_method(section.heading):
+        if (
+            section.token_mass > BREADTH_MERGE_TOKENS
+            or _protected_method(section.heading)
+            or _NUMBERED_SECTION.match(section.heading.strip()) is not None
+        ):
             continue
         if section.parent_heading is None and section.heading in parent_names:
             continue
@@ -791,6 +961,9 @@ def _outline_from_clusters(
         slug = _unique_slug(_slugify(raw_heading), used_slugs)
         used_slugs.add(slug)
         is_container = cluster.parent_heading is None and raw_heading.casefold() in parent_names
+        # An empty container stays weightless. One with its own chunks is a
+        # real section and keeps those tokens.
+        structural = is_container and cluster.token_mass == 0
         parent_key = (
             None
             if cluster.parent_heading is None
@@ -800,7 +973,7 @@ def _outline_from_clusters(
             parent_keys[raw_heading.casefold()] = key
         centrality = (
             _ZERO
-            if is_container
+            if structural
             else (Decimal("1") if count == 1 else Decimal(count - index) / Decimal(count))
         )
         nodes.append(
@@ -809,8 +982,8 @@ def _outline_from_clusters(
                 parent_key=parent_key,
                 slug=slug,
                 title=title,
-                token_mass=0 if is_container else cluster.token_mass,
-                prerequisite_score=_ZERO if is_container else Decimal("0.5"),
+                token_mass=0 if structural else cluster.token_mass,
+                prerequisite_score=_ZERO if structural else Decimal("0.5"),
                 centrality=centrality,
                 proposed_outcomes=outcomes.get(
                     (title.casefold(), _folded_parent(cluster.parent_heading)),

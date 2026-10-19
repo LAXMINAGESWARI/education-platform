@@ -207,6 +207,115 @@ def test_chunk_coverage_is_unchanged_after_normalization() -> None:
     ]
 
 
+# Prod mensuration failure: the same box heading repeats, and Docling stored
+# later numbered sections under that box. Each box chunk belongs to the
+# concept that precedes it. 9.4 and 9.5 keep their own intro chunks. 9.4.2
+# stays even when the stored path parents it under DO THIS.
+_REPEATED_BOX_ROWS: tuple[tuple[str, str, int], ...] = (
+    ("9.1 Introduction", "intro", 115),
+    ("9.2 Area of a Polygon", "polygon", 191),
+    ("TRY THESE", "try-page-2", 40),
+    ("Solution: Aman's method:", "aman", 100),
+    ("Ridhima's method:", "ridhima", 133),
+    ("EXERCISE 9.1", "exercise-9-1", 200),
+    ("9.3 Solid Shapes", "solids", 245),
+    ("DO THIS", "do-page-5", 30),
+    ("THINK, DISCUSS AND WRITE", "think-page-6", 20),
+    ("9.4 Surface Area of Cube, Cuboid and Cylinder", "surface-intro", 90),
+    ("9.4 Surface Area of Cube, Cuboid and Cylinder > 9.4.1 Cuboid", "cuboid-surface", 283),
+    ("TRY THESE", "try-page-7", 15),
+    ("DO THIS > 9.4.2 Cube", "cube-surface", 80),
+    ("THINK, DISCUSS AND WRITE > 9.4.3 Cylinders", "cylinder-surface", 38),
+    ("TRY THESE", "try-page-10", 18),
+    ("9.5 Volume of Cube, Cuboid and Cylinder", "volume-intro", 70),
+    ("9.5 Volume of Cube, Cuboid and Cylinder > 9.5.1 Cuboid", "cuboid-volume", 320),
+    ("DO THIS > 9.5.2 Cube", "cube-volume", 40),
+    ("THINK, DISCUSS AND WRITE > 9.5.3 Cylinder", "cylinder-volume", 130),
+    ("TRY THESE", "try-page-15", 8),
+    ("9.6 Volume and Capacity", "capacity", 400),
+)
+
+
+def test_repeated_boxes_follow_reading_order_and_keep_numbered_sections() -> None:
+    groups = _groups(_REPEATED_BOX_ROWS)
+    before = [text for _label, texts in groups for text in texts]
+    outline = outline_from_headings(outline_clusters(source_sections(_REPEATED_BOX_ROWS)))
+    refs, titles = _refs_for(_REPEATED_BOX_ROWS)
+    assigned = texts_for_nodes(tuple(refs), groups)
+    after = [text for texts in assigned.values() for text in texts]
+    assert sorted(after) == sorted(before)
+    assert len(after) == len(before) == len(set(before))
+
+    by_title = {ref.title: ref for ref in refs}
+    folded = {title.casefold() for title in titles}
+    for noise in ("TRY THESE", "DO THIS", "THINK, DISCUSS AND WRITE", "EXERCISE 9.1"):
+        assert noise.casefold() not in folded
+        assert normalize_outline_title(noise).casefold() not in folded
+
+    def parent_of(title: str) -> str | None:
+        return next(ref.parent_title for ref in refs if ref.title == title)
+
+    surface = "Surface Area of Cube, Cuboid"
+    volume = "Volume of Cube, Cuboid and Cylinder"
+    assert parent_of("Cube") in {surface, volume}
+    cubes = [ref for ref in refs if ref.title == "Cube"]
+    assert {ref.parent_title for ref in cubes} == {surface, volume}
+    assert parent_of("Cylinders") == surface
+    assert parent_of("Cylinder") == volume
+    assert parent_of("Cuboid") in {surface, volume}
+    assert all(
+        ref.parent_title not in {"TRY THESE", "DO THIS", "THINK, DISCUSS AND WRITE"} for ref in refs
+    )
+
+    by_node = {node.title: node for node in outline.nodes}
+    assert by_node[surface].token_mass >= 90
+    assert by_node[volume].token_mass >= 70
+    assert "cube-surface" in assigned[by_title["Cube"].id] or any(
+        "cube-surface" in assigned[ref.id] for ref in cubes
+    )
+    surface_cube = next(ref for ref in cubes if ref.parent_title == surface)
+    volume_cube = next(ref for ref in cubes if ref.parent_title == volume)
+    assert assigned[surface_cube.id] == ("cube-surface",)
+    assert "try-page-7" not in assigned[surface_cube.id]
+    assert assigned[volume_cube.id] == ("cube-volume",)
+    polygon = by_title["Area of a Polygon"]
+    assert "try-page-2" in assigned[polygon.id]
+    assert "try-page-7" not in assigned[polygon.id]
+    assert "try-page-10" not in assigned[polygon.id]
+    assert "try-page-15" not in assigned[polygon.id]
+    assert "exercise-9-1" in assigned[polygon.id]
+    ridhima = by_title["Ridhima's method"]
+    assert assigned[ridhima.id] == ("ridhima",)
+    assert titles.index("Introduction") < titles.index("Area of a Polygon")
+    assert titles.index("Area of a Polygon") < titles.index(surface)
+    assert titles.index(surface) < titles.index("Cuboid")
+    assert titles.index("Cuboid") < titles.index("Cylinders")
+    assert titles.index(volume) < titles.index("Volume and Capacity")
+
+
+def test_box_under_a_new_numbered_section_opens_that_section() -> None:
+    """9.4.2 has no chunk of its own. Its body is stored under the box path."""
+    rows = (
+        ("9.4 Surface Area of Cube, Cuboid and Cylinder", "surface-intro", 90),
+        ("9.4 Surface Area of Cube, Cuboid and Cylinder > 9.4.1 Cuboid", "cuboid", 100),
+        ("9.4 Surface Area of Cube, Cuboid and Cylinder > 9.4.2 Cube > DO THIS", "cube-body", 80),
+        ("9.4 Surface Area of Cube, Cuboid and Cylinder > 9.4.3 Cylinders", "cylinders", 40),
+    )
+    groups = _groups(rows)
+    refs, titles = _refs_for(rows)
+    assigned = texts_for_nodes(tuple(refs), groups)
+    assert "Cube" in titles
+    cube = next(ref for ref in refs if ref.title == "Cube")
+    assert cube.parent_title == "Surface Area of Cube, Cuboid"
+    assert assigned[cube.id] == ("cube-body",)
+    cuboid = next(ref for ref in refs if ref.title == "Cuboid")
+    assert "cube-body" not in assigned[cuboid.id]
+    before = [text for _label, texts in groups for text in texts]
+    after = [text for texts in assigned.values() for text in texts]
+    assert sorted(after) == sorted(before)
+    assert len(after) == len(set(before))
+
+
 def test_tiny_siblings_merge_and_keep_every_chunk() -> None:
     rows = tuple((f"Concept {index}", f"chunk-{index}", 30) for index in range(10))
     groups = _groups(rows)

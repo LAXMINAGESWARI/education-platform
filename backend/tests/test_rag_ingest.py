@@ -570,6 +570,17 @@ def test_chunk_rebuilds_numbered_section_paths_from_flat_docling_headings(
     ]
 
 
+def test_box_headings_do_not_parent_the_next_numbered_section() -> None:
+    doc = DoclingDocument(name="mensuration-levels")
+    area = doc.add_heading(text="9.4 Surface Area of Cube, Cuboid and Cylinder", level=1)
+    cuboid = doc.add_heading(text="9.4.1 Cuboid", level=1)
+    box = doc.add_heading(text="TRY THESE", level=1)
+    cube = doc.add_heading(text="9.4.2 Cube", level=1)
+    cylinders = doc.add_heading(text="9.4.3 Cylinders", level=1)
+    assign_numbered_heading_levels(doc)
+    assert (area.level, cuboid.level, box.level, cube.level, cylinders.level) == (1, 2, 3, 2, 2)
+
+
 def test_assign_numbered_heading_levels_leaves_unnumbered_documents() -> None:
     doc = DoclingDocument(name="flat")
     first = doc.add_heading(text="Squares", level=1)
