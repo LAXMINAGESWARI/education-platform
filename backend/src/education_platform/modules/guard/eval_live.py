@@ -226,7 +226,7 @@ async def run() -> int:
         return 0
     rows = load_rows()
     print(
-        f"rows={len(rows)} jev={settings.jev_model} gpt={settings.openrouter_model} "
+        f"rows={len(rows)} jev={settings.jev_guard_model} gpt={settings.openrouter_model} "
         f"threshold={settings.jev_block_threshold} decisions={decisions_endpoint(settings)}"
     )
     try:

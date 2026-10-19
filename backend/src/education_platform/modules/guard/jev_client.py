@@ -133,7 +133,7 @@ async def post_decisions(
     settings: Settings | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> DecisionsResponse:
-    """One Decisions API call. Times out around ``jev_timeout_seconds`` and retries once.
+    """One Decisions API call. Times out around ``jev_guard_timeout_seconds`` and retries once.
 
     HTTP 402 (credits exhausted) is not retried. Callers choose fail-open or fail-closed.
     """
@@ -142,12 +142,12 @@ async def post_decisions(
         raise JevError("OPENROUTER_API_KEY is not configured")
     url = decisions_endpoint(cfg)
     body: dict[str, Any] = {
-        "model": cfg.jev_model,
+        "model": cfg.jev_guard_model,
         "state": state,
         "questions": questions,
     }
     owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=httpx.Timeout(cfg.jev_timeout_seconds))
+    http = client or httpx.AsyncClient(timeout=httpx.Timeout(cfg.jev_guard_timeout_seconds))
     try:
         last: JevError | None = None
         for attempt in range(2):

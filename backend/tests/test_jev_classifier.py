@@ -102,7 +102,7 @@ async def test_decisions_call_posts_model_state_and_questions() -> None:
     settings = Settings(
         openrouter_api_key="test-key",
         openrouter_base_url="https://openrouter.ai/api/v1",
-        jev_model="typesafe/jev-1.14",
+        jev_guard_model="typesafe/jev-1.14",
     )
     assert decisions_endpoint(settings) == "https://openrouter.ai/api/alpha/decisions"
     seen: list[httpx.Request] = []
@@ -137,7 +137,7 @@ async def test_decisions_call_posts_model_state_and_questions() -> None:
 
 @pytest.mark.asyncio
 async def test_jev_retries_once_and_does_not_retry_402() -> None:
-    settings = Settings(openrouter_api_key="test-key", jev_model="typesafe/jev-1.14")
+    settings = Settings(openrouter_api_key="test-key", jev_guard_model="typesafe/jev-1.14")
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
