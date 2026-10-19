@@ -1,13 +1,37 @@
 # syntax=docker/dockerfile:1
 # linux/amd64 and linux/arm64. Built on the VM, so Oracle ARM produces an arm64 image.
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm AS packages
 
 # torch.compile (Docling layout) asks Inductor for g++. The official Python
 # image already has Python.h; g++ is the Debian package name on amd64 and arm64.
+#
+# Prod Postgres is pgvector/pgvector:pg16. Bookworm's postgresql-client is 15,
+# and pg_dump aborts on a newer server. The PGDG client is pinned to major 16
+# and placed first on PATH so the migrate service cannot pick the Debian 15
+# tools.
+ENV PATH="/usr/lib/postgresql/16/bin:${PATH}"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends g++ libgomp1 libglib2.0-0 libgl1 postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        g++ \
+        libgomp1 \
+        libglib2.0-0 \
+        libgl1 \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && rm -rf /var/lib/apt/lists/* \
+    && version="$(pg_dump --version)" \
+    && echo "$version" \
+    && echo "$version" | grep -q 'PostgreSQL) 16[.]'
+
+FROM packages
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
 
@@ -15,7 +39,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/backend/.venv \
-    PATH="/app/backend/.venv/bin:${PATH}" \
+    PATH="/app/backend/.venv/bin:/usr/lib/postgresql/16/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MATERIALS_DIR=/app/docs/curriculum \
