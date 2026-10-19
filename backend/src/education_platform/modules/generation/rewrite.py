@@ -60,6 +60,7 @@ def rewrite_outline_snapshot(
                 force_create=node.force_create,
                 proposed_outcomes=outcomes[:3],
                 sequence=node.sequence,
+                source_headings=node.source_headings,
             )
         )
     if structure_notes and nodes:
@@ -77,6 +78,7 @@ def rewrite_outline_snapshot(
             force_create=first.force_create,
             proposed_outcomes=first.proposed_outcomes,
             sequence=first.sequence,
+            source_headings=first.source_headings,
         )
     return OutlineSnapshot(target_item_count=base.target_item_count, nodes=tuple(nodes))
 

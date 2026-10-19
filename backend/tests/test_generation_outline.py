@@ -220,20 +220,20 @@ def test_hegp106_outline_stays_in_source_order_with_real_masses() -> None:
     grounded = ground_outline(proposed, _HEGP106_CLUSTERS)
     titles = [node.title for node in grounded.nodes]
 
-    assert titles.index("Increments in Products") < titles.index("How do we expand this?")
+    assert titles.index("Increments in Products") < titles.index("How do we expand this")
     assert titles.index("A Pinch of History") < titles.index(
         "Fast Multiplications Using the Distributive Property"
     )
     assert titles.index("Fast Multiplications Using the Distributive Property") < titles.index(
-        "Square of the Sum/Difference of Two Numbers"
+        "Square of the Sum/Difference of Two"
     )
-    assert titles.index("Square of the Sum/Difference of Two Numbers") < titles.index("Pattern 1")
-    assert titles[0] == "WE DISTRIBUTE, YET THINGS MULTIPLY"
-    assert "Figure it Out" in titles
-    assert "6.3 Mind the Mistake, Mend the Mistake" in titles
-    assert "6.4 This Way or That Way, All Ways Lead to the Bay" in titles
-    assert "SUMMARY" in titles
-    assert "Step y ." in titles
+    assert titles.index("Square of the Sum/Difference of Two") < titles.index("Pattern 1")
+    assert titles[0] == "We distribute, yet things multiply"
+    assert "Figure it Out" not in titles
+    assert "Mind the Mistake, Mend the Mistake" in titles
+    assert "This Way or That Way, All" in titles
+    assert "SUMMARY" not in titles
+    assert "Step y" in titles
     assert "Understanding Distributive Property" not in titles
     assert "Visual and Practical Applications" not in titles
     assert "Historical Context" not in titles
@@ -245,8 +245,29 @@ def test_hegp106_outline_stays_in_source_order_with_real_masses() -> None:
     by_title = {node.title: node for node in grounded.nodes}
     assert by_title["Increments in Products"].token_mass == 513
     assert "This property can be visualised nicely using a diagram:" not in titles
-    assert by_title["How do we expand this?"].token_mass == 1473
-    assert by_title["Square of the Sum/Difference of Two Numbers"].token_mass == 2243
+    assert by_title["How do we expand this"].token_mass == 1473
+    assert by_title["How do we expand this"].source_headings == ("How do we expand this?",)
+    assert by_title["Square of the Sum/Difference of Two"].token_mass == 2243
+    pinch = by_title["A Pinch of History"]
+    assert pinch.token_mass == 262 + 3334
+    assert pinch.source_headings == ("A Pinch of History", "Figure it Out")
+    pattern_2 = by_title["Pattern 2"]
+    assert pattern_2.token_mass == 256 + 56
+    assert pattern_2.source_headings == ("Pattern 2", "Hint:")
+    aditya = by_title["Aditya's method"]
+    assert aditya.token_mass == 159 + 315
+    assert aditya.source_headings == ("Aditya's method:", "SUMMARY")
+    dropped = {"Page No. 138", "Ans.", "Ans. Let a and b be two numbers."}
+    owners: dict[str, str] = {}
+    for node in grounded.nodes:
+        for key in node.source_headings:
+            assert key not in owners
+            owners[key] = node.title
+    for cluster in _HEGP106_CLUSTERS:
+        if cluster.heading in dropped:
+            assert cluster.heading not in owners
+        else:
+            assert owners[cluster.heading]
 
     order = {node.key: index for index, node in enumerate(grounded.nodes)}
     for node in grounded.nodes:
@@ -275,10 +296,11 @@ def test_ground_outline_groups_cited_headings_and_drops_forward_parents() -> Non
         }
     )
     grounded = ground_outline(proposed, clusters)
-    assert [node.title for node in grounded.nodes] == ["Pattern 1", "Pattern 2", "SUMMARY"]
-    assert [node.token_mass for node in grounded.nodes] == [305, 256, 315]
+    assert [node.title for node in grounded.nodes] == ["Pattern 1", "Pattern 2"]
+    assert [node.token_mass for node in grounded.nodes] == [305, 256 + 315]
     assert all(node.parent_key is None for node in grounded.nodes)
-    assert grounded.nodes[2].proposed_outcomes == ("Study SUMMARY",)
+    assert grounded.nodes[1].source_headings == ("Pattern 2", "SUMMARY")
+    assert grounded.nodes[1].proposed_outcomes == ()
 
     omitted = parse_proposed_outline({"nodes": [_node("only", "SUMMARY", 1)]})
     restored = ground_outline(
@@ -294,12 +316,17 @@ def test_ground_outline_groups_cited_headings_and_drops_forward_parents() -> Non
     by_title = {node.title: node for node in restored.nodes}
     assert (
         by_title["Increments in Products"].parent_key
-        == by_title["6.1 Some Properties of Multiplication"].key
+        == by_title["Some Properties of Multiplication"].key
     )
-    assert by_title["6.1 Some Properties of Multiplication"].parent_key is None
-    assert by_title["SUMMARY"].parent_key is None
-    assert by_title["6.1 Some Properties of Multiplication"].token_mass == 0
-    assert by_title["6.1 Some Properties of Multiplication"].prerequisite_score == Decimal("0")
+    assert by_title["Some Properties of Multiplication"].parent_key is None
+    assert "SUMMARY" not in by_title
+    assert by_title["Increments in Products"].token_mass == 171 + 80
+    assert by_title["Increments in Products"].source_headings == (
+        "6.1 Some Properties of Multiplication > Increments in Products",
+        "SUMMARY",
+    )
+    assert by_title["Some Properties of Multiplication"].token_mass == 0
+    assert by_title["Some Properties of Multiplication"].prerequisite_score == Decimal("0")
 
 
 def test_parse_proposed_outline_rejects_bad_headings() -> None:
@@ -310,8 +337,10 @@ def test_parse_proposed_outline_rejects_bad_headings() -> None:
 
 
 # Chunk rows (heading, text, tokens) in hegp106 document order. "Figure it Out"
-# recurs after several sections. Method 1–3 are under MIN_SECTION_TOKENS and stay.
-# Fast Multiplications is above that floor, so it stays its own section.
+# recurs after several sections and folds into the concept before it. Method 1–3
+# stay even under MIN_SECTION_TOKENS. Fast Multiplications is under the breadth
+# cap, so it folds into A Pinch of History while the outline is still wider than
+# eight nodes.
 _HEGP106_ROWS: tuple[tuple[str | None, str, int], ...] = (
     (None, "", 1),
     ("WE DISTRIBUTE, YET THINGS MULTIPLY", "intro [Diagram]", 122),
@@ -342,22 +371,29 @@ def test_hegp106_clusters_fold_exercises_and_tiny_headings() -> None:
         "Increments in Products",
         "How do we expand this?",
         "A Pinch of History",
-        "Figure it Out",
-        "Fast Multiplications Using the Distributive Property",
         "When one of the numbers is 11, 101, 1001, ...",
         "Square of the Sum/Difference of Two Numbers",
         "Method 1",
         "Method 2",
         "Method 3",
         "Method 4",
-        "SUMMARY",
     ]
-    assert by_heading["Figure it Out"] == 900 + 400 + 600
-    assert by_heading["Fast Multiplications Using the Distributive Property"] == 37
+    by_cluster = {cluster.heading: cluster for cluster in clusters}
+    pinch = by_cluster["A Pinch of History"]
+    assert pinch.token_mass == 262 + 900 + 37
+    assert pinch.source_headings == (
+        "A Pinch of History",
+        "Figure it Out",
+        "Fast Multiplications Using the Distributive Property",
+    )
+    assert by_heading["When one of the numbers is 11, 101, 1001, ..."] == 692 + 400
+    assert by_heading["Square of the Sum/Difference of Two Numbers"] == 2288 + 600
     assert by_heading["Method 1"] == 5
     assert by_heading["Method 2"] == 5
     assert by_heading["Method 3"] == 5
-    assert by_heading["Method 4"] == 377
+    method_4 = by_cluster["Method 4"]
+    assert method_4.token_mass == 377 + 327
+    assert method_4.source_headings == ("Method 4", "SUMMARY")
     method_1 = next(cluster for cluster in clusters if cluster.heading == "Method 1")
     assert method_1.sample_texts == ("m1",)
     assert all(cluster.parent_heading is None for cluster in clusters)
@@ -401,8 +437,6 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
         ("Increments in Products", _P61),
         ("How do we expand this?", _P61),
         ("A Pinch of History", _P61),
-        ("Figure it Out", _P61),
-        ("Fast Multiplications Using the Distributive Property", _P61),
         (_P62, None),
         ("Square of the Sum/Difference of Two Numbers", _P62),
         ("Pattern 1", _P62),
@@ -412,7 +446,6 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
         ("Method 1", _P64),
         ("Tadang's method:", _P64),
         ("Aditya's method:", _P64),
-        ("SUMMARY", None),
     ]
     by_heading = {cluster.heading: cluster for cluster in clusters}
     assert by_heading[_P61].token_mass == 0
@@ -424,8 +457,13 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
         "This property can be visualised nicely using a diagram:",
         "[Diagram]",
     )
-    assert by_heading["Figure it Out"].token_mass == 900
-    assert by_heading["Fast Multiplications Using the Distributive Property"].token_mass == 37
+    pinch = by_heading["A Pinch of History"]
+    assert pinch.token_mass == 262 + 900 + 37
+    assert pinch.source_headings == (
+        f"{_P61} > A Pinch of History",
+        f"{_P61} > Figure it Out",
+        f"{_P61} > Fast Multiplications Using the Distributive Property",
+    )
     assert by_heading["Pattern 1"].token_mass == 305
     why = by_heading["Why is this identity true?"]
     assert why.token_mass == 107 + 59
@@ -435,8 +473,13 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
     assert by_heading["Method 1"].sample_texts == ("m1",)
     assert by_heading["Tadang's method:"].token_mass == 66
     assert by_heading["Tadang's method:"].sample_texts == ("tadang",)
-    assert by_heading["Aditya's method:"].token_mass == 168
-    assert by_heading["Aditya's method:"].sample_texts == ("aditya",)
+    aditya = by_heading["Aditya's method:"]
+    assert aditya.token_mass == 168 + 327
+    assert aditya.sample_texts == ("aditya", "summary")
+    assert aditya.source_headings == (
+        f"{_P64} > Aditya's method:",
+        "SUMMARY",
+    )
     assert by_heading[_P64].sample_texts == ("intro",)
     assert all("answer" not in text for cluster in clusters for text in cluster.sample_texts)
     assert all(cluster.heading != "Hint:" for cluster in clusters)
@@ -458,13 +501,14 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
 
     outline = outline_from_headings(clusters)
     nodes = {node.title: node for node in outline.nodes}
-    container = nodes[_P61]
+    container = nodes["Some Properties of Multiplication"]
     assert container.parent_key is None
     assert container.token_mass == 0
     assert container.prerequisite_score == Decimal("0")
     assert container.centrality == Decimal("0")
+    assert container.source_headings == (_P61,)
     assert nodes["Increments in Products"].parent_key == container.key
-    assert nodes[_P62].parent_key is None
+    assert nodes["Special Cases of the Distributive Property"].parent_key is None
     weights = tuple(
         combined_weight(
             token_mass=node.token_mass,
@@ -511,7 +555,7 @@ def test_write_outline_keeps_grounded_draft_when_critic_rejects() -> None:
     outline = write_outline(clusters, writer=None, runner=runner)
     assert [node.title for node in outline.nodes] == [
         "Pattern 1",
-        "6.3 Mind the Mistake, Mend the Mistake",
+        "Mind the Mistake, Mend the Mistake",
     ]
     assert outline.nodes[0].token_mass == 305
 
@@ -547,7 +591,9 @@ def test_write_outline_approved_but_malformed_draft_does_not_fail_run() -> None:
     outline = write_outline(
         clusters, writer=None, runner=_ApprovingRunner({"nodes": [{"key": "x"}]})
     )
-    assert [node.title for node in outline.nodes] == ["Pattern 1", "SUMMARY"]
+    assert [node.title for node in outline.nodes] == ["Pattern 1"]
+    assert outline.nodes[0].token_mass == 305 + 80
+    assert outline.nodes[0].source_headings == ("Pattern 1", "SUMMARY")
 
 
 def test_write_outline_falls_back_to_headings_when_rejected_draft_is_invalid() -> None:
@@ -561,7 +607,9 @@ def test_write_outline_falls_back_to_headings_when_rejected_draft_is_invalid() -
 
 def test_outline_writer_instruction_asks_for_title_parent_and_outcomes() -> None:
     text = outline_writer_instruction()
-    assert '"parent_title": "Exact parent heading or null"' in text
+    assert '"parent_title": "Cleaned parent heading or null"' in text
+    assert "at most 6 words" in text
+    assert "Exercise n.n" in text
     assert "proposed_outcomes" in text
     assert "untrusted_source_excerpts" not in text
     assert "parent_key" not in text
@@ -571,11 +619,11 @@ def test_ground_outline_matches_outcomes_on_title_and_parent() -> None:
     """Same title under two parents must not share outcomes."""
     clusters = (
         HeadingCluster(_P61, 0, ("container text " * 40,), None),
-        HeadingCluster("Figure it Out", 900, ("exercise after history",), _P61),
+        HeadingCluster("Shared pattern", 900, ("exercise after history",), _P61),
         HeadingCluster(_P62, 0, (), None),
-        HeadingCluster("Figure it Out", 600, ("exercise after squares",), _P62),
+        HeadingCluster("Shared pattern", 600, ("exercise after squares",), _P62),
         HeadingCluster("Pattern 1", 305, ("p1",), _P62),
-        HeadingCluster("SUMMARY", 80, ("recap",), None),
+        HeadingCluster("Closing notes", 80, ("recap",), None),
     )
     proposed = parse_proposed_outline(
         {
@@ -586,17 +634,17 @@ def test_ground_outline_matches_outcomes_on_title_and_parent() -> None:
                     "proposed_outcomes": ["Use the distributive property"],
                 },
                 {
-                    "title": "Figure it Out",
+                    "title": "Shared pattern",
                     "parent_title": _P61,
                     "proposed_outcomes": ["Solve exercises on increments"],
                 },
                 {
-                    "title": "figure it out",
+                    "title": "shared pattern",
                     "parent_title": _P62.casefold(),
                     "proposed_outcomes": ["Solve exercises on squares"],
                 },
                 {
-                    "title": "Figure it Out",
+                    "title": "Shared pattern",
                     "parent_title": "6.3 Mind the Mistake, Mend the Mistake",
                     "proposed_outcomes": ["These outcomes must not attach"],
                 },
@@ -606,7 +654,7 @@ def test_ground_outline_matches_outcomes_on_title_and_parent() -> None:
                     "proposed_outcomes": ["Wrong parent outcomes"],
                 },
                 {
-                    "title": "summary",
+                    "title": "closing notes",
                     "parent_title": None,
                     "proposed_outcomes": ["Recap the chapter"],
                 },
@@ -627,22 +675,25 @@ def test_ground_outline_matches_outcomes_on_title_and_parent() -> None:
             return None
         return str(by_key[node.parent_key].title)
 
-    figures = [node for node in grounded.nodes if node.title == "Figure it Out"]
-    assert [parent_title(node) for node in figures] == [_P61, _P62]
+    figures = [node for node in grounded.nodes if node.title == "Shared pattern"]
+    assert [parent_title(node) for node in figures] == [
+        "Some Properties of Multiplication",
+        "Special Cases of the Distributive Property",
+    ]
     assert figures[0].proposed_outcomes == ("Solve exercises on increments",)
     assert figures[1].proposed_outcomes == ("Solve exercises on squares",)
     assert figures[0].proposed_outcomes != figures[1].proposed_outcomes
 
     pattern = next(node for node in grounded.nodes if node.title == "Pattern 1")
-    assert parent_title(pattern) == _P62
+    assert parent_title(pattern) == "Special Cases of the Distributive Property"
     assert pattern.proposed_outcomes == ()
 
-    summary = next(node for node in grounded.nodes if node.title == "SUMMARY")
+    summary = next(node for node in grounded.nodes if node.title == "Closing notes")
     assert summary.parent_key is None
     assert summary.proposed_outcomes == ("Recap the chapter",)
     assert summary.token_mass == 80
 
-    container = next(node for node in grounded.nodes if node.title == _P61)
+    container = next(node for node in grounded.nodes if node.source_headings == (_P61,))
     assert container.token_mass == 0
     assert container.proposed_outcomes == ("Use the distributive property",)
     assert all(

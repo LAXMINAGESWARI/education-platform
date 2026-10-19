@@ -118,6 +118,7 @@ class OutlineNode:
     accepted_subtopic_id: UUID | None
     proposed_outcomes: tuple[ProposedOutcome, ...]
     sequence: int
+    source_headings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.weight < 0:
@@ -232,12 +233,17 @@ class QaItem:
 
 @dataclass(frozen=True, slots=True)
 class HeadingCluster:
-    """Pure input to outline: a heading, its token mass, and its parent heading."""
+    """Pure input to outline: a heading, its token mass, and its parent heading.
+
+    ``source_headings`` are the original chunk-group labels this cluster owns.
+    Empty means the cluster heading itself (and its parent, when it has one).
+    """
 
     heading: str
     token_mass: int
     sample_texts: tuple[str, ...]
     parent_heading: str | None = None
+    source_headings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +413,7 @@ class OutlineNodeSnapshot:
     force_create: bool
     proposed_outcomes: tuple[ProposedOutcomeSnapshot, ...]
     sequence: int
+    source_headings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.weight < 0:

@@ -70,6 +70,8 @@ class OutlineNodeRef:
     title: str
     sequence: int
     parent_title: str | None = None
+    # Original chunk-group labels. Empty means match the display title (legacy rows).
+    source_headings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,12 +155,17 @@ def texts_for_nodes(
 ) -> dict[UUID, tuple[str, ...]]:
     """Map each node to its heading's texts, in document order.
 
-    A path "6.1 Some Properties > Increments in Products" belongs to the child
-    whose title is the leaf and whose parent title is 6.1. In a flat outline a
-    renamed node takes the next unmatched group, and neighbors fill a node only
-    if it still has none. Never assigns every heading group to a single node
-    unless there is only one group.
+    When a node publishes ``source_headings``, those original group labels are
+    the mapping keys. A cleaned display title does not move chunks. A path
+    "6.1 Some Properties > Increments in Products" belongs to the child whose
+    title is the leaf and whose parent title is 6.1 when the node has no
+    source headings (rows saved before source headings existed). In a flat
+    outline a renamed legacy node takes the next unmatched group, and neighbors
+    fill a node only if it still has none. Never assigns every heading group
+    to a single node unless there is only one group.
     """
+    if any(node.source_headings for node in nodes):
+        return _texts_by_source_headings(nodes, heading_groups)
     ordered = sorted(nodes, key=lambda node: node.sequence)
     assigned: dict[UUID, list[str]] = {node.id: [] for node in ordered}
     targets = [_matching_node(ordered, heading) for heading, _texts in heading_groups]
@@ -499,6 +506,39 @@ def _parse_bloom(raw: object, mix: tuple[BloomLevel, ...], index: int) -> BloomL
     if 0 <= index < len(mix):
         return mix[index]
     return BloomLevel.REMEMBER
+
+
+def _texts_by_source_headings(
+    nodes: Sequence[OutlineNodeRef],
+    heading_groups: Sequence[tuple[str, tuple[str, ...]]],
+) -> dict[UUID, tuple[str, ...]]:
+    """Assign each chunk group to the one node that claims its original label.
+
+    Groups are visited in PDF order, so a node's texts stay in PDF order when
+    several headings folded into it. A group is never given to two nodes.
+    """
+    ordered = sorted(nodes, key=lambda node: node.sequence)
+    assigned: dict[UUID, list[str]] = {node.id: [] for node in ordered}
+    for heading, texts in heading_groups:
+        owner = _owner_for_label(ordered, heading)
+        if owner is not None:
+            assigned[owner.id].extend(texts)
+    return {node_id: tuple(texts) for node_id, texts in assigned.items()}
+
+
+def _owner_for_label(nodes: Sequence[OutlineNodeRef], heading: str) -> OutlineNodeRef | None:
+    label = heading.strip().casefold()
+    hits = [
+        node
+        for node in nodes
+        if any(key.strip().casefold() == label for key in node.source_headings)
+    ]
+    if hits:
+        return min(hits, key=lambda node: node.sequence)
+    legacy = [node for node in nodes if not node.source_headings]
+    if not legacy:
+        return None
+    return _matching_node(legacy, heading)
 
 
 def _matching_node(nodes: Sequence[OutlineNodeRef], heading: str) -> OutlineNodeRef | None:

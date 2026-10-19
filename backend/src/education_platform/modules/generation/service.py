@@ -145,6 +145,12 @@ async def _in_flight_run_id(session: AsyncSession, topic_id: UUID) -> UUID | Non
     return run_id
 
 
+def _source_headings_from_json(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+
+
 def _outcomes_from_json(raw: object) -> tuple[ProposedOutcome, ...]:
     if not isinstance(raw, list):
         return ()
@@ -171,6 +177,7 @@ def _node_from_row(row: ContentGenerationOutlineNode, quota: int | None) -> Outl
         accepted_subtopic_id=row.accepted_subtopic_id,
         proposed_outcomes=_outcomes_from_json(row.proposed_outcomes),
         sequence=row.sequence,
+        source_headings=_source_headings_from_json(row.source_headings),
     )
 
 

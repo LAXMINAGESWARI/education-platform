@@ -88,14 +88,12 @@ from education_platform.modules.generation.models import (
     ReviewRoundRow,
 )
 from education_platform.modules.generation.outline import (
-    HEADING_PATH_SEPARATOR as _HEADING_SEP,
-)
-from education_platform.modules.generation.outline import (
     OutlineWriter,
     SourceSection,
     combined_weight,
     match_existing_subtopics,
     outline_clusters,
+    section_group_label,
     source_sections,
     write_outline,
 )
@@ -928,13 +926,8 @@ def _source_sections(chunks: Sequence[SourceChunk]) -> list[SourceSection]:
 
 
 def _heading_text_groups(chunks: Sequence[SourceChunk]) -> list[tuple[str, tuple[str, ...]]]:
-    groups: list[tuple[str, tuple[str, ...]]] = []
-    for section in _source_sections(chunks):
-        label = section.heading
-        if section.parent_heading:
-            label = f"{section.parent_heading}{_HEADING_SEP}{section.heading}"
-        groups.append((label, section.texts))
-    return groups
+    """One group per source section, in PDF order. Labels are the mapping keys."""
+    return [(section_group_label(section), section.texts) for section in _source_sections(chunks)]
 
 
 def _outline_refs(nodes: Sequence[ContentGenerationOutlineNode]) -> tuple[OutlineNodeRef, ...]:
@@ -946,9 +939,16 @@ def _outline_refs(nodes: Sequence[ContentGenerationOutlineNode]) -> tuple[Outlin
             title=node.title,
             sequence=node.sequence,
             parent_title=titles.get(node.parent_id) if node.parent_id is not None else None,
+            source_headings=_stored_source_headings(node.source_headings),
         )
         for node in nodes
     )
+
+
+def _stored_source_headings(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
 
 
 def _persist_nodes(
@@ -995,6 +995,7 @@ def _persist_nodes(
             force_create=False,
             accepted_subtopic_id=None,
             proposed_outcomes=outcomes,
+            source_headings=list(node.source_headings),
             sequence=index + 1,
         )
         session.add(row)
