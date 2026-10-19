@@ -231,6 +231,8 @@ class QaItem:
     blind_solve: dict[str, object] | None = None
     check_attempts: int | None = None
     check_verdict: str | None = None
+    difficulty: str | None = None
+    subtopic_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
