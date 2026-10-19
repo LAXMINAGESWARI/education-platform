@@ -2,7 +2,12 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { GenerationOutlineNode, GenerationQaItem, GenerationRun } from "../api/types";
+import type {
+  GenerationOutlineNode,
+  GenerationQaItem,
+  GenerationRun,
+  GenerationStepTiming,
+} from "../api/types";
 import { TopicGenerationUpload } from "./TopicGenerationUpload";
 
 vi.mock("../auth/AuthContext", () => ({
@@ -14,6 +19,8 @@ vi.mock("../auth/AuthContext", () => ({
 
 vi.mock("../api/generation", () => ({
   listTopicGenerationRuns: vi.fn(),
+  listGenerationSteps: vi.fn(async () => []),
+  getGenerationStepDetail: vi.fn(),
   discardGenerationRun: vi.fn(),
   retryGenerationRun: vi.fn(),
   subscribeGenerationRun: vi.fn(),
@@ -37,6 +44,8 @@ import {
   discardGenerationRun,
   getGenerationReview,
   getGenerationRun,
+  getGenerationStepDetail,
+  listGenerationSteps,
   listTopicGenerationRuns,
   subscribeGenerationRun,
   publishGenerationRun,
@@ -226,6 +235,8 @@ function renderPanel() {
 describe("TopicGenerationUpload", () => {
   beforeEach(() => {
     vi.mocked(listTopicGenerationRuns).mockReset();
+    vi.mocked(listGenerationSteps).mockReset();
+    vi.mocked(getGenerationStepDetail).mockReset();
     vi.mocked(discardGenerationRun).mockReset();
     vi.mocked(retryGenerationRun).mockReset();
     vi.mocked(subscribeGenerationRun).mockReset();
@@ -235,6 +246,7 @@ describe("TopicGenerationUpload", () => {
     vi.mocked(publishGenerationRun).mockReset();
     vi.mocked(rejectGenerationItems).mockReset();
     vi.mocked(listTopicGenerationRuns).mockResolvedValue([]);
+    vi.mocked(listGenerationSteps).mockResolvedValue([]);
     vi.mocked(subscribeGenerationRun).mockImplementation(() => new Promise(() => undefined));
     vi.mocked(getGenerationReview).mockResolvedValue(workspace());
   });
@@ -737,5 +749,71 @@ describe("TopicGenerationUpload", () => {
     expect(await screen.findByText("published. This run is published.")).toBeInTheDocument();
     expect(screen.getByText("What is 1/2 + 1/2?")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Publish to students" })).not.toBeInTheDocument();
+  });
+
+  it("opens a completed step and disables a step that has not run", async () => {
+    const user = userEvent.setup();
+    const indexing: GenerationStepTiming = {
+      step: "indexing",
+      label: "Indexing PDF",
+      status: "current",
+      started_at: "2026-10-01T00:00:00Z",
+      ended_at: "2026-10-01T00:01:00Z",
+      duration_seconds: 60,
+      error: null,
+      available: true,
+      hint: null,
+    };
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(listGenerationSteps).mockResolvedValue([
+      indexing,
+      {
+        ...indexing,
+        step: "lesson",
+        label: "Generating lesson",
+        status: "pending",
+        started_at: null,
+        ended_at: null,
+        duration_seconds: null,
+        available: false,
+        hint: "This step has not run yet.",
+      },
+    ]);
+    vi.mocked(getGenerationStepDetail).mockResolvedValue({
+      timing: { ...indexing, status: "complete" },
+      indexing: {
+        page_count: 4,
+        chunk_count: 1,
+        truncated: false,
+        chunks: [
+          {
+            ordinal: 1,
+            page_number: 3,
+            section_heading: "Area of a polygon",
+            preview: "A polygon is a closed plane figure.",
+          },
+        ],
+      },
+      outline: null,
+      outline_review: null,
+      lesson: null,
+      items: null,
+      ready: null,
+    });
+
+    renderPanel();
+
+    const lesson = await screen.findByRole("button", { name: /Generating lesson/ });
+    expect(lesson).toBeDisabled();
+    expect(lesson).toHaveTextContent(/not run yet/i);
+    await user.click(screen.getByRole("button", { name: /Indexing PDF/ }));
+
+    expect(await screen.findByRole("region", { name: "Indexing PDF" })).toBeInTheDocument();
+    expect(screen.getByText("A polygon is a closed plane figure.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Indexing PDF/ })).toHaveAttribute("aria-pressed", "true");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("region", { name: "Indexing PDF" })).not.toBeInTheDocument();
   });
 });

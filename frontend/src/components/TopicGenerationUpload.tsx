@@ -6,6 +6,7 @@ import {
   getGenerationReview,
   getGenerationRun,
   isInFlightGenerationPhase,
+  listGenerationSteps,
   listTopicGenerationRuns,
   publishGenerationRun,
   rejectGenerationItems,
@@ -18,6 +19,9 @@ import {
   ApiError,
   type DraftChangeRequest,
   type GenerationRun,
+  type GenerationStepId,
+  type GenerationStepStatus,
+  type GenerationStepTiming,
   type ReviewWorkspace,
   type RunPhase,
 } from "../api/types";
@@ -25,6 +29,7 @@ import { useAuth } from "../auth/AuthContext";
 import { claimHaptic, triggerHaptic } from "../lib/haptics";
 import { ROLE_ADMIN } from "../auth/roles";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { GenerationStepDetailPanel } from "./GenerationStepDetail";
 import { PushButton } from "./PushButton";
 import { TopicGenerationQa } from "./TopicGenerationQa";
 import { TopicGenerationReview } from "./TopicGenerationReview";
@@ -33,6 +38,7 @@ type TopicGenerationUploadProps = {
   topicId: string;
   defaultTitle?: string;
   allowUpload?: boolean;
+  publishedHref?: string | null;
   onPublished?: () => void;
 };
 
@@ -45,8 +51,7 @@ const GENERATION_STEPS = [
   { id: "ready", label: "Ready to review" },
 ] as const;
 
-type GenerationStepId = (typeof GENERATION_STEPS)[number]["id"];
-type StepVisual = "complete" | "current" | "pending" | "failed";
+type StepVisual = GenerationStepStatus;
 
 function generatingActiveStep(run: GenerationRun): GenerationStepId {
   const regenJob = run.jobs.find((job) => job.kind === "regenerate_items");
@@ -121,7 +126,7 @@ function stepVisualLabel(visual: StepVisual): string {
     case "current":
       return "Current";
     case "pending":
-      return "Pending";
+      return "Not run yet";
     case "failed":
       return "Failed";
     default: {
@@ -131,19 +136,67 @@ function stepVisualLabel(visual: StepVisual): string {
   }
 }
 
-function GenerationProgressStepper({ run }: { run: GenerationRun }) {
+function timingVisual(status: GenerationStepStatus): StepVisual {
+  switch (status) {
+    case "complete":
+    case "current":
+    case "pending":
+    case "failed":
+      return status;
+    default: {
+      const _never: never = status;
+      return _never;
+    }
+  }
+}
+
+function GenerationProgressStepper({
+  run,
+  timings,
+  interactive,
+  selectedStep,
+  onSelect,
+}: {
+  run: GenerationRun;
+  timings: GenerationStepTiming[];
+  interactive: boolean;
+  selectedStep: GenerationStepId | null;
+  onSelect: (stepId: GenerationStepId) => void;
+}) {
   return (
     <ol className="generation-stepper" aria-label="Generation progress">
       {GENERATION_STEPS.map((step) => {
-        const visual = stepVisual(run, step.id);
+        const timing = timings.find((item) => item.step === step.id);
+        const visual = timing ? timingVisual(timing.status) : stepVisual(run, step.id);
+        const pending = visual === "pending";
+        const hint = timing?.hint ?? (pending ? "This step has not run yet." : null);
+        const selected = selectedStep === step.id;
         return (
           <li
             key={step.id}
-            className={`generation-stepper__step is-${visual}`}
+            className={`generation-stepper__step is-${visual}${selected ? " is-selected" : ""}`}
             aria-current={visual === "current" ? "step" : undefined}
           >
-            <span className="generation-stepper__label">{step.label}</span>
-            <span className="generation-stepper__state">{stepVisualLabel(visual)}</span>
+            {interactive ? (
+              <button
+                type="button"
+                id={`generation-step-${step.id}`}
+                className="generation-stepper__button"
+                disabled={pending}
+                aria-pressed={selected}
+                title={hint ?? undefined}
+                onClick={() => onSelect(step.id)}
+              >
+                <span className="generation-stepper__label">{step.label}</span>
+                <span className="generation-stepper__state">{stepVisualLabel(visual)}</span>
+                {hint ? <span className="sr-only">{hint}</span> : null}
+              </button>
+            ) : (
+              <>
+                <span className="generation-stepper__label">{step.label}</span>
+                <span className="generation-stepper__state">{stepVisualLabel(visual)}</span>
+              </>
+            )}
           </li>
         );
       })}
@@ -263,6 +316,7 @@ export function TopicGenerationUpload({
   topicId,
   defaultTitle = "",
   allowUpload = true,
+  publishedHref = null,
   onPublished,
 }: TopicGenerationUploadProps) {
   const { isDevMockSession, hasRole } = useAuth();
@@ -276,6 +330,8 @@ export function TopicGenerationUpload({
   const [run, setRun] = useState<GenerationRun | null>(null);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
+  const [stepTimings, setStepTimings] = useState<GenerationStepTiming[]>([]);
+  const [selectedStep, setSelectedStep] = useState<GenerationStepId | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -337,6 +393,32 @@ export function TopicGenerationUpload({
       abort.abort();
     };
   }, [topicId, isDevMockSession]);
+
+  const viewedRunId = run?.id ?? null;
+  useEffect(() => {
+    setSelectedStep(null);
+    if (!canClose || viewedRunId == null) {
+      setStepTimings([]);
+      return;
+    }
+    let cancelled = false;
+    void listGenerationSteps(viewedRunId)
+      .then((rows) => {
+        if (!cancelled) setStepTimings(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setStepTimings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canClose, viewedRunId]);
+
+  useEffect(() => {
+    if (selectedStep == null || stepTimings.length === 0) return;
+    const timing = stepTimings.find((item) => item.step === selectedStep);
+    if (timing != null && !timing.available) setSelectedStep(null);
+  }, [selectedStep, stepTimings]);
 
   useEffect(() => {
     return () => {
@@ -620,6 +702,12 @@ export function TopicGenerationUpload({
     pollAbortRef.current = abort;
     setError(null);
     trackRun(selected);
+    requestAnimationFrame(() => {
+      const detail = document.getElementById("generation-run-detail");
+      if (detail != null && typeof detail.scrollIntoView === "function") {
+        detail.scrollIntoView({ block: "nearest" });
+      }
+    });
     if (selected.phase !== "outline_review" && selected.phase !== "qa_review") {
       setWorkspace(null);
     }
@@ -674,7 +762,27 @@ export function TopicGenerationUpload({
     const failed = current.phase === "failed";
     const status = (
       <>
-        <GenerationProgressStepper run={current} />
+        <GenerationProgressStepper
+          run={current}
+          timings={stepTimings}
+          interactive={canClose}
+          selectedStep={selectedStep}
+          onSelect={(stepId) =>
+            setSelectedStep((currentStep) => (currentStep === stepId ? null : stepId))
+          }
+        />
+        {canClose && selectedStep != null ? (
+          <GenerationStepDetailPanel
+            runId={current.id}
+            step={selectedStep}
+            publishedHref={publishedHref}
+            onClose={() => {
+              const stepId = selectedStep;
+              setSelectedStep(null);
+              document.getElementById(`generation-step-${stepId}`)?.focus();
+            }}
+          />
+        ) : null}
         <p className={failed ? "form__error" : "admin-upload__status"} role={failed ? "alert" : "status"}>
           {current.phase}. {phaseStatusCopy(current)}
         </p>
@@ -847,7 +955,7 @@ export function TopicGenerationUpload({
         </form>
       ) : null}
       {run ? (
-        renderPhase(run)
+        <div id="generation-run-detail">{renderPhase(run)}</div>
       ) : busy ? (
         <p className="admin-upload__status" role="status">
           Loading generation run…

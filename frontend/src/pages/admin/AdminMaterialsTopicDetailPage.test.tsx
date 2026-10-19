@@ -21,6 +21,8 @@ vi.mock("../../api/materials", () => ({
 
 vi.mock("../../api/generation", () => ({
   listTopicGenerationRuns: vi.fn(),
+  listGenerationSteps: vi.fn(async () => []),
+  getGenerationStepDetail: vi.fn(),
   fetchTopicItemStats: vi.fn(),
   discardGenerationRun: vi.fn(),
   retryGenerationRun: vi.fn(),
@@ -44,6 +46,7 @@ import {
   fetchTopicItemStats,
   getGenerationReview,
   getGenerationRun,
+  listGenerationSteps,
   listTopicGenerationRuns,
   publishGenerationRun,
 } from "../../api/generation";
@@ -149,12 +152,14 @@ describe("AdminMaterialsTopicDetailPage", () => {
     vi.mocked(getTopicMaterial).mockReset();
     vi.mocked(getSubtopicMaterial).mockReset();
     vi.mocked(listTopicGenerationRuns).mockReset();
+    vi.mocked(listGenerationSteps).mockReset();
     vi.mocked(fetchTopicItemStats).mockReset();
     vi.mocked(getGenerationReview).mockReset();
     vi.mocked(getGenerationRun).mockReset();
     vi.mocked(publishGenerationRun).mockReset();
     vi.mocked(fetchLearningDirectory).mockResolvedValue(directory());
     vi.mocked(listTopicGenerationRuns).mockResolvedValue([]);
+    vi.mocked(listGenerationSteps).mockResolvedValue([]);
     vi.mocked(fetchTopicItemStats).mockResolvedValue({
       topic_id: "topic-1-uuid",
       quiz_version_id: null,

@@ -12,6 +12,8 @@ import {
   discardGenerationRun,
   getGenerationReview,
   getGenerationRun,
+  getGenerationStepDetail,
+  listGenerationSteps,
   isInFlightGenerationPhase,
   isTerminalGenerationPhase,
   listTopicGenerationRuns,
@@ -264,5 +266,20 @@ describe("generation helpers", () => {
 
     await expect(fetchTopicItemStats("topic 1")).resolves.toEqual(payload);
     expect(apiRequest).toHaveBeenCalledWith("/admin/topics/topic%201/item-stats");
+  });
+
+  it("loads admin generation step timings and one step", async () => {
+    vi.mocked(apiRequest)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ timing: { step: "indexing" } });
+
+    await listGenerationSteps("run/1");
+    await getGenerationStepDetail("run/1", "indexing");
+
+    expect(apiRequest).toHaveBeenNthCalledWith(1, "/admin/generation-runs/run%2F1/steps");
+    expect(apiRequest).toHaveBeenNthCalledWith(
+      2,
+      "/admin/generation-runs/run%2F1/steps/indexing",
+    );
   });
 });

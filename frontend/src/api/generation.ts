@@ -7,6 +7,8 @@ import type {
   GenerationAssistantReply,
   GenerationAssistantTurn,
   GenerationRun,
+  GenerationStepDetail,
+  GenerationStepTiming,
   PublishedTopic,
   ReviewWorkspace,
   RunPhase,
@@ -92,6 +94,21 @@ export async function submitSubjectGenerationRun(
   return apiRequest<AcceptedGenerationRun>(
     `/admin/subjects/${encodeURIComponent(subjectId)}/generation-runs`,
     { method: "POST", body },
+  );
+}
+
+export async function listGenerationSteps(runId: string): Promise<GenerationStepTiming[]> {
+  return apiRequest<GenerationStepTiming[]>(
+    `/admin/generation-runs/${encodeURIComponent(runId)}/steps`,
+  );
+}
+
+export async function getGenerationStepDetail(
+  runId: string,
+  step: string,
+): Promise<GenerationStepDetail> {
+  return apiRequest<GenerationStepDetail>(
+    `/admin/generation-runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(step)}`,
   );
 }
 
