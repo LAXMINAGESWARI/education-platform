@@ -41,5 +41,6 @@ class LessonMaterial(BaseModel):
     slides: list[LessonSlide] = Field(default_factory=list)
     progress: MaterialProgressOut | None = None
     source_material_version_id: UUID | None = None
+    published_at: datetime | None = None
     quiz_unlocked: bool = False
     quiz_id: UUID | None = None

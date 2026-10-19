@@ -47,6 +47,7 @@ from education_platform.modules.generation.lesson import (
 )
 from education_platform.modules.generation.lesson_checks import check_lesson_quality
 from education_platform.modules.generation.models import ContentGenerationRun, GenerationJob
+from education_platform.modules.generation.recap import present_topic_recap
 from education_platform.modules.generation.types import (
     GenerationJobKind,
     GenerationJobStatus,
@@ -296,7 +297,61 @@ def test_stitch_does_not_rewrite_teaching() -> None:
     )
     assert section_md.strip() in stitched
     assert "**Topic recap.**" in stitched
+    assert "- Squares" in stitched
     assert "Write for Grade 6" not in stitched
+
+
+def test_stitch_recap_lists_concepts_and_drops_activity_headings() -> None:
+    stitched = stitch_sections(
+        StitchRequest(
+            grade_voice="Write for Grade 8 students.",
+            sections=tuple(
+                LessonSection(
+                    heading=heading,
+                    markdown=f"## {heading}\n\nTeaching for {heading}.",
+                    recap=heading,
+                    defined_terms=(),
+                )
+                for heading in (
+                    "9.1 Introduction",
+                    "9.2 Area of a Polygon",
+                    "TRY THESE",
+                    "Solution: Aman's method",
+                    "EXERCISE 9.1",
+                    "DO THIS",
+                    "THINK, DISCUSS AND WRITE",
+                )
+            ),
+        )
+    )
+    recap = stitched.split("**Topic recap.**", 1)[1]
+    assert "- Introduction" in recap
+    assert "- Area of a polygon" in recap
+    assert "TRY THESE" not in recap
+    assert "Aman" not in recap
+    assert "EXERCISE" not in recap
+    assert "DO THIS" not in recap
+    assert "THINK" not in recap
+    assert ";" not in recap
+
+
+def test_present_topic_recap_cleans_a_stored_run_on() -> None:
+    raw = (
+        "# Lesson\n\n"
+        "## Squares\n\n"
+        "Four equal sides.\n\n"
+        "**Topic recap.** This lesson taught 9.1 Introduction; 9.2 Area of a Polygon; "
+        "TRY THESE; Solution: Aman's method; EXERCISE 9.1; DO THIS; "
+        "THINK, DISCUSS AND WRITE.\n"
+    )
+    cleaned = present_topic_recap(raw)
+    assert "Four equal sides." in cleaned
+    recap = cleaned.split("**Topic recap.**", 1)[1]
+    assert "- Introduction" in recap
+    assert "- Area of a polygon" in recap
+    assert "TRY THESE" not in recap
+    assert "EXERCISE" not in recap
+    assert present_topic_recap(cleaned) == cleaned
 
 
 def test_items_only_success_stays_generating(

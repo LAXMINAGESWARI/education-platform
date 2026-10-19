@@ -374,6 +374,7 @@ export type LessonMaterial = {
   markdown: string;
   slides: LessonSlide[];
   source_material_version_id: string;
+  published_at?: string | null;
   progress: MaterialProgress | null;
   quiz_unlocked: boolean;
   quiz_id: string | null;

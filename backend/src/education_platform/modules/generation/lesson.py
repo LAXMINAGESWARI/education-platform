@@ -24,6 +24,7 @@ from education_platform.modules.generation.adk import (
     stitch_agent_instruction,
 )
 from education_platform.modules.generation.blueprint import section_source_length_error
+from education_platform.modules.generation.recap import present_topic_recap, topic_recap_markdown
 
 _OVERFLOW_CHARS = 8000
 _MERMAID_FENCE = re.compile(r"```mermaid\s*([\s\S]*?)```", re.IGNORECASE)
@@ -266,8 +267,9 @@ def stitch_sections(request: StitchRequest) -> str:
                 f"You just saw {previous}. Now we use that to understand {section.heading}."
             )
         parts.append(coerce_lesson_markdown(section.markdown))
-    recap_bits = "; ".join(titles)
-    parts.append(f"**Topic recap.** This lesson taught {recap_bits}.")
+    recap = topic_recap_markdown(titles)
+    if recap:
+        parts.append(recap)
     return "\n\n".join(parts).strip() + "\n"
 
 
@@ -399,6 +401,7 @@ def write_topic_lesson_document(
         markdown = write_stitch(stitch_request)
     else:
         markdown = stitch_sections(stitch_request)
+    markdown = present_topic_recap(markdown)
     return WrittenTopicLesson(sections=tuple(written), markdown=markdown)
 
 

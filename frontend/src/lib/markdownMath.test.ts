@@ -6,20 +6,20 @@ describe("normalizeMarkdownMath", () => {
   it("converts escaped LaTeX delimiters to dollar math", () => {
     expect(normalizeMarkdownMath(String.raw`Solve \(x + 2 = 5\).`)).toBe("Solve $x + 2 = 5$.");
     expect(normalizeMarkdownMath(String.raw`Display \[a^2 + b^2 = c^2\] done.`)).toBe(
-      "Display $$a^2 + b^2 = c^2$$ done.",
+      "Display \n$$\na^2 + b^2 = c^2\n$$\n done.",
     );
   });
 
   it("lifts indented display math out of list continuations", () => {
     const source = ["- Odd sums:", "  $$1 + 3 = 4 = 2^2$$", "more"].join("\n");
     const normalized = normalizeMarkdownMath(source);
-    expect(normalized).toContain("$$1 + 3 = 4 = 2^2$$");
+    expect(normalized).toContain("$$\n1 + 3 = 4 = 2^2\n$$");
     expect(normalized).not.toMatch(/^[ \t]+\$\$/m);
   });
 
   it("trims spaces inside dollar delimiters so KaTeX can parse them", () => {
     expect(normalizeMarkdownMath("Solve for $x $. Then $$2x = 8 $$.")).toBe(
-      "Solve for $x$. Then $$2x = 8$$.",
+      "Solve for $x$. Then \n$$\n2x = 8\n$$\n.",
     );
   });
 
@@ -33,7 +33,7 @@ describe("normalizeMarkdownMath", () => {
     ].join("\n");
     const normalized = normalizeMarkdownMath(source);
     expect(normalized).toContain("$2x - 3 = 9$");
-    expect(normalized).toContain("$$2x - 3 + 3 = 9 + 3 \\implies 2x = 12$$");
+    expect(normalized).toContain("$$\n2x - 3 + 3 = 9 + 3 \\implies 2x = 12\n$$");
     expect(normalized).not.toContain("\\\\(");
     expect(normalized).not.toContain("\\\\[");
   });
@@ -76,7 +76,7 @@ describe("normalizeMarkdownMath", () => {
   it("restores JSON-eaten LaTeX commands and collapses quadruple dollars", () => {
     const normalized = normalizeMarkdownMath("Area $2 \\\u000crac{5}{4}$ and $$$$x + 2 = 10$$$$.");
     expect(normalized).toContain("$2 \\frac{5}{4}$");
-    expect(normalized).toContain("$$x + 2 = 10$$");
+    expect(normalized).toContain("$$\nx + 2 = 10\n$$");
     expect(normalized).not.toContain("\u000c");
   });
 
@@ -87,7 +87,7 @@ describe("normalizeMarkdownMath", () => {
     expect(normalized).toContain("2x - 3 &= 4 \\\\\n");
   });
 
-  it("collapses a multi-line display formula so the closer stays on the formula", () => {
+  it("puts a multi-line display formula in its own block", () => {
     const source = [
       "$$\\text{Required area} = (l + 2w)(b + 2w) - lb",
       "= 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
@@ -96,7 +96,7 @@ describe("normalizeMarkdownMath", () => {
     ].join("\n");
     const normalized = normalizeMarkdownMath(source);
     expect(normalized).toContain(
-      "$$\\text{Required area} = (l + 2w)(b + 2w) - lb = 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
+      "$$\n\\text{Required area} = (l + 2w)(b + 2w) - lb = 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.\n$$",
     );
     expect(normalized).toContain("Next paragraph stays outside the formula.");
     const open = normalized.indexOf("$$");
