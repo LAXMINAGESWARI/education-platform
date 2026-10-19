@@ -1,3 +1,4 @@
+{{- if .Values.workers.llm.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +7,7 @@ metadata:
     {{- include "curioed.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker-llm
 spec:
-  replicas: {{ .Values.workerLlm.replicas }}
+  replicas: {{ .Values.workers.llm.replicas }}
   selector:
     matchLabels:
       {{- include "curioed.selectorLabels" (dict "root" . "component" "worker-llm") | nindent 6 }}
@@ -18,7 +19,7 @@ spec:
         curioed.io/uploads: "true"
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: {{ .Values.workerLlm.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.workers.llm.terminationGracePeriodSeconds }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -40,7 +41,7 @@ spec:
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
           resources:
-            {{- toYaml .Values.workerLlm.resources | nindent 12 }}
+            {{- toYaml .Values.workers.llm.resources | nindent 12 }}
           readinessProbe:
             exec:
               command: ["python", "/app/deploy/db_ping.py"]
@@ -55,3 +56,4 @@ spec:
             failureThreshold: 6
       volumes:
         {{- include "curioed.dataVolumes" . | nindent 8 }}
+{{- end }}

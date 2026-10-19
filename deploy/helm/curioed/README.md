@@ -10,14 +10,14 @@ The CloudNativePG operator and k3s Traefik are cluster prerequisites. This chart
 | --- | --- | --- |
 | api | Deployment + Service + HPA | CPU target 65%, min 2, max 4. The Deployment starts at 2 replicas. Probes: `/health/live`, `/health/ready` on port 8000. |
 | web | Deployment + Service | nginx image, 2 replicas. |
-| worker-docling | Deployment | 1 replica, memory limit 6Gi, Recreate. |
-| worker-llm | Deployment | 2 replicas. Same worker process as docling until queue selection exists. |
+| worker-docling | Deployment | 1 replica, memory limit 6Gi, Recreate. This is the only worker by default. |
+| worker-llm | Deployment | Off unless `workers.llm.enabled=true`. Same process as docling until the app can select queues. |
 | migrate | pre-install, pre-upgrade Job | Waits for Postgres, then `deploy/migrate.sh` (pg_dump, then Alembic, then promotion). |
 | edge | Traefik IngressRoute | `/api` body limit 32MiB, 300s timeouts, SSE flush. `/sw.js` cache headers. |
 | cloudflared | Deployment | 2 replicas, pinned tag, token from a Secret. |
 | Postgres | CNPG Cluster | `16.15-standard-bookworm` (pgvector is in the standard image). `CREATE EXTENSION vector` at bootstrap. |
 
-Uploads, the Hugging Face cache, and the inductor cache are ReadWriteOnce volumes. API and both workers share them and must land on the same node.
+Uploads, the Hugging Face cache, and the inductor cache are ReadWriteOnce volumes. The API and the Docling worker share them and must land on the same node. The LLM worker, when enabled, joins that set.
 
 A later `helm upgrade` writes the API replica count back to the HPA minimum. The HPA scales it up again from there.
 
@@ -29,26 +29,32 @@ The chart only stores Secret **names**. Create these yourself:
 | --- | --- | --- |
 | `secrets.app.existingSecret` (`curioed-app`) | Opaque | `JWT_SECRET`, `TEXT_TO_SQL_DB_PASSWORD`, `OPENROUTER_API_KEY` (empty string is allowed; the key must exist) |
 | `secrets.database.existingSecret` (`curioed-postgres-app`) | `kubernetes.io/basic-auth` | `username` = `education`, `password` URL-safe (letters, digits, hyphen) |
-| `secrets.textToSql.existingSecret` (`curioed-postgres-reader`) | `kubernetes.io/basic-auth` | `username` = `text_to_sql_reader`, `password` equal to `TEXT_TO_SQL_DB_PASSWORD` |
+| `secrets.textToSql.existingSecret` (`curioed-postgres-reader`) | `kubernetes.io/basic-auth` | `username` = `text_to_sql_reader`. `password` must be set by hand to the same value as `TEXT_TO_SQL_DB_PASSWORD` in the app Secret. The chart does not copy one Secret into the other. |
 | `secrets.tunnel.existingSecret` (`curioed-cloudflared`) | Opaque | `TUNNEL_TOKEN` |
 
 In the Cloudflare dashboard, send the public hostname to `http://traefik.kube-system.svc.cluster.local:80`. Set `api.image.tag` and `web.image.tag` to the commit SHA published by the Images workflow. There is no `latest` tag.
 
 ## First install
 
-Helm runs `pre-install` hooks before it creates the Cluster or the backup PVC, so a migrate hook in this same release cannot see the database yet.
+Helm runs `pre-install` hooks before it creates the Cluster or the backup PVC. A migrate hook in this same release cannot see the database on a first install, so install in two steps:
 
 ```sh
 helm install curioed deploy/helm/curioed -n curioed --create-namespace --set migrate.enabled=false
-# wait until the CNPG cluster is ready
+# wait until the CloudNativePG cluster is ready
 helm upgrade curioed deploy/helm/curioed -n curioed
 ```
 
-The upgrade runs the `pre-upgrade` hook: backup, then Alembic, while the previous pods keep serving. `backoffLimit` is 0 and the deadline is 1800s.
+The upgrade runs the `pre-upgrade` hook: `pg_dump` to the backups PVC, then Alembic, while the previous pods keep serving. `backoffLimit` is 0 and the deadline is 1800s.
 
-`cnpg.ownerSuperuser` makes the application role a superuser during initdb so Alembic can `CREATE EXTENSION vector`, which is what the Compose superuser does today. It runs only on first bootstrap.
+Bootstrap `postInitApplicationSQL` runs as the Postgres superuser in the application database and creates the `vector` extension. The `education` role stays a normal owner. Alembic's `CREATE EXTENSION IF NOT EXISTS vector` then finds the extension and does nothing.
 
-`cnpg.backup.enabled` is rejected on purpose. Off-site Barman is not in this chart. The pre-migration backup is the `pg_dump` from `deploy/migrate.sh`, written to the backups PVC.
+## Text-to-SQL password
+
+CNPG creates `text_to_sql_reader` from `secrets.textToSql.existingSecret`. Alembic skips `CREATE ROLE` when that role already exists, and it does not change the password. The API reads `TEXT_TO_SQL_DB_PASSWORD` from the app Secret. Set those two passwords to the same value yourself before the first upgrade. If they differ, text-to-SQL cannot log in.
+
+## Backups
+
+The only backup this chart takes is the pre-migration `pg_dump` from `deploy/migrate.sh`, written to the backups PVC. That dump is on the same disk as the database. Off-site backups (CloudNativePG Barman to object storage) are not in this chart. They are planned for phase 1. `cnpg.backup.enabled=true` fails the render so it cannot be mistaken for a working off-site backup.
 
 ## Check
 

@@ -42,8 +42,10 @@ def need(kind: str, suffix: str) -> str:
 api = need("Deployment", "-api")
 web = need("Deployment", "-web")
 docling = need("Deployment", "-worker-docling")
-llm = need("Deployment", "-worker-llm")
 tunnel = need("Deployment", "-cloudflared")
+llm_names = [name for (kind_name, name) in found if kind_name == "Deployment" and name.endswith("-worker-llm")]
+if llm_names:
+    raise SystemExit(f"workers.llm.enabled defaults to false, but rendered {llm_names}")
 hpa = need("HorizontalPodAutoscaler", "-api")
 job = need("Job", "-migrate")
 route = need("IngressRoute", "curioed")
@@ -55,8 +57,6 @@ for label, doc, snippet in (
     ("api ready probe", api, "path: /health/ready"),
     ("docling memory", docling, "memory: 6Gi"),
     ("docling replicas", docling, "replicas: 1"),
-    ("llm replicas", llm, "replicas: 2"),
-    ("llm memory", llm, "memory: 1.5Gi"),
     ("web replicas", web, "replicas: 2"),
     ("tunnel replicas", tunnel, "replicas: 2"),
     ("tunnel image", tunnel, "cloudflare/cloudflared:2026.10.1"),
@@ -95,6 +95,8 @@ if "$(POSTGRES_PASSWORD)" not in text:
     raise SystemExit("DATABASE_URL does not reference the password from the Secret")
 if "replace-with" in text or re.search(r"\d(?:\.\d+)?e[+-]\d", text):
     raise SystemExit("chart rendered a placeholder secret or a float-formatted number")
+if "SUPERUSER" in text or "ALTER ROLE" in text:
+    raise SystemExit("chart still grants the database owner superuser")
 
 print(f"rendered {len(docs)} documents")
 PY
@@ -113,5 +115,27 @@ if ! grep -q "not supported yet" "${out}.err"; then
   cat "${out}.err" >&2
   exit 1
 fi
+
+helm template curioed "${chart}" --namespace curioed --set workers.llm.enabled=true > "${out}.llm"
+python3 - "${out}.llm" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+docs = [doc for doc in re.split(r"(?m)^---\s*$", text) if doc.strip()]
+matches = []
+for doc in docs:
+    kind = re.search(r"(?m)^kind: (\S+)", doc)
+    name = re.search(r"(?m)^  name: (\S+)", doc)
+    if kind and name and kind.group(1) == "Deployment" and name.group(1).endswith("-worker-llm"):
+        matches.append(doc)
+if len(matches) != 1:
+    raise SystemExit(f"workers.llm.enabled=true should render one LLM worker, found {len(matches)}")
+doc = matches[0]
+for snippet in ("replicas: 2", "memory: 1.5Gi"):
+    if snippet not in doc:
+        raise SystemExit(f"enabled LLM worker is missing {snippet}")
+print("enabled LLM worker rendered")
+PY
 
 echo "helm lint and template checks passed"

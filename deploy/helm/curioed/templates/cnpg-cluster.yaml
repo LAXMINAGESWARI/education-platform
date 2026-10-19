@@ -15,11 +15,11 @@ spec:
       owner: {{ .Values.cnpg.owner }}
       secret:
         name: {{ .Values.secrets.database.existingSecret }}
+      # Runs as the Postgres superuser in the application database. The
+      # education owner stays a normal owner. Alembic's later
+      # CREATE EXTENSION IF NOT EXISTS vector is then a no-op.
       postInitApplicationSQL:
         - CREATE EXTENSION IF NOT EXISTS vector
-        {{- if .Values.cnpg.ownerSuperuser }}
-        - ALTER ROLE {{ .Values.cnpg.owner }} SUPERUSER
-        {{- end }}
   postgresql:
     parameters:
       {{- range $key, $value := .Values.cnpg.parameters }}

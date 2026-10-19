@@ -119,18 +119,20 @@ workerDocling:
       cpu: "4"
       memory: 6Gi
 
-# Same process as worker-docling until the app can select queues.
-# A Docling job claimed here can hit this smaller limit. See README.md.
-workerLlm:
-  replicas: 2
-  terminationGracePeriodSeconds: 60
-  resources:
-    requests:
-      cpu: 100m
-      memory: 512Mi
-    limits:
-      cpu: "1"
-      memory: 1.5Gi
+# Off until the app can select queues. The process is the same as
+# worker-docling, so a Docling job claimed here can exceed 1.5Gi.
+workers:
+  llm:
+    enabled: false
+    replicas: 2
+    terminationGracePeriodSeconds: 60
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1.5Gi
 
 migrate:
   enabled: true
@@ -176,10 +178,6 @@ cnpg:
   database: education
   owner: education
   readerRole: text_to_sql_reader
-  # Compose's POSTGRES_USER is a superuser, so Alembic can CREATE EXTENSION.
-  # CNPG's owner is not. Bootstrap SQL grants SUPERUSER so the same migration
-  # can run. Applies only when the cluster is first initialized.
-  ownerSuperuser: true
   storage:
     size: 20Gi
     storageClass: local-path
