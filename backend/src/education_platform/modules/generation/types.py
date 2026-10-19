@@ -244,6 +244,9 @@ class HeadingCluster:
     sample_texts: tuple[str, ...]
     parent_heading: str | None = None
     source_headings: tuple[str, ...] = ()
+    title_hint: str | None = None
+    # Original parent heading when the container was folded into this child.
+    scope_parent: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

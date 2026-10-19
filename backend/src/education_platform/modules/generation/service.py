@@ -59,7 +59,7 @@ from education_platform.modules.generation.models import (
     ReviewRoundClosure,
     ReviewRoundRow,
 )
-from education_platform.modules.generation.outline import largest_remainder
+from education_platform.modules.generation.outline import MIN_LEAF_QUESTIONS, allocate_quotas
 from education_platform.modules.generation.types import (
     IN_FLIGHT_PHASES,
     PATCH_OUTLINE_GONE,
@@ -193,7 +193,11 @@ def _document_from_rows(
     if not any(row.quota is None for row in ordered):
         return document
     try:
-        previews = largest_remainder(document.normalized_weights(), target_item_count.value)
+        previews = allocate_quotas(
+            document.normalized_weights(),
+            target_item_count.value,
+            minimum=MIN_LEAF_QUESTIONS,
+        )
     except ValueError:
         return document
     previewed = tuple(
@@ -574,7 +578,11 @@ async def accept_outline(
     if not run.outline or not run.outline.nodes:
         raise GenerationError("Cannot accept an empty outline.", status_code=409)
 
-    quotas = largest_remainder(run.outline.normalized_weights(), run.target_item_count.value)
+    quotas = allocate_quotas(
+        run.outline.normalized_weights(),
+        run.target_item_count.value,
+        minimum=MIN_LEAF_QUESTIONS,
+    )
     existing = list(
         (
             await session.scalars(

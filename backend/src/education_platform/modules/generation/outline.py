@@ -53,6 +53,8 @@ _ACTIVITY_NOISE = re.compile(
     r"|(?:solved\s+)?examples?(?:\s+\d+(?:\.\d+)*)?"
     r"|exercises?(?:\s+\d+(?:\.\d+)*)?"
     r"|solution\b.*"
+    r"|method\s+\d+"
+    r"|.+['\u2019]s\s+method"
     r"|summary"
     r"|what\s+have\s+(?:we|you)\s+discussed"
     r"|figure\s+it\s+out"
@@ -60,21 +62,22 @@ _ACTIVITY_NOISE = re.compile(
     r")$",
     re.IGNORECASE,
 )
-_TITLE_STOPWORDS = frozenset(
-    {"a", "an", "the", "of", "and", "or", "to", "in", "for", "with", "on", "at", "by"}
-)
 _THREE = Decimal("3")
 _NEUTRAL_SCORE = Decimal("0.5")
 _ZERO = Decimal("0")
-# Short headings fold into the next sibling. Method 1–4 stay even when they
-# are under this floor.
+# Short headings fold into the next sibling.
 MIN_SECTION_TOKENS = 21
 # While an outline is wider than this, fold the smallest short sibling into its
 # neighbor. Sections at or above this mass stay, so a chapter of real concepts
 # is not glued together to force the target.
 BREADTH_MERGE_TOKENS = 80
 MAX_OUTLINE_NODES = 8
-MAX_TITLE_WORDS = 6
+# A grouping section this small is the lead-in to its children. When the
+# outline is still wider than the target, its chunks move onto the first child.
+LIGHT_PARENT_TOKENS = 450
+# Every question-bearing concept gets at least this many items. A weightless
+# container stays at 0. The bank total does not change.
+MIN_LEAF_QUESTIONS = 3
 HEADING_PATH_SEPARATOR = " > "
 
 
@@ -87,6 +90,11 @@ class SourceSection:
     # Original chunk-group labels this section owns. Item generation matches
     # these, not the cleaned display title. Empty means "the group label".
     source_headings: tuple[str, ...] = ()
+    # Display title once a one-word child has taken its parent's concept.
+    # The raw heading stays, so the slug and chunk keys do not move.
+    title_hint: str | None = None
+    # Parent heading kept for outcome matching after the container node is folded away.
+    scope_parent: str | None = None
 
 
 def preview_quotas(weights: Sequence[Decimal], target: int) -> tuple[int, ...]:
@@ -95,7 +103,11 @@ def preview_quotas(weights: Sequence[Decimal], target: int) -> tuple[int, ...]:
         return tuple(0 for _ in weights)
     if sum(weights, Decimal("0")) == 0:
         return tuple(0 for _ in weights)
-    return largest_remainder(tuple(Decimal(weight) for weight in weights), target)
+    return allocate_quotas(
+        tuple(Decimal(weight) for weight in weights),
+        target,
+        minimum=MIN_LEAF_QUESTIONS,
+    )
 
 
 def largest_remainder(weights: Sequence[Decimal], n: int) -> tuple[int, ...]:
@@ -120,6 +132,41 @@ def largest_remainder(weights: Sequence[Decimal], n: int) -> tuple[int, ...]:
     for index in order[:leftover]:
         quotas[index] += 1
     return tuple(quotas)
+
+
+def allocate_quotas(
+    weights: Sequence[Decimal],
+    n: int,
+    *,
+    minimum: int = 0,
+) -> tuple[int, ...]:
+    """Quotas that sum to n. Positive weights get at least ``minimum`` when it fits.
+
+    A zero weight stays at 0, so an empty container is not given questions.
+    When ``minimum`` times the positive weights exceeds n, the floor shrinks
+    so the total can still be n.
+    """
+    if minimum <= 0:
+        return largest_remainder(weights, n)
+    if n < 0:
+        raise ValueError("n must be >= 0")
+    if not weights:
+        return ()
+    values = [Decimal(weight) for weight in weights]
+    positive = [index for index, value in enumerate(values) if value > 0]
+    if not positive:
+        raise ValueError("all-zero weights")
+    floor = minimum if minimum * len(positive) <= n else n // len(positive)
+    base = [0] * len(values)
+    for index in positive:
+        base[index] = floor
+    remaining = n - sum(base)
+    if remaining == 0:
+        return tuple(base)
+    extras = largest_remainder(tuple(values[index] for index in positive), remaining)
+    for index, extra in zip(positive, extras, strict=True):
+        base[index] += extra
+    return tuple(base)
 
 
 def combined_weight(
@@ -160,8 +207,9 @@ def normalize_outline_title(heading: str) -> str:
     """Student-facing concept name. Does not invent words that are not in the heading.
 
     Strips a leading section number, collapses whitespace, drops trailing
-    punctuation, turns an ALL-CAPS heading into sentence case, and keeps at
-    most six words. Mixed-case headings keep their capitals. Idempotent.
+    punctuation, and uses sentence case. The full heading stays: cutting a
+    list such as "cube, cuboid and cylinder" down to six words would drop
+    a solid. Idempotent.
     """
     text = _WHITESPACE.sub(" ", heading.strip())
     stripped = _SECTION_PREFIX.sub("", text).strip()
@@ -170,16 +218,7 @@ def normalize_outline_title(heading: str) -> str:
     text = _WHITESPACE.sub(" ", text).strip()
     if not text:
         return ""
-    if _is_all_caps(text):
-        text = _sentence_case(text)
-    words = text.split(" ")
-    if len(words) > MAX_TITLE_WORDS:
-        words = words[:MAX_TITLE_WORDS]
-        tail = words[-1].strip(".,;:").casefold()
-        if len(words) > 1 and tail in _TITLE_STOPWORDS:
-            words = words[:-1]
-        text = " ".join(words).rstrip(".,;:")
-    return text
+    return _sentence_case(text)
 
 
 def section_group_label(section: SourceSection) -> str:
@@ -194,12 +233,87 @@ def _is_all_caps(text: str) -> bool:
     return len(letters) >= 2 and all(char.isupper() for char in letters)
 
 
-def _sentence_case(text: str) -> str:
-    lowered = text.lower()
-    for index, char in enumerate(lowered):
+def _cap_first(text: str) -> str:
+    for index, char in enumerate(text):
         if char.isalpha():
-            return lowered[:index] + char.upper() + lowered[index + 1 :]
-    return lowered
+            return text[:index] + char.upper() + text[index + 1 :]
+    return text
+
+
+def _lower_first_alpha(text: str) -> str:
+    for index, char in enumerate(text):
+        if char.isalpha():
+            return text[:index] + char.lower() + text[index + 1 :]
+    return text
+
+
+def _sentence_case(text: str) -> str:
+    """First word capitalized. Later title-case words are lowered.
+
+    An all-caps heading is lowered first. A word with an apostrophe, such as
+    Aman's, keeps its capital. Words that are already lower stay lower.
+    """
+    source = text.lower() if _is_all_caps(text) else text
+    words: list[str] = []
+    for index, word in enumerate(source.split(" ")):
+        if index == 0:
+            words.append(_cap_first(word.lower() if word.isupper() else word))
+            continue
+        if "'" in word or "\u2019" in word:
+            words.append(_cap_first(word.lower()) if word.isupper() else word)
+            continue
+        core = word.strip(".,;:()")
+        if core.isupper() or (len(core) > 1 and core[:1].isupper() and core[1:].islower()):
+            words.append(_lower_first_alpha(word))
+            continue
+        words.append(word)
+    return " ".join(words)
+
+
+def _concept_phrase(title: str) -> str:
+    """The idea in a parent title, before the list of things it applies to.
+
+    "Surface area of cube, cuboid and cylinder" yields "Surface area".
+    A title with no "of" is already the phrase.
+    """
+    match = re.match(r"^(.+?)\s+of\b", title.strip(), re.IGNORECASE)
+    if match is None:
+        return title.strip()
+    return match.group(1).strip()
+
+
+def _singular_noun(word: str) -> str:
+    """One textbook noun, so "a cylinder" can follow a plural heading."""
+    lower = word.casefold()
+    if lower.endswith("ies") and len(lower) > 4:
+        return word[:-3] + "y"
+    if len(lower) > 4 and lower.endswith(("sses", "shes", "ches", "xes", "zes", "oes")):
+        return word[:-2]
+    if lower.endswith("s") and not lower.endswith("ss") and len(lower) > 3:
+        return word[:-1]
+    return word
+
+
+def _article(word: str) -> str:
+    return "an" if word[:1].casefold() in {"a", "e", "i", "o", "u"} else "a"
+
+
+def qualify_child_title(parent_heading: str, child_heading: str) -> str | None:
+    """A one-word child takes its parent's concept so the flat list is readable.
+
+    "Cuboid" under "Surface area of cube, cuboid and cylinder" becomes
+    "Surface area of a cuboid". A phrase that already stands alone is unchanged.
+    Returns None when the child should keep its own name.
+    """
+    child = normalize_outline_title(child_heading)
+    parent = normalize_outline_title(parent_heading)
+    if not child or not parent or len(child.split()) != 1:
+        return None
+    concept = _concept_phrase(parent)
+    if not concept or child.casefold().startswith(concept.casefold()):
+        return None
+    noun = _singular_noun(child).lower()
+    return _sentence_case(f"{concept} of {_article(noun)} {noun}")
 
 
 def _number_key(heading: str) -> tuple[int, ...] | None:
@@ -348,11 +462,12 @@ def source_sections(rows: Iterable[tuple[str | None, str, int]]) -> list[SourceS
     Each box chunk joins the concept section that precedes it in reading
     order. Repeated box headings stay apart. A leaf that ends with ":" and
     is not Method 1–4 or a possessive method ("Tadang's method:") is body
-    text and joins the previous sibling under the same parent. A Hint:
+    text and joins the previous sibling under the same parent.     A Hint:
     chunk is not a section: the label is removed and the text joins the
     next sibling under the same parent, or the previous sibling when the
-    next heading has a different parent. Everything from the first
-    answer-key heading ("Ans.", "Page No.") onward is dropped.
+    next heading has a different parent. Worked examples and method headings
+    ("Method 1", "Ridhima's method") are not sections. Everything from the
+    first answer-key heading ("Ans.", "Page No.") onward is dropped.
     """
     sections: list[SourceSection] = []
     pending_hints: list[tuple[str | None, str, int]] = []
@@ -434,17 +549,16 @@ def outline_clusters(
     labels stay on ``source_headings`` so chunk mapping still finds them. A
     repeated leaf under the same parent joins its first run. A heading under
     ``min_tokens`` merges into the next sibling under that parent, or into the
-    previous sibling when it is the last one. Method 1–4 stay even when they
-    are shorter than ``min_tokens``. While the outline is still wider than
-    ``MAX_OUTLINE_NODES``, the smallest non-method sibling under
+    previous sibling when it is the last one. While the outline is still wider
+    than ``MAX_OUTLINE_NODES``, the smallest short sibling under
     ``BREADTH_MERGE_TOKENS`` folds into its larger neighbor. A numbered section
     that has children is a container: its token mass stays 0 and any text of
     its own is kept only as a sample.
     """
     keyed = [_ensure_source_key(section) for section in sections]
     folded = _fold_activity_sections(keyed)
-    merged = _merge_until_breadth(
-        _merge_tiny_siblings(_collapse_repeated_leaves(folded), min_tokens)
+    merged = _fit_concept_count(
+        _merge_until_breadth(_merge_tiny_siblings(_collapse_repeated_leaves(folded), min_tokens))
     )
     parents = {section.parent_heading for section in merged if section.parent_heading}
     exclusive = {
@@ -580,6 +694,8 @@ def _section_with_pending_hints(
         token_mass=section.token_mass + matched_tokens,
         parent_heading=section.parent_heading,
         source_headings=section.source_headings,
+        title_hint=section.title_hint,
+        scope_parent=section.scope_parent,
     )
 
 
@@ -602,6 +718,8 @@ def _attach_hint(sections: list[SourceSection], parent: str | None, text: str, t
         token_mass=current.token_mass + tokens,
         parent_heading=current.parent_heading,
         source_headings=current.source_headings,
+        title_hint=current.title_hint,
+        scope_parent=current.scope_parent,
     )
 
 
@@ -634,6 +752,8 @@ def _leaf_cluster(section: SourceSection) -> HeadingCluster:
         sample_texts=tuple(text[:400] for text in section.texts[:3]),
         parent_heading=section.parent_heading,
         source_headings=_source_keys(section),
+        title_hint=section.title_hint,
+        scope_parent=section.scope_parent,
     )
 
 
@@ -652,6 +772,8 @@ def _ensure_source_key(section: SourceSection) -> SourceSection:
         token_mass=section.token_mass,
         parent_heading=section.parent_heading,
         source_headings=(section_group_label(section),),
+        title_hint=section.title_hint,
+        scope_parent=section.scope_parent,
     )
 
 
@@ -666,6 +788,8 @@ def _union_sections(
         token_mass=owner.token_mass + extra.token_mass,
         parent_heading=owner.parent_heading,
         source_headings=keys,
+        title_hint=owner.title_hint or extra.title_hint,
+        scope_parent=owner.scope_parent or extra.scope_parent,
     )
 
 
@@ -737,9 +861,8 @@ def _protected_method(heading: str) -> bool:
 def _merge_until_breadth(sections: Sequence[SourceSection]) -> list[SourceSection]:
     """Fold the smallest short sibling while the outline is wider than the target.
 
-    Method 1–4 and possessive methods stay. A section at or above
-    ``BREADTH_MERGE_TOKENS`` stays. Fewer than three real concepts are left as
-    they are: this never invents a heading.
+    A section at or above ``BREADTH_MERGE_TOKENS`` stays. Fewer than three real
+    concepts are left as they are: this never invents a heading.
     """
     current = list(sections)
     while _projected_node_count(current) > MAX_OUTLINE_NODES:
@@ -806,6 +929,88 @@ def _combine_leaf(
     return result
 
 
+def _fit_concept_count(sections: Sequence[SourceSection]) -> list[SourceSection]:
+    """Pull a wide chapter toward the concept target without gluing large siblings.
+
+    A short parent that only introduces its children gives those chunks to the
+    first child, and the children keep the parent's concept in their names.
+    A short Introduction then joins the next concept. Numbered children such
+    as cube and cuboid stay separate, so a chapter can remain a little over
+    the target when each of those sections is a real concept.
+    """
+    current = list(sections)
+    while _projected_node_count(current) > MAX_OUTLINE_NODES:
+        fitted = _absorb_light_parent(current)
+        if fitted is None:
+            fitted = _absorb_preface(current)
+        if fitted is None:
+            break
+        current = fitted
+    return current
+
+
+def _with_parent_scope(section: SourceSection, parent_heading: str) -> SourceSection:
+    hint = section.title_hint or qualify_child_title(parent_heading, section.heading)
+    return SourceSection(
+        heading=section.heading,
+        texts=section.texts,
+        token_mass=section.token_mass,
+        parent_heading=None,
+        source_headings=section.source_headings,
+        title_hint=hint,
+        scope_parent=section.scope_parent or parent_heading,
+    )
+
+
+def _absorb_light_parent(sections: Sequence[SourceSection]) -> list[SourceSection] | None:
+    """Fold the smallest short parent section into its first child."""
+    parents = {section.parent_heading for section in sections if section.parent_heading}
+    candidates = [
+        (section.token_mass, index)
+        for index, section in enumerate(sections)
+        if section.heading in parents and section.token_mass <= LIGHT_PARENT_TOKENS
+    ]
+    if not candidates:
+        return None
+    _mass, index = min(candidates)
+    parent = sections[index]
+    child_indexes = [
+        cursor
+        for cursor, section in enumerate(sections)
+        if section.parent_heading == parent.heading
+    ]
+    if not child_indexes:
+        return None
+    first_child = child_indexes[0]
+    promoted = {
+        cursor: _with_parent_scope(sections[cursor], parent.heading) for cursor in child_indexes
+    }
+    promoted[first_child] = _union_sections(
+        promoted[first_child], parent, extra_first=index < first_child
+    )
+    return [
+        promoted.get(cursor, section) for cursor, section in enumerate(sections) if cursor != index
+    ]
+
+
+def _absorb_preface(sections: Sequence[SourceSection]) -> list[SourceSection] | None:
+    """A short Introduction joins the concept that follows it."""
+    parents = {section.parent_heading for section in sections if section.parent_heading}
+    for index, section in enumerate(sections):
+        if section.parent_heading is not None or section.heading in parents:
+            continue
+        if section.token_mass > LIGHT_PARENT_TOKENS:
+            continue
+        if normalize_outline_title(section.heading).casefold() != "introduction":
+            continue
+        for nxt in range(index + 1, len(sections)):
+            follower = sections[nxt]
+            if follower.parent_heading is None and follower.heading not in parents:
+                return _combine_leaf(sections, keep_index=nxt, drop_index=index)
+        return None
+    return None
+
+
 def _cluster_label(cluster: HeadingCluster) -> str:
     if cluster.parent_heading:
         return f"{cluster.parent_heading}{HEADING_PATH_SEPARATOR}{cluster.heading}"
@@ -842,6 +1047,8 @@ def _absorb_clusters(
         sample_texts=tuple(samples),
         parent_heading=owner.parent_heading,
         source_headings=tuple(keys),
+        title_hint=owner.title_hint,
+        scope_parent=owner.scope_parent,
     )
 
 
@@ -918,6 +1125,15 @@ def outline_from_headings(clusters: Sequence[HeadingCluster]) -> ProposedOutline
     return _outline_from_clusters(_prepare_clusters(clusters), {})
 
 
+def _outcomes_for(
+    outcomes: dict[tuple[str, str | None], tuple[str, ...]],
+    title: str,
+    parent: str | None,
+) -> tuple[str, ...]:
+    """Outcomes stay on the raw concept name, not the qualified display title."""
+    return outcomes.get((title.casefold(), _folded_parent(parent)), ())
+
+
 def _folded_parent(parent: str | None) -> str | None:
     """Normalized parent key. Raw '6.1 Area' and cleaned 'Area' match."""
     if parent is None:
@@ -956,7 +1172,21 @@ def _outline_from_clusters(
         # Slug stays on the original heading so an existing subtopic still matches.
         # Chunk keys live on source_headings and do not follow the display rename.
         keys = _cluster_keys(cluster)
-        title = normalize_outline_title(raw_heading) or raw_heading
+        plain = normalize_outline_title(raw_heading) or raw_heading
+        title = (
+            cluster.title_hint
+            or (
+                qualify_child_title(cluster.parent_heading, raw_heading)
+                if cluster.parent_heading
+                else None
+            )
+            or (
+                qualify_child_title(cluster.scope_parent, raw_heading)
+                if cluster.scope_parent
+                else None
+            )
+            or plain
+        )
         key = f"h{index + 1}"
         slug = _unique_slug(_slugify(raw_heading), used_slugs)
         used_slugs.add(slug)
@@ -985,9 +1215,10 @@ def _outline_from_clusters(
                 token_mass=0 if structural else cluster.token_mass,
                 prerequisite_score=_ZERO if structural else Decimal("0.5"),
                 centrality=centrality,
-                proposed_outcomes=outcomes.get(
-                    (title.casefold(), _folded_parent(cluster.parent_heading)),
-                    (),
+                proposed_outcomes=_outcomes_for(
+                    outcomes,
+                    plain,
+                    cluster.parent_heading or cluster.scope_parent,
                 ),
                 source_headings=keys,
             )
