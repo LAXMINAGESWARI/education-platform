@@ -305,6 +305,7 @@ def test_publish_is_idempotent_and_unlocks_student_material(
     assert after_progress.status_code == 200, after_progress.text
     progressed = _directory_topic(after_progress.json(), seeded_topic_id)
     assert progressed["topic_lesson_completed"] is True
+    assert progressed["topic_lesson_progress"]["status"] == "completed"
     assert progressed["overall_quiz"]["unlocked"] is True
     assert progressed["overall_quiz"]["locked_reason"] is None
     get_settings.cache_clear()

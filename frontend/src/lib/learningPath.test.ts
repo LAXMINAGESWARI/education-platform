@@ -84,7 +84,7 @@ describe("learningPath", () => {
     });
     expect(learningPathCrumb(path!)).toEqual({
       label: "Approved Materials",
-      to: "/subjects/subj-1/topics/topic-1/lesson",
+      to: "/subjects/subj-1/topics/topic-1",
     });
     expect(resolvePathFromQuizId(directory, "overall-1")?.lessonPath).toBe(
       "/subjects/subj-1/topics/topic-1/lesson",

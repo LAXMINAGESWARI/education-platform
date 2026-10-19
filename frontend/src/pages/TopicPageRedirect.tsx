@@ -1,19 +1,21 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 
-import { fetchLearningDirectory } from "../api/materials";
-import type { SubjectNode, TopicNode } from "../api/types";
+import { fetchLearningDirectory, getTopicMaterial } from "../api/materials";
+import type { MaterialProgress, SubjectNode, TopicNode } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { findSubjectTopic, topicLessonPath } from "../lib/subjectMaterial";
+import { TopicEntries } from "../components/TopicEntries";
+import { findSubjectTopic } from "../lib/subjectMaterial";
 
-/** Topic URLs open the topic lesson, or the subtopic list when that topic has none. */
+/** Topic URLs offer the lesson and quiz, or the subtopic list when that topic has no lesson. */
 export function TopicPageRedirect() {
   const { subjectId = "", topicId = "", subtopicId } = useParams();
   const [subject, setSubject] = useState<SubjectNode | null>(null);
   const [topic, setTopic] = useState<TopicNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [lessonProgress, setLessonProgress] = useState<MaterialProgress | null>(null);
 
   useEffect(() => {
     if (subtopicId) return;
@@ -39,12 +41,23 @@ export function TopicPageRedirect() {
     };
   }, [subjectId, subtopicId, topicId]);
 
+  useEffect(() => {
+    if (!topic?.has_topic_lesson) return;
+    let cancelled = false;
+    void getTopicMaterial(topic.id)
+      .then((material) => {
+        if (!cancelled) setLessonProgress(material.progress);
+      })
+      .catch(() => {
+        if (!cancelled) setLessonProgress(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [topic?.has_topic_lesson, topic?.id]);
+
   if (subtopicId) {
     return <Navigate to={`/subjects/${subjectId}/subtopics/${subtopicId}/lesson`} replace />;
-  }
-
-  if (topic?.has_topic_lesson) {
-    return <Navigate to={topicLessonPath(subjectId, topic.id)} replace />;
   }
 
   if (!ready) {
@@ -77,28 +90,40 @@ export function TopicPageRedirect() {
           { label: topic.title },
         ]}
       />
-      <header className="page-head">
-        <h1>{topic.title}</h1>
-        <p>This topic is organized as subtopics. Open one to read its lesson.</p>
-      </header>
-      {topic.subtopics.length === 0 ? (
-        <p className="muted">No subtopics published for this topic yet.</p>
+      {topic.has_topic_lesson ? (
+        <>
+          <header className="page-head">
+            <h1>{topic.title}</h1>
+            <p>Open the lesson, or take the quiz once that lesson is complete.</p>
+          </header>
+          <TopicEntries subjectId={subjectId} topic={topic} progress={lessonProgress} />
+        </>
       ) : (
-        <section aria-labelledby="subtopics-heading">
-          <h2 id="subtopics-heading">Subtopics</h2>
-          <ul className="list">
-            {topic.subtopics.map((subtopic) => (
-              <li key={subtopic.id} className="subtopic-card">
-                <Link
-                  to={`/subjects/${subjectId}/subtopics/${subtopic.id}/lesson`}
-                  className="subtopic-card__head"
-                >
-                  <p className="list-item__title">{subtopic.title}</p>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <>
+          <header className="page-head">
+            <h1>{topic.title}</h1>
+            <p>This topic is organized as subtopics. Open one to read its lesson.</p>
+          </header>
+          {topic.subtopics.length === 0 ? (
+            <p className="muted">No subtopics published for this topic yet.</p>
+          ) : (
+            <section aria-labelledby="subtopics-heading">
+              <h2 id="subtopics-heading">Subtopics</h2>
+              <ul className="list">
+                {topic.subtopics.map((subtopic) => (
+                  <li key={subtopic.id} className="subtopic-card">
+                    <Link
+                      to={`/subjects/${subjectId}/subtopics/${subtopic.id}/lesson`}
+                      className="subtopic-card__head"
+                    >
+                      <p className="list-item__title">{subtopic.title}</p>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
       )}
     </>
   );

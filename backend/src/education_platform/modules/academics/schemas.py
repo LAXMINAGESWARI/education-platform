@@ -82,6 +82,7 @@ class TopicNodeOut(BaseModel):
     overall_quiz: QuizSummaryOut | None = None
     has_topic_lesson: bool = False
     topic_lesson_completed: bool = False
+    topic_lesson_progress: MaterialProgressOut | None = None
     topic_source_material_version_id: UUID | None = None
 
 

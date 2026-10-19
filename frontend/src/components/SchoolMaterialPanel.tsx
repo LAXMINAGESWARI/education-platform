@@ -2,8 +2,9 @@ import { Link } from "react-router-dom";
 
 import type { AttemptHistoryItem, MaterialProgress, QuizSummary, TopicNode } from "../api/types";
 import { latestRetakeLabel, passedBestLabel, trackedAttempts } from "../lib/quizAction";
-import { topicLessonPath } from "../lib/subjectMaterial";
+import { topicPagePath } from "../lib/subjectMaterial";
 import { formatAttemptWhen } from "./AttemptHistory";
+import { TopicEntries } from "./TopicEntries";
 
 function lessonStarted(progress: MaterialProgress | null | undefined, progressPercent: number): boolean {
   return progress?.status === "opened" || progress?.status === "completed" || progressPercent > 0;
@@ -98,13 +99,28 @@ function TopicCard({
   const status = passedLabel
     ? { label: passedLabel, cls: "badge--ok" }
     : unitStatus(lessonDone, quiz, null, topic.progress_percent);
-  const href = topic.has_topic_lesson
-    ? topicLessonPath(subjectId, topic.id)
-    : `/subjects/${subjectId}/topics/${topic.id}`;
+  const topicPath = topicPagePath(subjectId, topic.id);
+
+  if (topic.has_topic_lesson) {
+    return (
+      <li className="subtopic-card">
+        <div className="subtopic-card__head">
+          <div className="list-item__num">{String(index + 1).padStart(2, "0")}</div>
+          <div>
+            <Link to={topicPath} className="list-item__title">
+              {topic.title}
+            </Link>
+            <p className="list-item__meta">{Math.round(topic.progress_percent)}% complete</p>
+          </div>
+        </div>
+        <TopicEntries subjectId={subjectId} topic={topic} />
+      </li>
+    );
+  }
 
   return (
     <li className="subtopic-card">
-      <Link to={href} className="subtopic-card__head">
+      <Link to={topicPath} className="subtopic-card__head">
         <div className="list-item__num">{String(index + 1).padStart(2, "0")}</div>
         <div>
           <p className="list-item__title">{topic.title}</p>
@@ -115,7 +131,7 @@ function TopicCard({
           {passedLabel ? (
             retake ? <p className="subtopic-card__quiz-meta">{retake}</p> : null
           ) : (
-            <UnitQuizMeta quiz={quiz} topicLesson={topic.has_topic_lesson} />
+            <UnitQuizMeta quiz={quiz} topicLesson={false} />
           )}
         </div>
         <span className="subtopic-card__chevron" aria-hidden="true">
@@ -140,7 +156,7 @@ export function SchoolMaterialPanel({
         <section className="school-section school-section--units" aria-labelledby="topics-heading">
           <header className="school-section__head">
             <h2 id="topics-heading">Topics</h2>
-            <p>Open a topic lesson, then take its quiz.</p>
+            <p>Choose the lesson or the quiz for a topic.</p>
           </header>
           {topics.length === 0 ? (
             <p className="muted">No topics published for this subject yet.</p>

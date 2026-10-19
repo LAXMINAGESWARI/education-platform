@@ -125,6 +125,7 @@ export type TopicNode = {
   overall_quiz: QuizSummary | null;
   has_topic_lesson?: boolean;
   topic_lesson_completed?: boolean;
+  topic_lesson_progress?: MaterialProgress | null;
   topic_source_material_version_id?: string | null;
 };
 

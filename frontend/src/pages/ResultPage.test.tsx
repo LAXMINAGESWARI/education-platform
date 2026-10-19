@@ -313,7 +313,7 @@ describe("ResultPage", () => {
     );
     expect(screen.getByRole("link", { name: "Approved Materials" })).toHaveAttribute(
       "href",
-      "/subjects/subj-1/topics/topic-1/lesson",
+      "/subjects/subj-1/topics/topic-1",
     );
     expect(screen.getByText(/Correct answer keys stay hidden/)).toBeInTheDocument();
     expect(screen.getByText(/1 question in this attempt/)).toBeInTheDocument();

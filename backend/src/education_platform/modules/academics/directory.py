@@ -179,6 +179,9 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
                     overall_quiz=overall if overall.available else None,
                     has_topic_lesson=topic_lesson is not None,
                     topic_lesson_completed=topic_lesson_completed,
+                    topic_lesson_progress=(
+                        _progress_out(topic_progress) if topic_lesson is not None else None
+                    ),
                     topic_source_material_version_id=topic_lesson.id if topic_lesson else None,
                 )
             )
