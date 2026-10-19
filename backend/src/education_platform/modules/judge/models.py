@@ -1,4 +1,4 @@
-"""Stored Jev judgments. Shadow rows do not change what the gate accepts."""
+"""Stored Jev judgments. Enforce rows can fail an item or hold a lesson."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from education_platform.db.base import Base, UUIDTimestampMixin
 from education_platform.db.types import JsonDict
 
 _KINDS = "subject_kind IN ('lesson_section', 'lesson', 'quiz_item')"
-_MODES = "mode IN ('off', 'shadow', 'augment', 'replace')"
+_MODES = "mode IN ('off', 'shadow', 'enforce')"
 _DECISIONS = "decision IN ('accept', 'needs_review', 'reject', 'error')"
 
 

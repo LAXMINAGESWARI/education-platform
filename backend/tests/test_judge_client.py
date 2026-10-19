@@ -140,7 +140,7 @@ def test_model_name_comes_from_settings() -> None:
 def test_open_judge_requires_the_openrouter_key() -> None:
     assert open_judge(_settings(openrouter_api_key=None)) is None
     assert open_judge(_settings(openrouter_api_key="   ")) is None
-    assert open_judge(_settings(jev_mode="off")) is None
+    assert open_judge(_settings(jev_judge_mode="off")) is None
     assert isinstance(open_judge(_settings()), HttpJudge)
 
 

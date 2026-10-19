@@ -58,6 +58,7 @@ class LessonSectionRequest:
     defined_terms: tuple[str, ...]
     prior_recap: str
     pass_kind: SectionPass = SectionPass.FULL
+    repair_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +315,7 @@ def _spec_from_request(item: LessonSectionRequest) -> LessonSectionSpec:
         prior_recap=item.prior_recap,
         pass_kind=item.pass_kind.value,
         heading_style="section",
+        repair_note=item.repair_note,
     )
 
 
