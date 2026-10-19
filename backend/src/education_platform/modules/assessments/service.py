@@ -20,13 +20,13 @@ from education_platform.modules.academics.service import (
 )
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
+    AttemptQuestion,
     CommonMasteryQuiz,
     QuestionAnswerKey,
     QuestionOption,
     QuestionVersion,
     QuizAttempt,
     QuizAttemptStatus,
-    QuizItem,
     QuizResultReleaseMode,
     QuizScope,
     QuizVersion,
@@ -36,7 +36,11 @@ from education_platform.modules.assessments.queries import (
     PASS_CREDIT_STATUSES,
     history_item_for,
     open_release_for_quiz_version,
-    questions_for_quiz_version,
+)
+from education_platform.modules.assessments.question_selection import (
+    assign_attempt_questions,
+    questions_for_attempt,
+    served_questions_for_attempt,
 )
 from education_platform.modules.assessments.schemas import (
     AttemptAnswerOut,
@@ -249,6 +253,9 @@ async def _open_new_attempt(
     )
     if in_progress is not None:
         await session.execute(
+            delete(AttemptQuestion).where(AttemptQuestion.attempt_id == in_progress.id)
+        )
+        await session.execute(
             delete(AttemptAnswer).where(AttemptAnswer.attempt_id == in_progress.id)
         )
         await session.delete(in_progress)
@@ -290,6 +297,12 @@ async def _open_new_attempt(
     session.add(attempt)
     await session.flush()
     await session.refresh(attempt)
+    await assign_attempt_questions(
+        session,
+        attempt=attempt,
+        quiz_id=quiz.id,
+        quiz_version=quiz_version,
+    )
     return await _start_response(session, quiz, quiz_version, attempt)
 
 
@@ -312,7 +325,7 @@ async def _start_response(
         deadline_at=attempt.deadline_at,
         pass_threshold_percent=quiz_version.pass_threshold_percent,
         result_release_mode=quiz_version.result_release_mode.value,
-        questions=await questions_for_quiz_version(session, quiz_version.id),
+        questions=await questions_for_attempt(session, attempt),
         title=quiz.title,
         scope=quiz.quiz_scope.value,
         target_id=target_id,
@@ -369,14 +382,8 @@ async def submit_attempt(
             await session.flush()
             raise DomainError("Attempt expired", status_code=409)
 
-    items = (
-        await session.scalars(
-            select(QuizItem)
-            .where(QuizItem.quiz_version_id == quiz_version.id)
-            .order_by(QuizItem.sequence)
-        )
-    ).all()
-    item_by_number = {item.sequence: item for item in items}
+    served = await served_questions_for_attempt(session, attempt.id, quiz_version.id)
+    item_by_number = {question.number: question for question in served}
     numbers = [answer.question_number for answer in payload.answers]
     if len(numbers) != len(set(numbers)):
         raise DomainError("Duplicate answers", status_code=422)
@@ -485,14 +492,8 @@ async def get_attempt(
         and quiz_version.result_release_mode == QuizResultReleaseMode.ADMIN_RELEASE
         and attempt.status == QuizAttemptStatus.HELD
     )
-    items = (
-        await session.scalars(
-            select(QuizItem)
-            .where(QuizItem.quiz_version_id == attempt.quiz_version_id)
-            .order_by(QuizItem.sequence)
-        )
-    ).all()
-    number_by_qv = {item.question_version_id: item.sequence for item in items}
+    served = await served_questions_for_attempt(session, attempt.id, attempt.quiz_version_id)
+    number_by_qv = {question.question_version_id: question.number for question in served}
     answers = (
         await session.scalars(select(AttemptAnswer).where(AttemptAnswer.attempt_id == attempt.id))
     ).all()
@@ -514,16 +515,19 @@ async def get_attempt(
         pass_threshold_percent=attempt.pass_threshold_percent,
         passed=attempt.passed if review_available else None,
         review_available=review_available,
-        answers=[
-            AttemptAnswerOut(
-                question_number=number_by_qv.get(answer.question_version_id, 0),
-                selected_option_label=answer.selected_option_label,
-                is_correct=answer.is_correct if review_available else None,
-                marks_awarded=answer.marks_awarded if review_available else None,
-            )
-            for answer in answers
-            if number_by_qv.get(answer.question_version_id)
-        ]
+        answers=sorted(
+            (
+                AttemptAnswerOut(
+                    question_number=number_by_qv[answer.question_version_id],
+                    selected_option_label=answer.selected_option_label,
+                    is_correct=answer.is_correct if review_available else None,
+                    marks_awarded=answer.marks_awarded if review_available else None,
+                )
+                for answer in answers
+                if answer.question_version_id in number_by_qv
+            ),
+            key=lambda answer: answer.question_number,
+        )
         if review_available
         else [],
     )

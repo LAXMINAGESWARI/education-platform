@@ -125,6 +125,7 @@ def test_migration_creates_core_tables(clean_db: str) -> None:
         "student_material_progress",
         "question_answer_keys",
         "quiz_attempts",
+        "attempt_questions",
         "attempt_answers",
         "quiz_releases",
         "curriculum_generation_jobs",
