@@ -2,8 +2,12 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { resetInstallPromptState } from "../pwa/installPrompt";
-import { INSTALL_DISMISS_KEY, IOS_HINT_DISMISS_KEY } from "../pwa/installState";
+import { getInstallPrompt, resetInstallPromptState } from "../pwa/installPrompt";
+import {
+  INSTALL_BANNER_DISMISS_LIMIT,
+  INSTALL_BANNER_KEY,
+  INSTALL_BANNER_SNOOZE_MS,
+} from "../pwa/installState";
 import { PwaPrompts } from "./PwaPrompts";
 
 const sw = vi.hoisted(() => ({
@@ -43,9 +47,9 @@ describe("PwaPrompts", () => {
     resetInstallPromptState();
   });
 
-  it("shows an install button from beforeinstallprompt and remembers a dismissal", async () => {
+  it("snoozes the install banner without dropping the browser prompt", async () => {
     const user = userEvent.setup();
-    renderPrompt();
+    const view = renderPrompt();
 
     const prompt = vi.fn(async () => undefined);
     actInstallEvent(prompt);
@@ -53,38 +57,65 @@ describe("PwaPrompts", () => {
     expect(install).not.toHaveAttribute("data-haptics", "off");
 
     await user.click(screen.getByRole("button", { name: "Not now" }));
-    expect(localStorage.getItem(INSTALL_DISMISS_KEY)).toBe("1");
     expect(screen.queryByRole("button", { name: "Install app" })).not.toBeInTheDocument();
+    expect(getInstallPrompt()).not.toBeNull();
 
-    renderPrompt();
-    actInstallEvent(prompt);
-    expect(screen.queryByRole("button", { name: "Install app" })).not.toBeInTheDocument();
+    const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { until: number };
+    localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: 1, until: stored.until - INSTALL_BANNER_SNOOZE_MS }));
+    view.rerender(<PwaPrompts />);
+    expect(screen.getByRole("button", { name: "Install app" })).toBeInTheDocument();
   });
 
-  it("calls the browser install prompt", async () => {
+  it("stops the banner after three dismissals", async () => {
+    const user = userEvent.setup();
+    const view = renderPrompt();
+    actInstallEvent(vi.fn(async () => undefined));
+
+    for (let dismissals = 1; dismissals <= INSTALL_BANNER_DISMISS_LIMIT; dismissals += 1) {
+      await user.click(screen.getByRole("button", { name: "Not now" }));
+      expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
+      if (dismissals === INSTALL_BANNER_DISMISS_LIMIT) break;
+      const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { count: number };
+      localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: stored.count, until: 0 }));
+      view.rerender(<PwaPrompts />);
+    }
+
+    localStorage.setItem(
+      INSTALL_BANNER_KEY,
+      JSON.stringify({ count: INSTALL_BANNER_DISMISS_LIMIT, until: 0 }),
+    );
+    view.rerender(<PwaPrompts />);
+    expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
+  });
+
+  it("calls the browser install prompt without snoozing the banner", async () => {
     const user = userEvent.setup();
     renderPrompt();
     const prompt = vi.fn(async () => undefined);
     actInstallEvent(prompt, "dismissed");
     await user.click(screen.getByRole("button", { name: "Install app" }));
     expect(prompt).toHaveBeenCalledOnce();
-    expect(localStorage.getItem(INSTALL_DISMISS_KEY)).toBe("1");
+    expect(localStorage.getItem(INSTALL_BANNER_KEY)).toBeNull();
   });
 
-  it("shows the iOS Share hint once", async () => {
+  it("snoozes the iOS Share hint and shows it again after three days", async () => {
     setUserAgent(IOS_SAFARI);
     const user = userEvent.setup();
-    renderPrompt();
+    const view = renderPrompt();
     expect(screen.getByRole("region", { name: "Install CurioEd" })).toHaveTextContent(
       "tap Share, then Add to Home Screen",
     );
 
     await user.click(screen.getByRole("button", { name: "Not now" }));
-    expect(localStorage.getItem(IOS_HINT_DISMISS_KEY)).toBe("1");
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
 
-    renderPrompt();
+    view.rerender(<PwaPrompts />);
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
+
+    const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { until: number };
+    localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: 1, until: stored.until - INSTALL_BANNER_SNOOZE_MS }));
+    view.rerender(<PwaPrompts />);
+    expect(screen.getByRole("region", { name: "Install CurioEd" })).toBeInTheDocument();
   });
 
   it("hides install hints in standalone mode", () => {
@@ -109,7 +140,6 @@ describe("PwaPrompts", () => {
     await user.click(screen.getByRole("button", { name: "Later" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
-
 });
 
 function renderPrompt() {

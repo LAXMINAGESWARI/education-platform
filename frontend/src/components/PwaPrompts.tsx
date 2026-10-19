@@ -2,20 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
 import {
-  dismissInstallPrompt,
   ensureInstallPromptListener,
   getInstallPrompt,
   promptInstall,
   subscribeInstallPrompt,
   wasInstalled,
 } from "../pwa/installPrompt";
-import {
-  IOS_HINT_DISMISS_KEY,
-  isIosSafari,
-  isStandaloneDisplay,
-  readDismissed,
-  rememberDismissed,
-} from "../pwa/installState";
+import { isIosSafari, isStandaloneDisplay, shouldShowInstallBanner, snoozeInstallBanner } from "../pwa/installState";
 
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
 
@@ -72,39 +65,31 @@ function PwaUpdatePrompt() {
 
 function InstallPrompt() {
   const [installReady, setInstallReady] = useState(false);
-  const [showIosHint, setShowIosHint] = useState(false);
   const [installed, setInstalled] = useState(false);
+  const [bannerRevision, setBannerRevision] = useState(0);
 
   useEffect(() => {
     ensureInstallPromptListener();
     const sync = () => {
       setInstalled(wasInstalled() || isStandaloneDisplay());
       setInstallReady(getInstallPrompt() !== null);
-      setShowIosHint(
-        !wasInstalled() &&
-          !isStandaloneDisplay() &&
-          getInstallPrompt() === null &&
-          isIosSafari() &&
-          !readDismissed(IOS_HINT_DISMISS_KEY),
-      );
     };
     sync();
     return subscribeInstallPrompt(sync);
   }, []);
 
-  if (installed || isStandaloneDisplay()) return null;
+  if (installed || isStandaloneDisplay() || !shouldShowInstallBanner()) return null;
+
+  function snooze() {
+    snoozeInstallBanner();
+    setBannerRevision((value) => value + 1);
+  }
 
   if (installReady) {
     return (
-      <div className="pwa-toast" role="region" aria-label="Install CurioEd">
+      <div key={bannerRevision} className="pwa-toast" role="region" aria-label="Install CurioEd">
         <p>Install CurioEd on this phone.</p>
-        <button
-          type="button"
-          className="btn btn--soft btn--sm"
-          onClick={() => {
-            dismissInstallPrompt();
-          }}
-        >
+        <button type="button" className="btn btn--soft btn--sm" onClick={snooze}>
           Not now
         </button>
         <button
@@ -120,19 +105,12 @@ function InstallPrompt() {
     );
   }
 
-  if (!showIosHint) return null;
+  if (!isIosSafari()) return null;
 
   return (
-    <div className="pwa-toast" role="region" aria-label="Install CurioEd">
+    <div key={bannerRevision} className="pwa-toast" role="region" aria-label="Install CurioEd">
       <p>To install CurioEd, tap Share, then Add to Home Screen.</p>
-      <button
-        type="button"
-        className="btn btn--soft btn--sm"
-        onClick={() => {
-          rememberDismissed(IOS_HINT_DISMISS_KEY);
-          setShowIosHint(false);
-        }}
-      >
+      <button type="button" className="btn btn--soft btn--sm" onClick={snooze}>
         Not now
       </button>
     </div>

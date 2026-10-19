@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { HapticFeedbackToggle } from "./HapticFeedbackToggle";
+import { InstallAppButton } from "./InstallAppButton";
 
 export type MobileNavItem = {
   to: string;
@@ -93,7 +94,10 @@ export function MobileNav({ brandTo, navLabel, items, trailing }: MobileNavProps
             </Link>
           ))}
         </nav>
-        <HapticFeedbackToggle />
+        <div className="nav-drawer__footer">
+          <InstallAppButton />
+          <HapticFeedbackToggle />
+        </div>
       </aside>
     </>
   );

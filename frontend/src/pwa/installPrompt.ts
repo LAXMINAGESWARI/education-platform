@@ -1,10 +1,4 @@
-import {
-  type BeforeInstallPromptEvent,
-  INSTALL_DISMISS_KEY,
-  isStandaloneDisplay,
-  readDismissed,
-  rememberDismissed,
-} from "./installState";
+import { type BeforeInstallPromptEvent, isStandaloneDisplay } from "./installState";
 
 type Listener = () => void;
 
@@ -19,7 +13,7 @@ function emit(): void {
 
 function onBeforeInstall(event: Event): void {
   event.preventDefault();
-  if (readDismissed(INSTALL_DISMISS_KEY) || isStandaloneDisplay()) return;
+  if (installed || isStandaloneDisplay()) return;
   deferred = event as BeforeInstallPromptEvent;
   emit();
 }
@@ -27,7 +21,6 @@ function onBeforeInstall(event: Event): void {
 function onInstalled(): void {
   deferred = null;
   installed = true;
-  rememberDismissed(INSTALL_DISMISS_KEY);
   emit();
 }
 
@@ -55,18 +48,19 @@ export function wasInstalled(): boolean {
 export async function promptInstall(): Promise<"accepted" | "dismissed" | "unavailable"> {
   const event = deferred;
   if (!event) return "unavailable";
-  await event.prompt();
-  const choice = await event.userChoice;
   deferred = null;
-  rememberDismissed(INSTALL_DISMISS_KEY);
   emit();
-  return choice.outcome;
-}
-
-export function dismissInstallPrompt(): void {
-  deferred = null;
-  rememberDismissed(INSTALL_DISMISS_KEY);
-  emit();
+  try {
+    await event.prompt();
+    const choice = await event.userChoice;
+    if (choice.outcome === "accepted") {
+      installed = true;
+      emit();
+    }
+    return choice.outcome;
+  } catch {
+    return "unavailable";
+  }
 }
 
 /** Test helper. Production code does not call this. */

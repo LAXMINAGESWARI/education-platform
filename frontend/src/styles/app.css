@@ -5258,11 +5258,19 @@ body {
     gap: 0.25rem;
   }
 
+  .nav-drawer__footer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    margin-top: auto;
+    padding-top: 0.75rem;
+  }
+
   .haptic-toggle {
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    margin-top: auto;
+    margin-top: 0;
     padding: 0.75rem 0.35rem 0.15rem;
     min-height: 2.75rem;
     color: var(--ink);
@@ -5652,6 +5660,62 @@ body:has(.topbar) .pwa-toasts {
 }
 
 .pwa-toast .btn {
+  min-height: 2.75rem;
+}
+
+.nav-drawer__install {
+  font: inherit;
+}
+
+.pwa-sheet-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding:
+    max(0.75rem, env(safe-area-inset-top))
+    max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom))
+    max(0.75rem, env(safe-area-inset-left));
+  background: rgb(28 42 34 / 0.45);
+}
+
+.pwa-sheet {
+  width: min(24rem, 100%);
+  margin: 0;
+  padding: 1rem 1rem max(1rem, env(safe-area-inset-bottom));
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+}
+
+.pwa-sheet h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.pwa-sheet p {
+  margin: 0 0 0.75rem;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.pwa-sheet__steps {
+  margin: 0 0 1rem;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.pwa-sheet__steps li {
+  line-height: 1.35;
+}
+
+.pwa-sheet .btn {
   min-height: 2.75rem;
 }
 
