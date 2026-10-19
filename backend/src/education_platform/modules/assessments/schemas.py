@@ -107,8 +107,8 @@ class SetGoalRequest(BaseModel):
 
 
 class GoalOut(BaseModel):
-    subtopic_id: UUID
-    subtopic_name: str
+    topic_id: UUID
+    topic_name: str
     target_percent: Decimal
     due_at: datetime
     current_percent: Decimal | None
@@ -216,12 +216,18 @@ class FeedbackTopicScore(BaseModel):
     badge: Literal["not_attempted", "keep_going", "passed"]
     quiz_id: UUID | None
     has_lesson: bool
+    goal: GoalOut | None = None
+    attempt_scores: list[FeedbackAttemptScore] = Field(default_factory=list)
+    concepts: list[FeedbackSubtopicStrength] = Field(default_factory=list)
+    regression_count: int | None = None
+    class_avg_percent: Decimal | None = None
+    class_sample_size: int = 0
 
 
 class FeedbackFocus(BaseModel):
-    """How far the weakest concept is from the student's goal, or from a pass."""
+    """How far a topic quiz's best score is from the student's goal for that topic."""
 
-    concept_name: str
+    topic_name: str
     topic_id: UUID
     gap_percent: int
 
@@ -274,7 +280,18 @@ class FeedbackSubtopicStrength(BaseModel):
     answered_count: int
     percent: Decimal
     band: Literal["strong", "okay", "needs_work"]
-    goal: GoalOut | None = None
+
+
+class FeedbackAttemptScore(BaseModel):
+    attempt_number: int
+    score_percent: Decimal
+
+
+class FeedbackDifficultyAccuracy(BaseModel):
+    difficulty: Literal["easy", "medium", "hard"]
+    correct_count: int
+    answered_count: int
+    percent: Decimal
 
 
 class FeedbackTopicDetail(BaseModel):
@@ -292,5 +309,13 @@ class FeedbackTopicDetail(BaseModel):
     has_lesson: bool
     summary: str
     subtopics: list[FeedbackSubtopicStrength]
+    goal: GoalOut | None = None
     concepts_mastered: int = 0
     concepts_attempted: int = 0
+    average_score_percent: Decimal | None = None
+    attempt_scores: list[FeedbackAttemptScore] = Field(default_factory=list)
+    questions_answered: int | None = None
+    questions_correct: int | None = None
+    accuracy_percent: Decimal | None = None
+    time_spent_seconds: int | None = None
+    difficulty_accuracy: list[FeedbackDifficultyAccuracy] = Field(default_factory=list)

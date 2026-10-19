@@ -8,6 +8,7 @@ import {
   subjectTopicLessonTopics,
   subjectUnitEntries,
   topicLessonEntry,
+  topicHistoryPath,
   topicLessonPath,
   topicPagePath,
   topicQuizEntry,
@@ -161,6 +162,9 @@ describe("subjectMaterial topic lesson helpers", () => {
     expect(topicPagePath("subj-1", "topic-1")).toBe("/subjects/subj-1/topics/topic-1");
     expect(topicLessonPath("subj-1", "topic-1")).toBe(
       "/subjects/subj-1/topics/topic-1/lesson",
+    );
+    expect(topicHistoryPath("subj-1", "topic-1")).toBe(
+      "/subjects/subj-1/topics/topic-1/history",
     );
   });
 

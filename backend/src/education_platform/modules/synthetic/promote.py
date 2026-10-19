@@ -278,7 +278,6 @@ def _retarget_quiz(session: Session, child: Subtopic, topic: Topic) -> None:
 
 def _reparent_loose_refs(session: Session, child: Subtopic, destination: Subtopic) -> None:
     _move_outcomes(session, child.id, destination.id)
-    _move_goals(session, child.id, destination.id)
     session.execute(
         update(SlideEngagement)
         .where(SlideEngagement.subtopic_id == child.id)
@@ -326,24 +325,6 @@ def _move_outcomes(session: Session, source_id: UUID, destination_id: UUID) -> N
         taken.add(code)
 
 
-def _move_goals(session: Session, source_id: UUID, destination_id: UUID) -> None:
-    goals = list(
-        session.scalars(
-            select(StudentSubtopicGoal).where(StudentSubtopicGoal.subtopic_id == source_id)
-        )
-    )
-    for goal in goals:
-        clash = session.scalar(
-            select(StudentSubtopicGoal.id).where(
-                StudentSubtopicGoal.student_id == goal.student_id,
-                StudentSubtopicGoal.subtopic_id == destination_id,
-            )
-        )
-        if clash is not None:
-            continue
-        goal.subtopic_id = destination_id
-
-
 def _count(session: Session, statement: Select[tuple[int]]) -> int:
     return int(session.scalar(statement) or 0)
 
@@ -371,12 +352,6 @@ def _subtopic_blockers(session: Session, subtopic_id: UUID) -> list[str]:
             select(func.count())
             .select_from(LearningOutcome)
             .where(LearningOutcome.subtopic_id == subtopic_id),
-        ),
-        (
-            "goals",
-            select(func.count())
-            .select_from(StudentSubtopicGoal)
-            .where(StudentSubtopicGoal.subtopic_id == subtopic_id),
         ),
         (
             "engagement",
@@ -457,6 +432,12 @@ def _core_delete_blockers(session: Session, core: Topic) -> str | None:
         select(func.count()).select_from(Subtopic).where(Subtopic.topic_id == core.id)
     ):
         return "subtopics remain"
+    if session.scalar(
+        select(func.count())
+        .select_from(StudentSubtopicGoal)
+        .where(StudentSubtopicGoal.topic_id == core.id)
+    ):
+        return "a student goal targets the topic"
     if session.scalar(
         select(func.count())
         .select_from(CommonMasteryQuiz)

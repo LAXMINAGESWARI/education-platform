@@ -158,8 +158,8 @@ export type SubtopicAttemptScore = {
 };
 
 export type GoalOut = {
-  subtopic_id: string;
-  subtopic_name: string;
+  topic_id: string;
+  topic_name: string;
   target_percent: string | number;
   due_at: string;
   current_percent: string | number | null;
@@ -243,12 +243,18 @@ export type FeedbackTopicScore = {
   badge: FeedbackBadge;
   quiz_id: string | null;
   has_lesson: boolean;
+  goal: GoalOut | null;
+  attempt_scores: FeedbackAttemptScore[];
+  concepts: FeedbackSubtopicStrength[];
+  regression_count: number | null;
+  class_avg_percent: string | number | null;
+  class_sample_size: number;
 };
 
 export type FeedbackAchievement = "mastery" | "advanced" | "proficient" | "on_track";
 
 export type FeedbackFocus = {
-  concept_name: string;
+  topic_name: string;
   topic_id: string;
   gap_percent: number;
 };
@@ -299,7 +305,20 @@ export type FeedbackSubtopicStrength = {
   answered_count: number;
   percent: string | number;
   band: FeedbackBand;
-  goal: GoalOut | null;
+};
+
+export type FeedbackAttemptScore = {
+  attempt_number: number;
+  score_percent: string | number;
+};
+
+export type FeedbackDifficulty = "easy" | "medium" | "hard";
+
+export type FeedbackDifficultyAccuracy = {
+  difficulty: FeedbackDifficulty;
+  correct_count: number;
+  answered_count: number;
+  percent: string | number;
 };
 
 export type FeedbackTopicDetail = {
@@ -317,8 +336,16 @@ export type FeedbackTopicDetail = {
   has_lesson: boolean;
   summary: string;
   subtopics: FeedbackSubtopicStrength[];
+  goal: GoalOut | null;
   concepts_mastered: number;
   concepts_attempted: number;
+  average_score_percent: string | number | null;
+  attempt_scores: FeedbackAttemptScore[];
+  questions_answered: number | null;
+  questions_correct: number | null;
+  accuracy_percent: string | number | null;
+  time_spent_seconds: number | null;
+  difficulty_accuracy: FeedbackDifficultyAccuracy[];
 };
 
 export type SubjectFeedbackDashboard = {

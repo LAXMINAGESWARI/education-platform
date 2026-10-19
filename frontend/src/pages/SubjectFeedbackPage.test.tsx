@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,8 +13,8 @@ vi.mock("../api/feedback", () => ({
   getFeedbackTopic: vi.fn(),
   getFeedbackHighlights: vi.fn(),
   getSubjectFeedback: vi.fn(),
-  setSubtopicGoal: vi.fn(),
-  deleteSubtopicGoal: vi.fn(),
+  setTopicGoal: vi.fn(),
+  deleteTopicGoal: vi.fn(),
 }));
 
 vi.mock("../api/materials", () => ({
@@ -30,13 +30,18 @@ vi.mock("../api/engagement", () => ({
   getSubjectEngagementRates: vi.fn(),
 }));
 
+vi.mock("../api/attempts", () => ({
+  listQuizAttempts: vi.fn(),
+}));
+
+import { listQuizAttempts } from "../api/attempts";
 import {
-  deleteSubtopicGoal,
+  deleteTopicGoal,
   getFeedbackHighlights,
   getFeedbackOverview,
   getFeedbackSubject,
   getFeedbackTopic,
-  setSubtopicGoal,
+  setTopicGoal,
 } from "../api/feedback";
 import { getSubjectEngagementRates } from "../api/engagement";
 import { fetchLearningDirectory } from "../api/materials";
@@ -65,7 +70,7 @@ const overview = {
       },
       concepts_mastered: 2,
       concepts_attempted: 4,
-      focus: { concept_name: "Algebra", topic_id: "algebra", gap_percent: 30 },
+      focus: { topic_name: "Algebra", topic_id: "algebra", gap_percent: 8 },
       achievement: null,
     },
     {
@@ -99,7 +104,7 @@ const subject = {
   summary_status: "fallback" as const,
   concepts_mastered: 1,
   concepts_attempted: 2,
-  focus: { concept_name: "Area of a polygon", topic_id: "mensuration", gap_percent: 45 },
+  focus: { topic_name: "Mensuration", topic_id: "mensuration", gap_percent: 45 },
   achievement: null,
   topics: [
     {
@@ -114,6 +119,41 @@ const subject = {
       badge: "passed" as const,
       quiz_id: "quiz-1",
       has_lesson: true,
+      goal: {
+        topic_id: "mensuration",
+        topic_name: "Mensuration",
+        target_percent: "80",
+        due_at: "2026-12-01T23:59:59.000Z",
+        current_percent: "90",
+        status: "achieved" as const,
+      },
+      attempt_scores: [
+        { attempt_number: 1, score_percent: "40" },
+        { attempt_number: 2, score_percent: "55" },
+        { attempt_number: 3, score_percent: "70" },
+        { attempt_number: 4, score_percent: "90" },
+      ],
+      concepts: [
+        {
+          subtopic_id: "polygon-1",
+          name: "Area of a polygon",
+          correct_count: 1,
+          answered_count: 4,
+          percent: "25",
+          band: "needs_work" as const,
+        },
+        {
+          subtopic_id: "cuboid-1",
+          name: "Cuboid",
+          correct_count: 3,
+          answered_count: 4,
+          percent: "75",
+          band: "strong" as const,
+        },
+      ],
+      regression_count: 2,
+      class_avg_percent: "62",
+      class_sample_size: 8,
     },
     {
       topic_id: "decimals",
@@ -127,6 +167,12 @@ const subject = {
       badge: "not_attempted" as const,
       quiz_id: "quiz-2",
       has_lesson: true,
+      goal: null,
+      attempt_scores: [],
+      concepts: [],
+      regression_count: null,
+      class_avg_percent: null,
+      class_sample_size: 0,
     },
   ],
 };
@@ -147,6 +193,22 @@ const topic = {
   summary: "Strong on Cuboid.",
   concepts_mastered: 1,
   concepts_attempted: 2,
+  goal: null,
+  average_score_percent: "63.75",
+  attempt_scores: [
+    { attempt_number: 1, score_percent: "40" },
+    { attempt_number: 2, score_percent: "55" },
+    { attempt_number: 3, score_percent: "70" },
+    { attempt_number: 4, score_percent: "90" },
+  ],
+  questions_answered: 8,
+  questions_correct: 4,
+  accuracy_percent: "50",
+  time_spent_seconds: 600,
+  difficulty_accuracy: [
+    { difficulty: "easy" as const, correct_count: 2, answered_count: 2, percent: "100" },
+    { difficulty: "hard" as const, correct_count: 0, answered_count: 1, percent: "0" },
+  ],
   subtopics: [
     {
       subtopic_id: "cuboid-1",
@@ -155,7 +217,6 @@ const topic = {
       answered_count: 4,
       percent: "75",
       band: "strong" as const,
-      goal: null,
     },
     {
       subtopic_id: "polygon-1",
@@ -164,14 +225,36 @@ const topic = {
       answered_count: 4,
       percent: "25",
       band: "needs_work" as const,
-      goal: null,
     },
   ],
 };
 
+const pastAttempts = [
+  {
+    id: "attempt-1",
+    attempt_number: 1,
+    status: "submitted",
+    score_percent: "40",
+    passed: false,
+    started_at: "2026-08-01T10:00:00Z",
+    submitted_at: "2026-08-01T10:20:00Z",
+  },
+  {
+    id: "attempt-4",
+    attempt_number: 4,
+    status: "submitted",
+    score_percent: "90",
+    passed: true,
+    started_at: "2026-08-04T10:00:00Z",
+    submitted_at: "2026-08-04T10:20:00Z",
+  },
+];
+
 describe("feedback hierarchy", () => {
   beforeEach(() => {
     vi.mocked(getFeedbackOverview).mockReset();
+    vi.mocked(listQuizAttempts).mockReset();
+    vi.mocked(listQuizAttempts).mockResolvedValue(pastAttempts);
     vi.mocked(getFeedbackSubject).mockReset();
     vi.mocked(getFeedbackTopic).mockReset();
     vi.mocked(getSelfEvaluation).mockReset();
@@ -181,8 +264,8 @@ describe("feedback hierarchy", () => {
     vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
     vi.mocked(fetchLearningDirectory).mockResolvedValue({ subjects: [] });
     vi.mocked(getSubjectEngagementRates).mockResolvedValue([]);
-    vi.mocked(setSubtopicGoal).mockReset();
-    vi.mocked(deleteSubtopicGoal).mockReset();
+    vi.mocked(setTopicGoal).mockReset();
+    vi.mocked(deleteTopicGoal).mockReset();
     vi.mocked(recordSelfEvaluation).mockResolvedValue({
       subject_id: "math-1",
       confidence: "confident",
@@ -211,7 +294,7 @@ describe("feedback hierarchy", () => {
     expect(science).not.toHaveTextContent("declining");
     expect(screen.queryByText(/· -/)).not.toBeInTheDocument();
     expect(screen.getAllByText("View feedback").length).toBeGreaterThan(0);
-    expect(screen.getByText(/You're just 30% from your goal on Algebra/)).toBeInTheDocument();
+    expect(screen.getByText("You're just 8% from your goal on Algebra.")).toBeInTheDocument();
   });
 
   it("lists topics in order and leaves an unattempted topic blank", async () => {
@@ -235,12 +318,11 @@ describe("feedback hierarchy", () => {
     expect(screen.getByText("Needs attention: Algebra")).toBeInTheDocument();
     const links = screen.getAllByRole("link");
     const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
-    expect(topicLinks.map((link) => link.textContent)).toEqual([
-      expect.stringContaining("Mensuration"),
-      expect.stringContaining("Decimals"),
-    ]);
-    expect(screen.getByRole("link", { name: /Decimals/ })).toHaveTextContent("Not attempted");
-    expect(screen.getByRole("link", { name: /Decimals/ })).not.toHaveTextContent("declining");
+    expect(topicLinks.map((link) => link.textContent)).toEqual(["Mensuration", "Decimals"]);
+    const decimals = screen.getByRole("article", { name: "Decimals" });
+    expect(decimals).toHaveTextContent("Not attempted");
+    expect(decimals).not.toHaveTextContent("declining");
+    expect(decimals).not.toHaveTextContent("0%");
     await user.click(screen.getByRole("link", { name: /Mensuration/ }));
     expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
   });
@@ -258,12 +340,60 @@ describe("feedback hierarchy", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Score and metrics" })).toBeInTheDocument();
+    expect(screen.getByText("Attempts")).toBeInTheDocument();
+    expect(screen.getByText("Best score")).toBeInTheDocument();
+    expect(screen.getByText("Latest score")).toBeInTheDocument();
+    expect(screen.getByText("Average score")).toBeInTheDocument();
+    expect(screen.getByText("64%")).toBeInTheDocument();
+    expect(screen.getByText("Since the previous attempt")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Past attempts" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Performance over time" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: /Quiz scores across 2 attempts. Latest 90 percent, best 90 percent/,
+      }),
+    ).toBeInTheDocument();
+    const history = screen.getByRole("region", { name: "Past attempts" });
+    const rows = within(history).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Not passed · 40%");
+    expect(rows[0]).not.toHaveTextContent("—");
+    expect(rows[1]).toHaveTextContent("Passed · 90%");
+    expect(within(rows[0]).getByRole("link", { name: "View" })).toHaveAttribute(
+      "href",
+      "/attempts/attempt-1",
+    );
+    expect(within(rows[1]).getByRole("link", { name: "View" })).toHaveAttribute(
+      "href",
+      "/attempts/attempt-4",
+    );
+    expect(screen.getByRole("link", { name: "Show full history" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/mensuration/history",
+    );
+    expect(listQuizAttempts).toHaveBeenCalledWith("quiz-1");
+    expect(screen.getByText("4 of 8 correct, 50%")).toBeInTheDocument();
+    expect(screen.getByText("10 min")).toBeInTheDocument();
+    expect(screen.getByText("Easy")).toBeInTheDocument();
+    expect(screen.getByText("2 of 2 correct, 100%")).toBeInTheDocument();
+    expect(screen.getByText("Hard")).toBeInTheDocument();
+    expect(screen.getByText("0 of 1 correct, 0%")).toBeInTheDocument();
+    expect(screen.queryByText("Medium")).not.toBeInTheDocument();
     expect(screen.getByText("Cuboid")).toBeInTheDocument();
     expect(screen.getByText("Area of a polygon")).toBeInTheDocument();
+    expect(screen.getByText("1 of 4 correct, 25%")).toBeInTheDocument();
+    expect(screen.getByText("3 of 4 correct, 75%")).toBeInTheDocument();
+    const concepts = within(screen.getByRole("list", { name: "Concepts" })).getAllByRole("listitem");
+    expect(concepts[0]).toHaveTextContent("Area of a polygon");
+    expect(concepts[1]).toHaveTextContent("Cuboid");
     expect(screen.queryByText(/9\.4\.1/)).not.toBeInTheDocument();
     expect(screen.queryByText(/EXERCISE/)).not.toBeInTheDocument();
     expect(screen.getByText("Strong")).toBeInTheDocument();
     expect(screen.getByText("Needs work")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("list", { name: "Concepts" })).queryByRole("button", { name: "Set a goal" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(1);
     expect(screen.getByText("Strong on Cuboid.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review the lesson" })).toHaveAttribute(
       "href",
@@ -276,20 +406,19 @@ describe("feedback hierarchy", () => {
     expect(getFeedbackTopic).toHaveBeenCalledWith("mensuration");
     expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
     expect(screen.getByText("1 of 2 concepts mastered")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
   });
 
-  it("sets and removes a concept goal on the topic page", async () => {
+  it("sets and removes a topic goal on the topic quiz card", async () => {
     const user = userEvent.setup();
-    vi.mocked(setSubtopicGoal).mockResolvedValue({
-      subtopic_id: "cuboid-1",
-      subtopic_name: "Cuboid",
+    vi.mocked(setTopicGoal).mockResolvedValue({
+      topic_id: "mensuration",
+      topic_name: "Mensuration",
       target_percent: "80",
       due_at: "2026-12-01T23:59:59.000Z",
-      current_percent: "75",
-      status: "on_track",
+      current_percent: "90",
+      status: "achieved",
     });
-    vi.mocked(deleteSubtopicGoal).mockResolvedValue(undefined);
+    vi.mocked(deleteTopicGoal).mockResolvedValue(undefined);
     render(
       <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
         <Routes>
@@ -301,23 +430,74 @@ describe("feedback hierarchy", () => {
       </MemoryRouter>,
     );
 
-    const setButtons = await screen.findAllByRole("button", { name: "Set a goal" });
-    await user.click(setButtons[0]);
-    await user.clear(screen.getByLabelText("Target percent for Cuboid"));
-    await user.type(screen.getByLabelText("Target percent for Cuboid"), "80");
-    await user.type(screen.getByLabelText("Due date for Cuboid"), "2026-12-01");
+    const ideas = await screen.findByRole("list", { name: "Concepts" });
+    expect(within(ideas).queryByRole("button", { name: "Set a goal" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Set a goal" }));
+    await user.clear(screen.getByLabelText("Target percent for Mensuration"));
+    await user.type(screen.getByLabelText("Target percent for Mensuration"), "80");
+    await user.type(screen.getByLabelText("Due date for Mensuration"), "2026-12-01");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText("On track")).toBeInTheDocument();
+    expect(await screen.findByText("Achieved ✓")).toBeInTheDocument();
     expect(screen.getByText(/Goal: 80% by/)).toBeInTheDocument();
-    expect(setSubtopicGoal).toHaveBeenCalledWith("cuboid-1", {
+    expect(within(ideas).queryByRole("button", { name: "Set a goal" })).not.toBeInTheDocument();
+    expect(setTopicGoal).toHaveBeenCalledWith("mensuration", {
       target_percent: 80,
       due_at: "2026-12-01T23:59:59.000Z",
     });
 
     await user.click(screen.getByRole("button", { name: "Remove goal" }));
-    expect(await screen.findAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
-    expect(deleteSubtopicGoal).toHaveBeenCalledWith("cuboid-1");
+    expect(await screen.findByRole("button", { name: "Set a goal" })).toBeInTheDocument();
+    expect(within(ideas).queryByRole("button")).not.toBeInTheDocument();
+    expect(deleteTopicGoal).toHaveBeenCalledWith("mensuration");
+  });
+
+  it("leaves out topic metrics that have no stored data", async () => {
+    vi.mocked(listQuizAttempts).mockResolvedValue([]);
+    vi.mocked(getFeedbackTopic).mockResolvedValue({
+      ...topic,
+      attempt_count: 0,
+      best_score_percent: null,
+      latest_score_percent: null,
+      trend: null,
+      trend_delta: null,
+      badge: "not_attempted",
+      average_score_percent: null,
+      attempt_scores: [],
+      questions_answered: null,
+      questions_correct: null,
+      accuracy_percent: null,
+      time_spent_seconds: null,
+      difficulty_accuracy: [],
+      subtopics: [],
+      concepts_mastered: 0,
+      concepts_attempted: 0,
+    });
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
+        <Routes>
+          <Route
+            path="/subjects/:subjectId/feedback/topics/:topicId"
+            element={<TopicFeedbackPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Score and metrics" })).toBeInTheDocument();
+    expect(screen.getByText("No quiz attempts yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Average score")).not.toBeInTheDocument();
+    expect(screen.queryByText("Time spent")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "No scored attempts yet. Take the quiz to see performance over time.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Performance over time" })).not.toBeInTheDocument();
+    expect(screen.getByText("No attempts recorded yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Accuracy by difficulty")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Concepts" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
   });
 
   it("shows the engagement badge and the confidence note on the subject page", async () => {
@@ -334,9 +514,34 @@ describe("feedback hierarchy", () => {
     );
 
     expect(await screen.findByText(/50% engaged · Skimmed/)).toBeInTheDocument();
-    expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
+    expect(screen.getAllByText("💡 Breakthrough").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
-    expect(screen.getByText(/You're just 45% from your goal on Area of a polygon/)).toBeInTheDocument();
+    expect(screen.getByText("45% to go to reach your goal on Mensuration.")).toBeInTheDocument();
+    const mensuration = screen.getByRole("article", { name: "Mensuration" });
+    expect(mensuration).toHaveTextContent("↑ New best!");
+    expect(mensuration).toHaveTextContent("Attempt 1");
+    expect(mensuration).toHaveTextContent("Attempt 4");
+    expect(mensuration).toHaveTextContent("+20");
+    expect(mensuration).toHaveTextContent("Class average 62%");
+    expect(mensuration).toHaveTextContent("2 questions you got right before are now wrong.");
+    expect(mensuration).toHaveTextContent("1 strong · 1 needs work");
+    expect(mensuration).toHaveTextContent("Achieved ✓");
+    expect(mensuration.querySelector(".badge--title")).toHaveStyle({ color: "#b45309" });
+    expect(screen.getByText("↑ up 50% since you started")).toBeInTheDocument();
+    const summary = screen.getByRole("table", { name: "Topic summary" });
+    expect(summary).toHaveTextContent("Topic");
+    expect(summary).toHaveTextContent("Best");
+    expect(summary).toHaveTextContent("Latest");
+    expect(summary).toHaveTextContent("Attempts");
+    expect(summary).toHaveTextContent("Badge");
+    expect(summary).toHaveTextContent("Status");
+    expect(summary).toHaveTextContent("Mensuration");
+    expect(summary).toHaveTextContent("💡 Breakthrough");
+    expect(summary).toHaveTextContent("Achieved ✓");
+    await user.click(within(mensuration).getByRole("button", { name: "Show details ▼" }));
+    expect(mensuration).toHaveTextContent("Area of a polygon 25%");
+    expect(mensuration).toHaveTextContent("Cuboid 75%");
+    expect(mensuration).toHaveTextContent("Up 20 points since the previous attempt");
     expect(screen.getByRole("button", { name: "View report card" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confident" }));
     expect(

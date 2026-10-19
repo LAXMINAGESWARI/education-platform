@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import UUID
@@ -51,11 +52,12 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
-from education_platform.modules.assessments.goals_service import goal_out, goals_for_subtopics
+from education_platform.modules.assessments.goals_service import goal_out, goals_for_topics
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
     CommonMasteryQuiz,
     Question,
+    QuestionDifficulty,
     QuestionVersion,
     QuizAttempt,
     QuizAttemptStatus,
@@ -65,6 +67,8 @@ from education_platform.modules.assessments.models import (
     SubjectFeedbackSummary,
 )
 from education_platform.modules.assessments.schemas import (
+    FeedbackAttemptScore,
+    FeedbackDifficultyAccuracy,
     FeedbackFocus,
     FeedbackOverview,
     FeedbackSubjectCard,
@@ -98,6 +102,8 @@ AchievementName = Literal["mastery", "advanced", "proficient", "on_track"]
 class ScoredAttempt:
     attempt_number: int
     score_percent: Decimal
+    started_at: datetime | None = None
+    submitted_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +172,35 @@ def rollup_topic(attempts: list[ScoredAttempt]) -> TopicRollup:
     return TopicRollup(best, latest, len(ordered), _trend(delta), delta, badge)
 
 
+def count_regressions(rows: list[tuple[int, UUID, bool]]) -> int | None:
+    """Questions correct on the previous topic attempt and wrong on the latest.
+
+    ``None`` when fewer than two attempts have answers, so the card can omit
+    the line instead of showing a zero that was never measured.
+    """
+    by_attempt: dict[int, dict[UUID, bool]] = {}
+    for attempt_number, question_id, correct in rows:
+        by_attempt.setdefault(attempt_number, {})[question_id] = correct
+    if len(by_attempt) < 2:
+        return None
+    ordered = sorted(by_attempt)
+    prior = by_attempt[ordered[-2]]
+    latest = by_attempt[ordered[-1]]
+    return sum(
+        1
+        for question_id, was_correct in prior.items()
+        if was_correct and latest.get(question_id) is False
+    )
+
+
+def class_average(scores: list[Decimal]) -> tuple[Decimal | None, int]:
+    """Mean of classmates' best topic scores, and how many classmates that is."""
+    if not scores:
+        return None, 0
+    mean = _mean(scores)
+    return mean, len(scores)
+
+
 def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup:
     """Mean of attempted topics. Unattempted topics do not pull the mean to 0."""
     attempted = [
@@ -203,6 +238,95 @@ def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup
         weakest=weakest,
         needing_attention=tuple(needing),
     )
+
+
+def average_score(attempts: list[ScoredAttempt]) -> Decimal | None:
+    """Mean of visible topic-quiz scores. No attempts means there is no average."""
+    if not attempts:
+        return None
+    return _mean([attempt.score_percent for attempt in attempts])
+
+
+def time_spent_seconds(attempts: list[ScoredAttempt]) -> int | None:
+    """Sum of submitted-minus-started for attempts that stored both times.
+
+    An attempt with either timestamp missing is skipped. If none remain, the
+    topic has no time-spent figure.
+    """
+    total = 0
+    found = False
+    for attempt in attempts:
+        if attempt.started_at is None or attempt.submitted_at is None:
+            continue
+        elapsed = int((attempt.submitted_at - attempt.started_at).total_seconds())
+        if elapsed < 0:
+            continue
+        total += elapsed
+        found = True
+    return total if found else None
+
+
+def concepts_weakest_first(
+    rows: list[FeedbackSubtopicStrength],
+) -> list[FeedbackSubtopicStrength]:
+    return sorted(rows, key=lambda row: (row.percent, row.name))
+
+
+DifficultyLevel = Literal["easy", "medium", "hard"]
+_DIFFICULTY_LEVELS: tuple[DifficultyLevel, ...] = ("easy", "medium", "hard")
+
+
+def _difficulty_level(name: str | None) -> DifficultyLevel | None:
+    if name == "easy":
+        return "easy"
+    if name == "medium":
+        return "medium"
+    if name == "hard":
+        return "hard"
+    return None
+
+
+def answer_metrics(
+    rows: list[tuple[str | None, bool]],
+) -> tuple[int | None, int | None, Decimal | None, list[FeedbackDifficultyAccuracy]]:
+    """Answered count, correct count, accuracy, and per-difficulty accuracy.
+
+    ``rows`` are (difficulty or None, correct). No rows means accuracy is
+    unknown, not zero. A missing difficulty still counts toward the totals
+    and is left out of the breakdown. Levels with no answers are omitted.
+    """
+    if not rows:
+        return None, None, None, []
+    correct = sum(1 for _level, is_correct in rows if is_correct)
+    answered = len(rows)
+    accuracy = ((Decimal(correct) / Decimal(answered)) * Decimal("100")).quantize(_CENT)
+    buckets: dict[DifficultyLevel, list[int]] = {}
+    for raw_level, is_correct in rows:
+        level = _difficulty_level(raw_level)
+        if level is None:
+            continue
+        bucket = buckets.setdefault(level, [0, 0])
+        bucket[1] += 1
+        if is_correct:
+            bucket[0] += 1
+    difficulty: list[FeedbackDifficultyAccuracy] = []
+    for level in _DIFFICULTY_LEVELS:
+        counted = buckets.get(level)
+        if counted is None:
+            continue
+        level_correct, level_answered = counted
+        level_percent = (
+            (Decimal(level_correct) / Decimal(level_answered)) * Decimal("100")
+        ).quantize(_CENT)
+        difficulty.append(
+            FeedbackDifficultyAccuracy(
+                difficulty=level,
+                correct_count=level_correct,
+                answered_count=level_answered,
+                percent=level_percent,
+            )
+        )
+    return answered, correct, accuracy, difficulty
 
 
 def subtopic_band(correct: int, answered: int) -> BandName:
@@ -264,24 +388,26 @@ def milestone_counts(strengths: list[FeedbackSubtopicStrength]) -> tuple[int, in
 
 
 def focus_gap(
-    concepts: list[tuple[str, Decimal, UUID, Decimal | None]],
+    topics: list[tuple[str, Decimal | None, UUID, Decimal | None]],
 ) -> tuple[str, UUID, int] | None:
-    """Lowest concept still under 90, and how far it is from its goal.
+    """Closest topic goal the student has not reached.
 
-    ``concepts`` items are (name, percent, topic id, goal target or None).
-    With no goal, the pass mark is the target. A concept already at that
-    target has no gap.
+    Items are (topic name, best score, topic id, goal target). A topic with
+    no goal, or with no visible best score, is skipped. An unattempted topic
+    is not treated as 0. The smallest positive gap wins; ties break on name.
     """
-    if not concepts:
+    candidates: list[tuple[int, str, UUID]] = []
+    for name, best, topic_id, target in topics:
+        if best is None or target is None:
+            continue
+        gap = int((target - best).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if gap <= 0:
+            continue
+        candidates.append((gap, name, topic_id))
+    if not candidates:
         return None
-    name, percent, topic_id, target = min(concepts, key=lambda item: (item[1], item[0]))
-    if percent >= Decimal("90"):
-        return None
-    goal = PASS_PERCENT if target is None else target
-    gap = int((goal - percent).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if gap <= 0:
-        return None
-    return name, topic_id, gap
+    points, name, topic_id = min(candidates, key=lambda item: (item[0], item[1]))
+    return name, topic_id, points
 
 
 def achievement_tier(
@@ -417,6 +543,8 @@ async def _scored_attempts(
                 QuizAttempt.attempt_number,
                 QuizAttempt.score_percent,
                 QuizAttempt.status,
+                QuizAttempt.started_at,
+                QuizAttempt.submitted_at,
             )
             .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
             .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
@@ -429,11 +557,13 @@ async def _scored_attempts(
         )
     ).all()
     grouped: dict[UUID, list[ScoredAttempt]] = defaultdict(list)
-    for topic_id, attempt_number, score, status in rows:
+    for topic_id, attempt_number, score, status, started_at, submitted_at in rows:
         # Held scores stay on the server, matching directory ``results_visible``.
         if topic_id is None or score is None or status == QuizAttemptStatus.HELD:
             continue
-        grouped[topic_id].append(ScoredAttempt(int(attempt_number), Decimal(score)))
+        grouped[topic_id].append(
+            ScoredAttempt(int(attempt_number), Decimal(score), started_at, submitted_at)
+        )
     return grouped
 
 
@@ -487,8 +617,18 @@ async def _stored_summaries(
 
 
 def _topic_score(
-    topic: _TopicRow, rollup: TopicRollup, quiz_id: UUID | None, has_lesson: bool
+    topic: _TopicRow,
+    rollup: TopicRollup,
+    quiz_id: UUID | None,
+    has_lesson: bool,
+    goal: StudentSubtopicGoal | None,
+    series: list[ScoredAttempt],
+    concepts: list[FeedbackSubtopicStrength],
+    regression_count: int | None,
+    class_avg: tuple[Decimal | None, int],
 ) -> FeedbackTopicScore:
+    ordered = sorted(series, key=lambda attempt: attempt.attempt_number)
+    average, sample_size = class_avg
     return FeedbackTopicScore(
         topic_id=topic.id,
         topic_name=topic.name,
@@ -501,6 +641,18 @@ def _topic_score(
         badge=rollup.badge,
         quiz_id=quiz_id,
         has_lesson=has_lesson,
+        goal=goal_out(goal, topic.name, rollup.best_score_percent) if goal is not None else None,
+        attempt_scores=[
+            FeedbackAttemptScore(
+                attempt_number=attempt.attempt_number,
+                score_percent=attempt.score_percent,
+            )
+            for attempt in ordered
+        ],
+        concepts=concepts_weakest_first(concepts),
+        regression_count=regression_count,
+        class_avg_percent=average,
+        class_sample_size=sample_size,
     )
 
 
@@ -520,6 +672,7 @@ async def _bundle(
     dict[UUID, TopicRollup],
     dict[UUID, UUID],
     set[UUID],
+    dict[UUID, list[ScoredAttempt]],
 ]:
     student_id = _require_student(scope)
     offerings = await _offerings(session, scope)
@@ -529,7 +682,7 @@ async def _bundle(
     rollups = {topic.id: rollup_topic(attempts.get(topic.id, [])) for topic in topics}
     quiz_ids = await _quiz_ids(session, topic_ids)
     lessons = await _lesson_topic_ids(session, topic_ids)
-    return student_id, offerings, topics, rollups, quiz_ids, lessons
+    return student_id, offerings, topics, rollups, quiz_ids, lessons, attempts
 
 
 def _subject_topics(offering: _OfferingSubject, topics: list[_TopicRow]) -> list[_TopicRow]:
@@ -566,37 +719,46 @@ def _card(
 def _subject_concepts(
     topics: list[_TopicRow],
     by_topic: dict[UUID, list[FeedbackSubtopicStrength]],
-) -> list[tuple[FeedbackSubtopicStrength, UUID]]:
-    paired: list[tuple[FeedbackSubtopicStrength, UUID]] = []
+) -> list[FeedbackSubtopicStrength]:
+    strengths: list[FeedbackSubtopicStrength] = []
     for topic in topics:
-        paired.extend((row, topic.id) for row in by_topic.get(topic.id, []))
-    return paired
+        strengths.extend(by_topic.get(topic.id, []))
+    return strengths
 
 
 def _focus_model(
-    paired: list[tuple[FeedbackSubtopicStrength, UUID]],
-    targets: dict[UUID, Decimal],
+    topics: list[_TopicRow],
+    rollups: dict[UUID, TopicRollup],
+    goals: dict[UUID, StudentSubtopicGoal],
 ) -> FeedbackFocus | None:
     gap = focus_gap(
         [
-            (row.name, row.percent, topic_id, targets.get(row.subtopic_id))
-            for row, topic_id in paired
+            (
+                topic.name,
+                rollups[topic.id].best_score_percent,
+                topic.id,
+                goals[topic.id].target_percent if topic.id in goals else None,
+            )
+            for topic in topics
         ]
     )
     if gap is None:
         return None
     name, topic_id, points = gap
-    return FeedbackFocus(concept_name=name, topic_id=topic_id, gap_percent=points)
+    return FeedbackFocus(topic_name=name, topic_id=topic_id, gap_percent=points)
 
 
 async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
-    student_id, offerings, topics, rollups, _quiz_ids, _lessons = await _bundle(session, scope)
-    by_topic, targets = await _concept_context(session, student_id, [topic.id for topic in topics])
+    student_id, offerings, topics, rollups, _quiz_ids, _lessons, _attempts = await _bundle(
+        session, scope
+    )
+    topic_ids = [topic.id for topic in topics]
+    by_topic = await _concept_strengths(session, student_id, topic_ids)
+    goals = await goals_for_topics(session, student_id, topic_ids)
     cards: list[FeedbackSubjectCard] = []
     for offering in offerings:
         subject_topics = _subject_topics(offering, topics)
-        paired = _subject_concepts(subject_topics, by_topic)
-        strengths = [row for row, _topic_id in paired]
+        strengths = _subject_concepts(subject_topics, by_topic)
         subject = rollup_subject(
             [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
         )
@@ -606,7 +768,7 @@ async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
                 subject_topics,
                 rollups,
                 strengths,
-                _focus_model(paired, targets),
+                _focus_model(subject_topics, rollups, goals),
                 achievement_tier(subject.score_percent, strengths),
             )
         )
@@ -618,10 +780,86 @@ async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
     )
 
 
+async def _topic_regression_counts(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, int | None]:
+    """Per topic, how many answers flipped from right to wrong on the latest attempt."""
+    if not topic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                CommonMasteryQuiz.topic_id,
+                QuizAttempt.attempt_number,
+                AttemptAnswer.question_version_id,
+                AttemptAnswer.is_correct,
+            )
+            .join(QuizAttempt, QuizAttempt.id == AttemptAnswer.attempt_id)
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
+                CommonMasteryQuiz.topic_id.in_(topic_ids),
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                QuizAttempt.student_id == student_id,
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                AttemptAnswer.is_correct.is_not(None),
+            )
+        )
+    ).all()
+    grouped: dict[UUID, list[tuple[int, UUID, bool]]] = defaultdict(list)
+    for topic_id, attempt_number, question_id, correct in rows:
+        if correct is None:
+            continue
+        grouped[topic_id].append((int(attempt_number), question_id, bool(correct)))
+    return {topic_id: count_regressions(facts) for topic_id, facts in grouped.items()}
+
+
+async def _classmate_best_averages(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, tuple[Decimal | None, int]]:
+    """Mean of other students' best visible topic-quiz scores."""
+    if not topic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                CommonMasteryQuiz.topic_id,
+                QuizAttempt.student_id,
+                QuizAttempt.score_percent,
+            )
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
+                CommonMasteryQuiz.topic_id.in_(topic_ids),
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                QuizAttempt.student_id != student_id,
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                QuizAttempt.score_percent.is_not(None),
+            )
+        )
+    ).all()
+    bests: dict[tuple[UUID, UUID], Decimal] = {}
+    for topic_id, other_id, score in rows:
+        if score is None:
+            continue
+        key = (topic_id, other_id)
+        current = bests.get(key)
+        if current is None or score > current:
+            bests[key] = score
+    grouped: dict[UUID, list[Decimal]] = defaultdict(list)
+    for (topic_id, _), score in bests.items():
+        grouped[topic_id].append(score)
+    return {topic_id: class_average(scores) for topic_id, scores in grouped.items()}
+
+
 async def get_subject(
     session: AsyncSession, scope: Scope, subject_id: UUID
 ) -> FeedbackSubjectDetail:
-    student_id, offerings, topics, rollups, quiz_ids, lessons = await _bundle(session, scope)
+    student_id, offerings, topics, rollups, quiz_ids, lessons, attempts = await _bundle(
+        session, scope
+    )
     matched = [offering for offering in offerings if offering.subject_id == subject_id]
     if not matched:
         raise DomainError("Subject not found", status_code=404)
@@ -631,11 +869,12 @@ async def get_subject(
     subject = rollup_subject(
         [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
     )
-    by_topic, targets = await _concept_context(
-        session, student_id, [topic.id for topic in subject_topics]
-    )
-    paired = _subject_concepts(subject_topics, by_topic)
-    strengths = [row for row, _topic_id in paired]
+    topic_ids = [topic.id for topic in subject_topics]
+    by_topic = await _concept_strengths(session, student_id, topic_ids)
+    goals = await goals_for_topics(session, student_id, topic_ids)
+    regressions = await _topic_regression_counts(session, student_id, topic_ids)
+    class_averages = await _classmate_best_averages(session, student_id, topic_ids)
+    strengths = _subject_concepts(subject_topics, by_topic)
     stored = await _stored_summaries(session, student_id, [subject_id])
     summary = stored.get(subject_id)
     status: Literal["ready", "fallback"] = "ready" if summary else "fallback"
@@ -655,41 +894,32 @@ async def get_subject(
         summary=summary,
         summary_status=status,
         topics=[
-            _topic_score(topic, rollups[topic.id], quiz_ids.get(topic.id), topic.id in lessons)
+            _topic_score(
+                topic,
+                rollups[topic.id],
+                quiz_ids.get(topic.id),
+                topic.id in lessons,
+                goals.get(topic.id),
+                attempts.get(topic.id, []),
+                by_topic.get(topic.id, []),
+                regressions.get(topic.id),
+                class_averages.get(topic.id, (None, 0)),
+            )
             for topic in subject_topics
         ],
         concepts_mastered=mastered,
         concepts_attempted=attempted,
-        focus=_focus_model(paired, targets),
+        focus=_focus_model(subject_topics, rollups, goals),
         achievement=achievement_tier(subject.score_percent, strengths),
     )
 
 
-async def _concept_context(
+async def _concept_strengths(
     session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
-) -> tuple[dict[UUID, list[FeedbackSubtopicStrength]], dict[UUID, Decimal]]:
-    """Grouped concept rows per topic, plus goal targets, in two queries."""
+) -> dict[UUID, list[FeedbackSubtopicStrength]]:
+    """Grouped concept rows per topic. Goals are topic-scoped and loaded separately."""
     by_topic = await _concept_counts(session, student_id, topic_ids)
-    strengths = {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_topic.items()}
-    subtopic_ids = [row.subtopic_id for rows in strengths.values() for row in rows]
-    goals = await goals_for_subtopics(session, student_id, subtopic_ids)
-    targets = {subtopic_id: goal.target_percent for subtopic_id, goal in goals.items()}
-    attached = {topic_id: _with_goals(rows, goals) for topic_id, rows in strengths.items()}
-    return attached, targets
-
-
-def _with_goals(
-    strengths: list[FeedbackSubtopicStrength],
-    goals: dict[UUID, StudentSubtopicGoal],
-) -> list[FeedbackSubtopicStrength]:
-    attached: list[FeedbackSubtopicStrength] = []
-    for row in strengths:
-        goal = goals.get(row.subtopic_id)
-        if goal is None:
-            attached.append(row)
-            continue
-        attached.append(row.model_copy(update={"goal": goal_out(goal, row.name, row.percent)}))
-    return attached
+    return {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_topic.items()}
 
 
 async def _concept_counts(
@@ -736,15 +966,22 @@ async def _concept_counts(
 
 
 async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> FeedbackTopicDetail:
-    student_id, offerings, topics, rollups, quiz_ids, lessons = await _bundle(session, scope)
+    student_id, offerings, topics, rollups, quiz_ids, lessons, attempts = await _bundle(
+        session, scope
+    )
     topic = next((row for row in topics if row.id == topic_id), None)
     if topic is None:
         raise DomainError("Topic not found", status_code=404)
     offering = next(row for row in offerings if row.offering_id == topic.offering_id)
     rollup = rollups[topic.id]
-    by_topic, _targets = await _concept_context(session, student_id, [topic.id])
+    series = sorted(attempts.get(topic.id, []), key=lambda attempt: attempt.attempt_number)
+    by_topic = await _concept_strengths(session, student_id, [topic.id])
     strengths = by_topic.get(topic.id, [])
     mastered, attempted = milestone_counts(strengths)
+    goal = (await goals_for_topics(session, student_id, [topic.id])).get(topic.id)
+    answered, correct, accuracy, difficulty = answer_metrics(
+        await _topic_answer_facts(session, student_id, topic.id)
+    )
     return FeedbackTopicDetail(
         subject_id=offering.subject_id,
         subject_name=offering.subject_name,
@@ -759,7 +996,53 @@ async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> Feed
         quiz_id=quiz_ids.get(topic.id),
         has_lesson=topic.id in lessons,
         summary=topic_summary(topic.name, strengths),
-        subtopics=strengths,
+        subtopics=concepts_weakest_first(strengths),
+        goal=goal_out(goal, topic.name, rollup.best_score_percent) if goal is not None else None,
         concepts_mastered=mastered,
         concepts_attempted=attempted,
+        average_score_percent=average_score(series),
+        attempt_scores=[
+            FeedbackAttemptScore(attempt_number=row.attempt_number, score_percent=row.score_percent)
+            for row in series
+        ],
+        questions_answered=answered,
+        questions_correct=correct,
+        accuracy_percent=accuracy,
+        time_spent_seconds=time_spent_seconds(series),
+        difficulty_accuracy=difficulty,
     )
+
+
+async def _topic_answer_facts(
+    session: AsyncSession, student_id: UUID, topic_id: UUID
+) -> list[tuple[str | None, bool]]:
+    """Visible topic-quiz answers as (difficulty name or None, correct)."""
+    rows = (
+        await session.execute(
+            select(QuestionVersion.difficulty, AttemptAnswer.is_correct)
+            .join(AttemptAnswer, AttemptAnswer.question_version_id == QuestionVersion.id)
+            .join(QuizAttempt, QuizAttempt.id == AttemptAnswer.attempt_id)
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
+                CommonMasteryQuiz.topic_id == topic_id,
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                QuizAttempt.student_id == student_id,
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                AttemptAnswer.is_correct.is_not(None),
+            )
+        )
+    ).all()
+    facts: list[tuple[str | None, bool]] = []
+    for difficulty, correct in rows:
+        if correct is None:
+            continue
+        if isinstance(difficulty, QuestionDifficulty):
+            name = difficulty.value
+        elif isinstance(difficulty, str):
+            name = difficulty
+        else:
+            name = None
+        facts.append((name, bool(correct)))
+    return facts

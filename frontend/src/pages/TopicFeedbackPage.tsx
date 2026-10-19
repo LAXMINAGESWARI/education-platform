@@ -5,8 +5,11 @@ import { getFeedbackTopic } from "../api/feedback";
 import type { FeedbackTopicDetail, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { GoalSection, Milestone } from "../components/FeedbackExtras";
-import { attemptBadge, bandLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { AttemptBadge, GoalSection, Milestone } from "../components/FeedbackExtras";
+import { PastAttempts } from "../components/PastAttempts";
+import { ScoreMetrics } from "../components/ScoreMetrics";
+import { formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { topicHistoryPath } from "../lib/subjectMaterial";
 
 export function TopicFeedbackPage() {
   const { subjectId = "", topicId = "" } = useParams();
@@ -44,17 +47,8 @@ export function TopicFeedbackPage() {
     );
   }
 
-  function changeGoal(subtopicId: string, goal: GoalOut | null) {
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            subtopics: current.subtopics.map((row) =>
-              row.subtopic_id === subtopicId ? { ...row, goal } : row,
-            ),
-          }
-        : current,
-    );
+  function changeGoal(goal: GoalOut | null) {
+    setDetail((current) => (current ? { ...current, goal } : current));
   }
 
   const trend = formatTrend(detail.trend, detail.trend_delta);
@@ -72,9 +66,11 @@ export function TopicFeedbackPage() {
         <p className="kicker">{detail.subject_name}</p>
         <h1>{detail.topic_name}</h1>
         <p>
-          <span className={`badge ${detail.badge === "passed" ? "badge--ok" : "badge--info"}`}>
-            {attemptBadge(detail.badge, detail.attempt_count, detail.best_score_percent)}
-          </span>
+          <AttemptBadge
+            badge={detail.badge}
+            attemptCount={detail.attempt_count}
+            best={detail.best_score_percent}
+          />
         </p>
       </header>
 
@@ -88,6 +84,13 @@ export function TopicFeedbackPage() {
         </p>
         {trend && <p className="feedback-card__trend">{trend}</p>}
         <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
+        <GoalSection
+          topicId={detail.topic_id}
+          topicName={detail.topic_name}
+          goal={detail.goal}
+          bestScore={detail.best_score_percent}
+          onGoalChange={changeGoal}
+        />
         <div className="feedback-summary__text">
           <p>{detail.summary}</p>
         </div>
@@ -105,25 +108,11 @@ export function TopicFeedbackPage() {
         </div>
       </section>
 
-      <h2 className="section-title">Ideas in this topic</h2>
-      {detail.subtopics.length === 0 ? (
-        <p className="progress-label">
-          No separate concepts to break out yet. The topic score includes every question.
-        </p>
-      ) : (
-        <ul className="feedback-concepts">
-          {detail.subtopics.map((row) => (
-            <li key={row.subtopic_id} className={`feedback-concept feedback-concept--${row.band}`}>
-              <span className="feedback-concept__name">{row.name}</span>
-              <span className="feedback-concept__meta">
-                {row.correct_count} of {row.answered_count} correct
-              </span>
-              <span className="badge">{bandLabel(row.band)}</span>
-              <GoalSection concept={row} onGoalChange={changeGoal} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <ScoreMetrics detail={detail} />
+      <PastAttempts
+        quizId={detail.quiz_id}
+        historyPath={topicHistoryPath(subjectId, topicId)}
+      />
     </div>
   );
 }

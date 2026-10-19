@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { attemptBadge, formatScore, formatTrend } from "./feedbackHierarchy";
+import {
+  attemptBadge,
+  attemptTitle,
+  focusSentence,
+  formatDuration,
+  formatScore,
+  formatTrend,
+  momentumGain,
+} from "./feedbackHierarchy";
 
 describe("feedback hierarchy display", () => {
   it("says not attempted instead of 0%", () => {
@@ -13,9 +21,37 @@ describe("feedback hierarchy display", () => {
     expect(formatTrend(null, "100")).toBeNull();
   });
 
+  it("turns a stored duration into minutes and leaves sub-minute attempts short", () => {
+    expect(formatDuration(600)).toBe("10 min");
+    expect(formatDuration(30)).toBe("Under a minute");
+    expect(formatDuration(90)).toBe("1 min");
+    expect(formatDuration(5400)).toBe("1 h 30 min");
+  });
+
+  it("says just only when the topic goal is 10 points away or closer", () => {
+    expect(focusSentence(10, "Fractions")).toBe("You're just 10% from your goal on Fractions.");
+    expect(focusSentence(11, "Fractions")).toBe("11% to go to reach your goal on Fractions.");
+  });
+
   it("uses the tiered pass titles and leaves a single miss as keep going", () => {
     expect(attemptBadge("passed", 2, 100)).toBe("💎 Diamond");
+    expect(attemptTitle(2, 100)).toMatchObject({ label: "Diamond", color: "#0e7490" });
+    expect(attemptTitle(3, 100)).toMatchObject({ label: "Tenacious", color: "#7c3aed" });
+    expect(attemptTitle(4, 90)).toMatchObject({ label: "Breakthrough", color: "#b45309" });
     expect(attemptBadge("keep_going", 1, 40)).toBe("Keep going");
     expect(attemptBadge("not_attempted", 0, null)).toBe("Not attempted");
+  });
+
+  it("averages the gain from the first attempt to the latest", () => {
+    expect(
+      momentumGain([
+        [
+          { attempt_number: 1, score_percent: "40" },
+          { attempt_number: 4, score_percent: "90" },
+        ],
+        [{ attempt_number: 1, score_percent: "10" }],
+      ]),
+    ).toBe(50);
+    expect(momentumGain([[{ attempt_number: 1, score_percent: "10" }]])).toBeNull();
   });
 });

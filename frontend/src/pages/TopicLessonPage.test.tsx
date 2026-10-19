@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/types";
 import { clearTopicLessonCache } from "../lib/useTopicLesson";
+import { QuizHistoryPage } from "./QuizHistoryPage";
 import { TopicLessonPage } from "./TopicLessonPage";
 import { TopicPageRedirect } from "./TopicPageRedirect";
 
@@ -114,6 +115,7 @@ function renderTopicLesson(path = "/subjects/subj-1/topics/topic-1/lesson") {
           path="/subjects/:subjectId/topics/:topicId/lesson"
           element={<TopicLessonPage />}
         />
+        <Route path="/subjects/:subjectId/topics/:topicId/history" element={<QuizHistoryPage />} />
         <Route path="/subjects/:subjectId/topics/:topicId" element={<TopicPageRedirect />} />
         <Route path="/subjects/:subjectId" element={<div>Subject hub</div>} />
       </Routes>
@@ -380,5 +382,73 @@ describe("TopicLessonPage", () => {
       "/subjects/subj-1",
     );
     expect(getGenerationRun).not.toHaveBeenCalled();
+  });
+
+  it("links the topic page to full quiz history", async () => {
+    renderTopicLesson("/subjects/subj-1/topics/topic-1");
+
+    expect(await screen.findByRole("link", { name: /Show full history/i })).toHaveAttribute(
+      "href",
+      "/subjects/subj-1/topics/topic-1/history",
+    );
+  });
+
+  it("renders the topic history route with the chart and attempts", async () => {
+    fetchLearningDirectory.mockResolvedValue({
+      ...directory,
+      subjects: [
+        {
+          ...directory.subjects[0],
+          topics: [
+            {
+              ...directory.subjects[0].topics[0],
+              title: "Decimals",
+              overall_quiz: {
+                ...directory.subjects[0].topics[0].overall_quiz!,
+                attempt_count: 2,
+                best_score_percent: 85,
+                passed: true,
+                recent_attempts: [
+                  {
+                    id: "later",
+                    attempt_number: 2,
+                    status: "submitted",
+                    score_percent: 20,
+                    passed: false,
+                    started_at: "2026-08-10T10:00:00Z",
+                    submitted_at: "2026-08-10T10:15:00Z",
+                  },
+                  {
+                    id: "earlier",
+                    attempt_number: 1,
+                    status: "submitted",
+                    score_percent: 85,
+                    passed: true,
+                    started_at: "2026-08-09T10:00:00Z",
+                    submitted_at: "2026-08-09T10:15:00Z",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    renderTopicLesson("/subjects/subj-1/topics/topic-1/history");
+
+    expect(await screen.findByRole("heading", { name: "Quiz history" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Performance over time" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "All attempts" })).toBeInTheDocument();
+    expect(screen.getByText("Not passed · 20%")).toBeInTheDocument();
+    expect(screen.getByText("Passed · 85%")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "View" }).map((link) => link.getAttribute("href"))).toEqual([
+      "/attempts/later",
+      "/attempts/earlier",
+    ]);
+    expect(screen.getByRole("link", { name: "Decimals" })).toHaveAttribute(
+      "href",
+      "/subjects/subj-1/topics/topic-1",
+    );
   });
 });

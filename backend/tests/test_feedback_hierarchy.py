@@ -12,12 +12,18 @@ from education_platform.modules.academics.models import Subtopic, Topic
 from education_platform.modules.assessments.feedback_hierarchy import (
     ScoredAttempt,
     achievement_tier,
+    answer_metrics,
+    average_score,
+    class_average,
+    concepts_weakest_first,
+    count_regressions,
     feedback_concept_label,
     focus_gap,
     group_subtopic_strengths,
     milestone_counts,
     rollup_subject,
     rollup_topic,
+    time_spent_seconds,
 )
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
@@ -71,6 +77,27 @@ def test_trend_compares_the_latest_attempt_with_the_previous_one() -> None:
     assert rollup.trend_delta == Decimal("-15.00")
     assert rollup.attempt_count == 4
     assert rollup.badge == "passed"
+
+
+def test_regression_count_is_questions_that_flipped_from_right_to_wrong() -> None:
+    question_a = UUID("00000000-0000-0000-0000-000000000001")
+    question_b = UUID("00000000-0000-0000-0000-000000000002")
+    assert count_regressions([(1, question_a, True)]) is None
+    assert (
+        count_regressions(
+            [
+                (1, question_a, True),
+                (1, question_b, False),
+                (2, question_a, False),
+                (2, question_b, True),
+            ]
+        )
+        == 1
+    )
+    assert class_average([]) == (None, 0)
+    average, sample = class_average([Decimal("80"), Decimal("60")])
+    assert average == Decimal("70.00")
+    assert sample == 2
 
 
 def test_subject_score_is_the_mean_of_attempted_topics_only() -> None:
@@ -167,6 +194,67 @@ def test_milestone_focus_and_achievement_use_concept_bands() -> None:
     assert focus_gap([("Cuboid", Decimal("95"), UUID(int=9), None)]) is None
 
 
+def test_topic_metrics_use_stored_attempts_and_skip_missing_facts() -> None:
+    attempts = [
+        ScoredAttempt(
+            1,
+            Decimal("40"),
+            datetime(2026, 8, 1, 0, tzinfo=UTC),
+            datetime(2026, 8, 1, 1, tzinfo=UTC),
+        ),
+        ScoredAttempt(2, Decimal("80"), None, datetime(2026, 8, 2, tzinfo=UTC)),
+    ]
+    assert average_score(attempts) == Decimal("60.00")
+    assert average_score([]) is None
+    assert time_spent_seconds(attempts) == 3600
+    assert time_spent_seconds([ScoredAttempt(1, Decimal("10"))]) is None
+    answered, correct, accuracy, difficulty = answer_metrics(
+        [("easy", True), ("easy", False), ("hard", False), (None, True)]
+    )
+    assert (answered, correct, accuracy) == (4, 2, Decimal("50.00"))
+    assert [row.difficulty for row in difficulty] == ["easy", "hard"]
+    assert difficulty[0].correct_count == 1
+    assert difficulty[0].answered_count == 2
+    assert answer_metrics([]) == (None, None, None, [])
+    ordered = concepts_weakest_first(
+        [
+            FeedbackSubtopicStrength(
+                subtopic_id=UUID(int=1),
+                name="Cuboid",
+                correct_count=3,
+                answered_count=4,
+                percent=Decimal("75"),
+                band="strong",
+            ),
+            FeedbackSubtopicStrength(
+                subtopic_id=UUID(int=2),
+                name="Area of a polygon",
+                correct_count=1,
+                answered_count=4,
+                percent=Decimal("25"),
+                band="needs_work",
+            ),
+        ]
+    )
+    assert [row.name for row in ordered] == ["Area of a polygon", "Cuboid"]
+
+
+def test_focus_gap_uses_the_closest_topic_goal() -> None:
+    algebra = UUID(int=1)
+    fractions = UUID(int=2)
+    skipped = UUID(int=3)
+    gap = focus_gap(
+        [
+            ("Algebra", Decimal("40"), algebra, Decimal("80")),
+            ("Fractions", Decimal("74"), fractions, Decimal("80")),
+            ("Decimals", None, skipped, Decimal("90")),
+            ("Mensuration", Decimal("95"), UUID(int=4), None),
+        ]
+    )
+    assert gap == ("Fractions", fractions, 6)
+    assert focus_gap([("Algebra", Decimal("90"), algebra, Decimal("80"))]) is None
+
+
 def _student(seeded_db: Session) -> StudentProfile:
     profile = seeded_db.scalar(
         select(StudentProfile)
@@ -229,7 +317,8 @@ def test_seeded_topic_quiz_reports_four_attempts_and_an_unattempted_topic(
             quiz_version_id=version.id,
             attempt_number=number,
             status=QuizAttemptStatus.RELEASED,
-            submitted_at=datetime(2026, 8, number, tzinfo=UTC),
+            started_at=datetime(2026, 8, number, 0, tzinfo=UTC),
+            submitted_at=datetime(2026, 8, number, 1, tzinfo=UTC),
             scored_at=datetime(2026, 8, number, tzinfo=UTC),
             score_percent=score,
             pass_threshold_percent=Decimal("70.00"),
@@ -242,6 +331,8 @@ def test_seeded_topic_quiz_reports_four_attempts_and_an_unattempted_topic(
         quiz_version_id=version.id,
         attempt_number=5,
         status=QuizAttemptStatus.HELD,
+        started_at=datetime(2026, 8, 5, 0, tzinfo=UTC),
+        submitted_at=datetime(2026, 8, 5, 3, tzinfo=UTC),
         score_percent=Decimal("0.00"),
         pass_threshold_percent=Decimal("70.00"),
         passed=False,
@@ -308,6 +399,15 @@ def test_seeded_topic_quiz_reports_four_attempts_and_an_unattempted_topic(
     assert scored["attempt_count"] == 4
     assert scored["trend"] == "improving"
     assert "declining" not in (scored["trend"] or "")
+    assert [row["attempt_number"] for row in scored["attempt_scores"]] == [1, 2, 3, 4]
+    assert [Decimal(row["score_percent"]) for row in scored["attempt_scores"]] == scores
+    assert any(row["name"] == "Cuboid" for row in scored["concepts"])
+    assert not any(row["name"].upper().startswith("EXERCISE") for row in scored["concepts"])
+    assert scored["regression_count"] is None
+    assert scored["class_avg_percent"] is None
+    assert scored["class_sample_size"] == 0
+    assert mensuration["attempt_scores"] == []
+    assert mensuration["concepts"] == []
 
     topic_view = client.get(
         f"/api/v1/me/feedback/topics/{seeded['topic_id']}",
@@ -321,6 +421,18 @@ def test_seeded_topic_quiz_reports_four_attempts_and_an_unattempted_topic(
     assert not any(label.upper().startswith("EXERCISE") for label in labels)
     cuboid_row = next(row for row in payload["subtopics"] if row["name"] == "Cuboid")
     assert cuboid_row["band"] == "strong"
+    percents = [Decimal(row["percent"]) for row in payload["subtopics"]]
+    assert percents == sorted(percents)
+    assert Decimal(payload["average_score_percent"]) == Decimal("63.75")
+    assert [row["attempt_number"] for row in payload["attempt_scores"]] == [1, 2, 3, 4]
+    assert [Decimal(row["score_percent"]) for row in payload["attempt_scores"]] == scores
+    assert payload["time_spent_seconds"] == 4 * 3600
+    assert payload["questions_answered"] == len(item_rows)
+    assert payload["questions_correct"] == sum(
+        1 for _version, subtopic_id in item_rows if subtopic_id == cuboid_id
+    )
+    difficulty_answered = sum(row["answered_count"] for row in payload["difficulty_accuracy"])
+    assert difficulty_answered <= payload["questions_answered"]
 
 
 def _subject_topics(

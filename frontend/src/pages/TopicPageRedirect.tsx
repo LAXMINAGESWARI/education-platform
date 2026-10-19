@@ -4,9 +4,10 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { fetchLearningDirectory, getTopicMaterial } from "../api/materials";
 import type { MaterialProgress, SubjectNode, TopicNode } from "../api/types";
 import { ApiError } from "../api/types";
+import { AttemptHistoryTrigger } from "../components/AttemptHistory";
 import { Crumbs } from "../components/Crumbs";
 import { TopicEntries } from "../components/TopicEntries";
-import { findSubjectTopic } from "../lib/subjectMaterial";
+import { findSubjectTopic, topicHistoryPath } from "../lib/subjectMaterial";
 
 /** Topic URLs offer the lesson and quiz, or the subtopic list when that topic has no lesson. */
 export function TopicPageRedirect() {
@@ -81,6 +82,15 @@ export function TopicPageRedirect() {
     );
   }
 
+  const historyLink = topic.overall_quiz ? (
+    <AttemptHistoryTrigger
+      title="Show full history"
+      attempts={topic.overall_quiz.recent_attempts}
+      to={topicHistoryPath(subjectId, topic.id)}
+      actionLabel="Open"
+    />
+  ) : null;
+
   return (
     <>
       <Crumbs
@@ -97,6 +107,7 @@ export function TopicPageRedirect() {
             <p>Open the lesson, or take the quiz once that lesson is complete.</p>
           </header>
           <TopicEntries subjectId={subjectId} topic={topic} progress={lessonProgress} />
+          {historyLink}
         </>
       ) : (
         <>
@@ -123,6 +134,7 @@ export function TopicPageRedirect() {
               </ul>
             </section>
           )}
+          {historyLink}
         </>
       )}
     </>
