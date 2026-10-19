@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 
-import { deleteSubtopicGoal, setSubtopicGoal } from "../api/feedback";
+import { deleteTopicGoal, setTopicGoal } from "../api/feedback";
 import type { EngagementRate } from "../api/engagement";
-import type { FeedbackAchievement, FeedbackFocus, FeedbackSubtopicStrength, GoalOut } from "../api/types";
+import type { FeedbackAchievement, FeedbackFocus, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
-import { achievementCopy, scoreNumber } from "../lib/feedbackHierarchy";
+import { achievementCopy, focusSentence, scoreNumber } from "../lib/feedbackHierarchy";
 
 export function Milestone({ mastered, attempted }: { mastered: number; attempted: number }) {
   if (attempted <= 0) return null;
@@ -17,11 +17,7 @@ export function Milestone({ mastered, attempted }: { mastered: number; attempted
 
 export function FocusLine({ focus }: { focus: FeedbackFocus | null }) {
   if (!focus || focus.gap_percent <= 0) return null;
-  return (
-    <p className="feedback-focus">
-      You're just {focus.gap_percent}% from your goal on {focus.concept_name}.
-    </p>
-  );
+  return <p className="feedback-focus">{focusSentence(focus.gap_percent, focus.topic_name)}</p>;
 }
 
 export function AchievementBanner({ tier }: { tier: FeedbackAchievement | null }) {
@@ -66,29 +62,34 @@ function formatDueDate(dueAt: string): string {
 }
 
 export function GoalSection({
-  concept,
+  topicId,
+  topicName,
+  goal,
+  bestScore,
   onGoalChange,
 }: {
-  concept: FeedbackSubtopicStrength;
-  onGoalChange: (subtopicId: string, goal: GoalOut | null) => void;
+  topicId: string;
+  topicName: string;
+  goal: GoalOut | null;
+  bestScore: string | number | null;
+  onGoalChange: (goal: GoalOut | null) => void;
 }) {
   const [formOpen, setFormOpen] = useState(false);
   const [targetPercent, setTargetPercent] = useState("80");
   const [dueDate, setDueDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const goal = concept.goal;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const result = await setSubtopicGoal(concept.subtopic_id, {
+      const result = await setTopicGoal(topicId, {
         target_percent: Number(targetPercent),
         due_at: `${dueDate}T23:59:59.000Z`,
       });
-      onGoalChange(concept.subtopic_id, result);
+      onGoalChange(result);
       setFormOpen(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save goal.");
@@ -101,8 +102,8 @@ export function GoalSection({
     setBusy(true);
     setError(null);
     try {
-      await deleteSubtopicGoal(concept.subtopic_id);
-      onGoalChange(concept.subtopic_id, null);
+      await deleteTopicGoal(topicId);
+      onGoalChange(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not remove goal.");
     } finally {
@@ -111,9 +112,9 @@ export function GoalSection({
   }
 
   if (goal) {
-    const latest = scoreNumber(concept.percent) ?? 0;
+    const latest = scoreNumber(bestScore);
     const target = scoreNumber(goal.target_percent) ?? 0;
-    const status = latest >= target ? "achieved" : goal.status;
+    const status = latest !== null && latest >= target ? "achieved" : goal.status;
     const badgeClass =
       status === "achieved" ? "badge--ok" : status === "missed" ? "badge--warn" : "badge--info";
     const statusLabel =
@@ -153,7 +154,7 @@ export function GoalSection({
               required
               value={targetPercent}
               onChange={(event) => setTargetPercent(event.target.value)}
-              aria-label={`Target percent for ${concept.name}`}
+              aria-label={`Target percent for ${topicName}`}
             />
           </label>
           <label>
@@ -163,7 +164,7 @@ export function GoalSection({
               required
               value={dueDate}
               onChange={(event) => setDueDate(event.target.value)}
-              aria-label={`Due date for ${concept.name}`}
+              aria-label={`Due date for ${topicName}`}
             />
           </label>
           <button type="submit" className="btn btn--sm" disabled={busy || !dueDate}>

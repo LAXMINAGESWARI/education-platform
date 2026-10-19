@@ -1,9 +1,11 @@
-"""Student-set targets for a subtopic (§8 goal-setting).
+"""Student-set targets for a topic quiz.
 
-Status (on track / achieved / missed) is computed live from current feedback data on every
-read, not stored — storing it would need a background job to stay in sync as new attempts
-come in, and a subtopic's percent can already be read cheaply via feedback_service's own
-aggregation.
+Status (on track / achieved / missed) is computed live from the topic quiz's
+best visible score on every read. A stored status would need a background job
+to stay in sync as new attempts come in.
+
+The table is still ``student_subtopic_goals``. Goals used to hang off a
+subtopic; they now hang off the topic, one per student.
 """
 
 from __future__ import annotations
@@ -13,23 +15,21 @@ from decimal import Decimal
 from typing import Literal, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.core.errors import DomainError
-from education_platform.modules.academics.service import (
-    load_subtopic_node,
-    require_subject_enrollment,
-)
+from education_platform.modules.academics.service import load_topic_node, require_subject_enrollment
 from education_platform.modules.assessments.models import (
+    CommonMasteryQuiz,
     QuizAttempt,
     QuizAttemptStatus,
+    QuizScope,
+    QuizVersion,
     StudentSubtopicGoal,
 )
 from education_platform.modules.assessments.schemas import GoalOut, SetGoalRequest
 from education_platform.modules.authorization.scope import Scope
-
-_RELEASED_STATUSES = (QuizAttemptStatus.SCORED, QuizAttemptStatus.RELEASED)
 
 
 def compute_goal_status(
@@ -45,65 +45,70 @@ def compute_goal_status(
     return "on_track"
 
 
-async def goal_for_subtopic(
-    session: AsyncSession, student_id: UUID, subtopic_id: UUID
+async def goal_for_topic(
+    session: AsyncSession, student_id: UUID, topic_id: UUID
 ) -> StudentSubtopicGoal | None:
     return cast(
         "StudentSubtopicGoal | None",
         await session.scalar(
             select(StudentSubtopicGoal).where(
                 StudentSubtopicGoal.student_id == student_id,
-                StudentSubtopicGoal.subtopic_id == subtopic_id,
+                StudentSubtopicGoal.topic_id == topic_id,
             )
         ),
     )
 
 
-async def goals_for_subtopics(
-    session: AsyncSession, student_id: UUID, subtopic_ids: list[UUID]
+async def goals_for_topics(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
 ) -> dict[UUID, StudentSubtopicGoal]:
-    """One lookup for every subtopic on a feedback dashboard."""
-    if not subtopic_ids:
+    """One lookup for every topic on a feedback page."""
+    if not topic_ids:
         return {}
     rows = await session.scalars(
         select(StudentSubtopicGoal).where(
             StudentSubtopicGoal.student_id == student_id,
-            StudentSubtopicGoal.subtopic_id.in_(subtopic_ids),
+            StudentSubtopicGoal.topic_id.in_(topic_ids),
         )
     )
-    return {row.subtopic_id: row for row in rows}
+    return {row.topic_id: row for row in rows}
 
 
-async def current_percent_for_subtopic(
-    session: AsyncSession, student_id: UUID, subtopic_id: UUID
-) -> Decimal | None:
-    # Local import: feedback_service imports this module to attach goals to the dashboard.
-    from education_platform.modules.assessments import feedback_service
-
-    attempt_ids = list(
-        await session.scalars(
-            select(QuizAttempt.id).where(
+async def topic_best_percents(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, Decimal]:
+    """Best visible topic-quiz score. Abandoned, held, and unscored attempts are out."""
+    if not topic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(CommonMasteryQuiz.topic_id, func.max(QuizAttempt.score_percent))
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
                 QuizAttempt.student_id == student_id,
-                QuizAttempt.status.in_(_RELEASED_STATUSES),
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                CommonMasteryQuiz.topic_id.in_(topic_ids),
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                QuizAttempt.score_percent.is_not(None),
             )
+            .group_by(CommonMasteryQuiz.topic_id)
         )
-    )
-    rows = await feedback_service.answer_rows_for_attempts(session, attempt_ids)
-    performance = feedback_service.aggregate_by_subtopic(rows)
-    perf = performance.get(subtopic_id)
-    return perf.percent if perf is not None else None
+    ).all()
+    return {
+        topic_id: Decimal(score)
+        for topic_id, score in rows
+        if topic_id is not None and score is not None
+    }
 
 
 def goal_out(
-    goal: StudentSubtopicGoal, subtopic_name: str, current_percent: Decimal | None
+    goal: StudentSubtopicGoal, topic_name: str, current_percent: Decimal | None
 ) -> GoalOut:
-    """Build the response shape for a goal row.
-
-    feedback_service uses this to attach a subtopic's goal onto its dashboard entry.
-    """
     return GoalOut(
-        subtopic_id=goal.subtopic_id,
-        subtopic_name=subtopic_name,
+        topic_id=goal.topic_id,
+        topic_name=topic_name,
         target_percent=goal.target_percent,
         due_at=goal.due_at,
         current_percent=current_percent,
@@ -113,33 +118,33 @@ def goal_out(
     )
 
 
-async def _authorized_subtopic(session: AsyncSession, scope: Scope, subtopic_id: UUID) -> str:
-    """Confirm the scoped student is enrolled in this subtopic's subject; return its name."""
-    node = await load_subtopic_node(session, subtopic_id)
-    if node is None or node.subtopic is None:
-        raise DomainError("Subtopic not found", status_code=404)
+async def _authorized_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> str:
+    """Confirm the scoped student is enrolled in this topic's subject; return its name."""
+    node = await load_topic_node(session, topic_id)
+    if node is None:
+        raise DomainError("Topic not found", status_code=404)
     if not scope.covers_offering(node.offering.id, institution_id=node.institution.id):
-        raise DomainError("Subtopic not found", status_code=404)
+        raise DomainError("Topic not found", status_code=404)
     await require_subject_enrollment(session, scope, node.offering.id)
-    return node.subtopic.name
+    return node.topic.name
 
 
 async def set_goal(
-    session: AsyncSession, scope: Scope, subtopic_id: UUID, payload: SetGoalRequest
+    session: AsyncSession, scope: Scope, topic_id: UUID, payload: SetGoalRequest
 ) -> GoalOut:
     if scope.self_student_id is None:
         raise DomainError("Student enrollment required", status_code=403)
     student_id = scope.self_student_id
-    subtopic_name = await _authorized_subtopic(session, scope, subtopic_id)
+    topic_name = await _authorized_topic(session, scope, topic_id)
 
     if payload.due_at <= datetime.now(UTC):
         raise DomainError("Goal due date must be in the future", status_code=422)
 
-    goal = await goal_for_subtopic(session, student_id, subtopic_id)
+    goal = await goal_for_topic(session, student_id, topic_id)
     if goal is None:
         goal = StudentSubtopicGoal(
             student_id=student_id,
-            subtopic_id=subtopic_id,
+            topic_id=topic_id,
             target_percent=payload.target_percent,
             due_at=payload.due_at,
         )
@@ -150,17 +155,17 @@ async def set_goal(
     await session.flush()
     await session.refresh(goal)
 
-    current_percent = await current_percent_for_subtopic(session, student_id, subtopic_id)
-    return goal_out(goal, subtopic_name, current_percent)
+    best = await topic_best_percents(session, student_id, [topic_id])
+    return goal_out(goal, topic_name, best.get(topic_id))
 
 
-async def delete_goal(session: AsyncSession, scope: Scope, subtopic_id: UUID) -> None:
+async def delete_goal(session: AsyncSession, scope: Scope, topic_id: UUID) -> None:
     if scope.self_student_id is None:
         raise DomainError("Student enrollment required", status_code=403)
     student_id = scope.self_student_id
-    await _authorized_subtopic(session, scope, subtopic_id)
+    await _authorized_topic(session, scope, topic_id)
 
-    goal = await goal_for_subtopic(session, student_id, subtopic_id)
+    goal = await goal_for_topic(session, student_id, topic_id)
     if goal is None:
         raise DomainError("Goal not found", status_code=404)
     await session.delete(goal)

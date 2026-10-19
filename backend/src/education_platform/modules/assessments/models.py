@@ -415,15 +415,15 @@ class AttemptAnswer(UUIDTimestampMixin, Base):
 
 
 class StudentSubtopicGoal(UUIDTimestampMixin, Base):
-    """A student-set target percent + due date for one subtopic. Status (on track / achieved /
-    missed) is computed live from current feedback data, not stored — it would otherwise need
-    a background job to stay in sync as new attempts come in."""
+    """A student-set target percent and due date for one topic quiz.
+
+    The table keeps its original name. Status (on track / achieved / missed) is
+    computed from the topic quiz's best visible score, not stored.
+    """
 
     __tablename__ = "student_subtopic_goals"
     __table_args__ = (
-        UniqueConstraint(
-            "student_id", "subtopic_id", name="uq_student_subtopic_goals_student_subtopic"
-        ),
+        UniqueConstraint("student_id", "topic_id", name="uq_student_subtopic_goals_student_topic"),
         CheckConstraint(
             "target_percent >= 0 AND target_percent <= 100",
             name="ck_student_subtopic_goals_target_percent",
@@ -431,7 +431,7 @@ class StudentSubtopicGoal(UUIDTimestampMixin, Base):
     )
 
     student_id: Mapped[UUID] = mapped_column(ForeignKey("student_profiles.id"), index=True)
-    subtopic_id: Mapped[UUID] = mapped_column(ForeignKey("subtopics.id"), index=True)
+    topic_id: Mapped[UUID] = mapped_column(ForeignKey("topics.id"), index=True)
     target_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2))
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

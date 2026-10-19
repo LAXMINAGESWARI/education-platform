@@ -44,17 +44,8 @@ export function TopicFeedbackPage() {
     );
   }
 
-  function changeGoal(subtopicId: string, goal: GoalOut | null) {
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            subtopics: current.subtopics.map((row) =>
-              row.subtopic_id === subtopicId ? { ...row, goal } : row,
-            ),
-          }
-        : current,
-    );
+  function changeGoal(goal: GoalOut | null) {
+    setDetail((current) => (current ? { ...current, goal } : current));
   }
 
   const trend = formatTrend(detail.trend, detail.trend_delta);
@@ -88,6 +79,13 @@ export function TopicFeedbackPage() {
         </p>
         {trend && <p className="feedback-card__trend">{trend}</p>}
         <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
+        <GoalSection
+          topicId={detail.topic_id}
+          topicName={detail.topic_name}
+          goal={detail.goal}
+          bestScore={detail.best_score_percent}
+          onGoalChange={changeGoal}
+        />
         <div className="feedback-summary__text">
           <p>{detail.summary}</p>
         </div>
@@ -119,7 +117,6 @@ export function TopicFeedbackPage() {
                 {row.correct_count} of {row.answered_count} correct
               </span>
               <span className="badge">{bandLabel(row.band)}</span>
-              <GoalSection concept={row} onGoalChange={changeGoal} />
             </li>
           ))}
         </ul>

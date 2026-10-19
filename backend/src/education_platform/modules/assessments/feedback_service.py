@@ -29,7 +29,6 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
-from education_platform.modules.assessments import goals_service
 from education_platform.modules.assessments.feedback_summary import facts_hash, resolve_summary
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
@@ -733,7 +732,6 @@ async def get_subject_feedback(
     classmate_percents_by_subtopic = await _classmate_percents_by_subtopic(
         session, subtopic_ids, student_id
     )
-    goals_by_subtopic = await goals_service.goals_for_subtopics(session, student_id, subtopic_ids)
 
     classified: list[tuple[SubtopicPerformance, bool | None, list[Decimal]]] = []
     for perf in performance.values():
@@ -768,13 +766,6 @@ async def get_subject_feedback(
             if distractor_label:
                 distractor_labels[perf.subtopic_id] = distractor_label
 
-        goal_row = goals_by_subtopic.get(perf.subtopic_id)
-        goal = (
-            goals_service.goal_out(goal_row, perf.subtopic_name, perf.percent)
-            if goal_row is not None
-            else None
-        )
-
         subtopic_feedback.append(
             SubtopicFeedback(
                 subtopic_id=perf.subtopic_id,
@@ -796,7 +787,7 @@ async def get_subject_feedback(
                 class_avg_percent=class_avg,
                 class_sample_size=len(classmate_percents),
                 is_weak=is_weak,
-                goal=goal,
+                goal=None,
             )
         )
         if is_weak:

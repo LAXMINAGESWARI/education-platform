@@ -6,6 +6,14 @@ export function scoreNumber(value: string | number | null | undefined): number |
   return Number.isFinite(number) ? number : null;
 }
 
+/** "just" only when the student is within 10 points of the topic goal. */
+export function focusSentence(gapPercent: number, topicName: string): string {
+  if (gapPercent <= 10) {
+    return `You're just ${gapPercent}% from your goal on ${topicName}.`;
+  }
+  return `${gapPercent}% to go to reach your goal on ${topicName}.`;
+}
+
 export function formatScore(value: string | number | null | undefined): string {
   const number = scoreNumber(value);
   if (number === null) return "Not attempted";

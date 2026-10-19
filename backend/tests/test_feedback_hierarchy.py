@@ -167,6 +167,22 @@ def test_milestone_focus_and_achievement_use_concept_bands() -> None:
     assert focus_gap([("Cuboid", Decimal("95"), UUID(int=9), None)]) is None
 
 
+def test_focus_gap_uses_the_closest_topic_goal() -> None:
+    algebra = UUID(int=1)
+    fractions = UUID(int=2)
+    skipped = UUID(int=3)
+    gap = focus_gap(
+        [
+            ("Algebra", Decimal("40"), algebra, Decimal("80")),
+            ("Fractions", Decimal("74"), fractions, Decimal("80")),
+            ("Decimals", None, skipped, Decimal("90")),
+            ("Mensuration", Decimal("95"), UUID(int=4), None),
+        ]
+    )
+    assert gap == ("Fractions", fractions, 6)
+    assert focus_gap([("Algebra", Decimal("90"), algebra, Decimal("80"))]) is None
+
+
 def _student(seeded_db: Session) -> StudentProfile:
     profile = seeded_db.scalar(
         select(StudentProfile)

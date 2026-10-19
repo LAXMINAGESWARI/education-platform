@@ -111,20 +111,20 @@ async def get_feedback_highlights(
     return await feedback_service.get_feedback_highlights(session, scope)
 
 
-@router.put("/subtopics/{subtopic_id}/goal", response_model=GoalOut)
-async def put_subtopic_goal(
-    subtopic_id: UUID,
+@router.put("/topics/{topic_id}/goal", response_model=GoalOut)
+async def put_topic_goal(
+    topic_id: UUID,
     payload: SetGoalRequest,
     scope: Scope = Depends(get_scope),
     session: AsyncSession = Depends(get_session),
 ) -> GoalOut:
-    return await goals_service.set_goal(session, scope, subtopic_id, payload)
+    return await goals_service.set_goal(session, scope, topic_id, payload)
 
 
-@router.delete("/subtopics/{subtopic_id}/goal", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_subtopic_goal(
-    subtopic_id: UUID,
+@router.delete("/topics/{topic_id}/goal", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_topic_goal(
+    topic_id: UUID,
     scope: Scope = Depends(get_scope),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    await goals_service.delete_goal(session, scope, subtopic_id)
+    await goals_service.delete_goal(session, scope, topic_id)

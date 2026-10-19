@@ -30,18 +30,18 @@ export async function getFeedbackHighlights(): Promise<FeedbackHighlights> {
   return apiRequest<FeedbackHighlights>("/me/feedback-highlights");
 }
 
-export async function setSubtopicGoal(
-  subtopicId: string,
+export async function setTopicGoal(
+  topicId: string,
   payload: { target_percent: number; due_at: string },
 ): Promise<GoalOut> {
-  return apiRequest<GoalOut>(`/subtopics/${encodeURIComponent(subtopicId)}/goal`, {
+  return apiRequest<GoalOut>(`/topics/${encodeURIComponent(topicId)}/goal`, {
     method: "PUT",
     body: payload,
   });
 }
 
-export async function deleteSubtopicGoal(subtopicId: string): Promise<void> {
-  await apiRequest<void>(`/subtopics/${encodeURIComponent(subtopicId)}/goal`, {
+export async function deleteTopicGoal(topicId: string): Promise<void> {
+  await apiRequest<void>(`/topics/${encodeURIComponent(topicId)}/goal`, {
     method: "DELETE",
   });
 }

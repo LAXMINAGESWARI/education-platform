@@ -158,8 +158,8 @@ export type SubtopicAttemptScore = {
 };
 
 export type GoalOut = {
-  subtopic_id: string;
-  subtopic_name: string;
+  topic_id: string;
+  topic_name: string;
   target_percent: string | number;
   due_at: string;
   current_percent: string | number | null;
@@ -243,12 +243,13 @@ export type FeedbackTopicScore = {
   badge: FeedbackBadge;
   quiz_id: string | null;
   has_lesson: boolean;
+  goal: GoalOut | null;
 };
 
 export type FeedbackAchievement = "mastery" | "advanced" | "proficient" | "on_track";
 
 export type FeedbackFocus = {
-  concept_name: string;
+  topic_name: string;
   topic_id: string;
   gap_percent: number;
 };
@@ -299,7 +300,6 @@ export type FeedbackSubtopicStrength = {
   answered_count: number;
   percent: string | number;
   band: FeedbackBand;
-  goal: GoalOut | null;
 };
 
 export type FeedbackTopicDetail = {
@@ -317,6 +317,7 @@ export type FeedbackTopicDetail = {
   has_lesson: boolean;
   summary: string;
   subtopics: FeedbackSubtopicStrength[];
+  goal: GoalOut | null;
   concepts_mastered: number;
   concepts_attempted: number;
 };

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,8 +13,8 @@ vi.mock("../api/feedback", () => ({
   getFeedbackTopic: vi.fn(),
   getFeedbackHighlights: vi.fn(),
   getSubjectFeedback: vi.fn(),
-  setSubtopicGoal: vi.fn(),
-  deleteSubtopicGoal: vi.fn(),
+  setTopicGoal: vi.fn(),
+  deleteTopicGoal: vi.fn(),
 }));
 
 vi.mock("../api/materials", () => ({
@@ -31,12 +31,12 @@ vi.mock("../api/engagement", () => ({
 }));
 
 import {
-  deleteSubtopicGoal,
+  deleteTopicGoal,
   getFeedbackHighlights,
   getFeedbackOverview,
   getFeedbackSubject,
   getFeedbackTopic,
-  setSubtopicGoal,
+  setTopicGoal,
 } from "../api/feedback";
 import { getSubjectEngagementRates } from "../api/engagement";
 import { fetchLearningDirectory } from "../api/materials";
@@ -65,7 +65,7 @@ const overview = {
       },
       concepts_mastered: 2,
       concepts_attempted: 4,
-      focus: { concept_name: "Algebra", topic_id: "algebra", gap_percent: 30 },
+      focus: { topic_name: "Algebra", topic_id: "algebra", gap_percent: 8 },
       achievement: null,
     },
     {
@@ -99,7 +99,7 @@ const subject = {
   summary_status: "fallback" as const,
   concepts_mastered: 1,
   concepts_attempted: 2,
-  focus: { concept_name: "Area of a polygon", topic_id: "mensuration", gap_percent: 45 },
+  focus: { topic_name: "Mensuration", topic_id: "mensuration", gap_percent: 45 },
   achievement: null,
   topics: [
     {
@@ -114,6 +114,7 @@ const subject = {
       badge: "passed" as const,
       quiz_id: "quiz-1",
       has_lesson: true,
+      goal: null,
     },
     {
       topic_id: "decimals",
@@ -127,6 +128,7 @@ const subject = {
       badge: "not_attempted" as const,
       quiz_id: "quiz-2",
       has_lesson: true,
+      goal: null,
     },
   ],
 };
@@ -147,6 +149,7 @@ const topic = {
   summary: "Strong on Cuboid.",
   concepts_mastered: 1,
   concepts_attempted: 2,
+  goal: null,
   subtopics: [
     {
       subtopic_id: "cuboid-1",
@@ -155,7 +158,6 @@ const topic = {
       answered_count: 4,
       percent: "75",
       band: "strong" as const,
-      goal: null,
     },
     {
       subtopic_id: "polygon-1",
@@ -164,7 +166,6 @@ const topic = {
       answered_count: 4,
       percent: "25",
       band: "needs_work" as const,
-      goal: null,
     },
   ],
 };
@@ -181,8 +182,8 @@ describe("feedback hierarchy", () => {
     vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
     vi.mocked(fetchLearningDirectory).mockResolvedValue({ subjects: [] });
     vi.mocked(getSubjectEngagementRates).mockResolvedValue([]);
-    vi.mocked(setSubtopicGoal).mockReset();
-    vi.mocked(deleteSubtopicGoal).mockReset();
+    vi.mocked(setTopicGoal).mockReset();
+    vi.mocked(deleteTopicGoal).mockReset();
     vi.mocked(recordSelfEvaluation).mockResolvedValue({
       subject_id: "math-1",
       confidence: "confident",
@@ -211,7 +212,7 @@ describe("feedback hierarchy", () => {
     expect(science).not.toHaveTextContent("declining");
     expect(screen.queryByText(/· -/)).not.toBeInTheDocument();
     expect(screen.getAllByText("View feedback").length).toBeGreaterThan(0);
-    expect(screen.getByText(/You're just 30% from your goal on Algebra/)).toBeInTheDocument();
+    expect(screen.getByText("You're just 8% from your goal on Algebra.")).toBeInTheDocument();
   });
 
   it("lists topics in order and leaves an unattempted topic blank", async () => {
@@ -264,6 +265,10 @@ describe("feedback hierarchy", () => {
     expect(screen.queryByText(/EXERCISE/)).not.toBeInTheDocument();
     expect(screen.getByText("Strong")).toBeInTheDocument();
     expect(screen.getByText("Needs work")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("list")).queryByRole("button", { name: "Set a goal" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(1);
     expect(screen.getByText("Strong on Cuboid.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review the lesson" })).toHaveAttribute(
       "href",
@@ -276,20 +281,19 @@ describe("feedback hierarchy", () => {
     expect(getFeedbackTopic).toHaveBeenCalledWith("mensuration");
     expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
     expect(screen.getByText("1 of 2 concepts mastered")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
   });
 
-  it("sets and removes a concept goal on the topic page", async () => {
+  it("sets and removes a topic goal on the topic quiz card", async () => {
     const user = userEvent.setup();
-    vi.mocked(setSubtopicGoal).mockResolvedValue({
-      subtopic_id: "cuboid-1",
-      subtopic_name: "Cuboid",
+    vi.mocked(setTopicGoal).mockResolvedValue({
+      topic_id: "mensuration",
+      topic_name: "Mensuration",
       target_percent: "80",
       due_at: "2026-12-01T23:59:59.000Z",
-      current_percent: "75",
-      status: "on_track",
+      current_percent: "90",
+      status: "achieved",
     });
-    vi.mocked(deleteSubtopicGoal).mockResolvedValue(undefined);
+    vi.mocked(deleteTopicGoal).mockResolvedValue(undefined);
     render(
       <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
         <Routes>
@@ -301,23 +305,26 @@ describe("feedback hierarchy", () => {
       </MemoryRouter>,
     );
 
-    const setButtons = await screen.findAllByRole("button", { name: "Set a goal" });
-    await user.click(setButtons[0]);
-    await user.clear(screen.getByLabelText("Target percent for Cuboid"));
-    await user.type(screen.getByLabelText("Target percent for Cuboid"), "80");
-    await user.type(screen.getByLabelText("Due date for Cuboid"), "2026-12-01");
+    const ideas = await screen.findByRole("list");
+    expect(within(ideas).queryByRole("button", { name: "Set a goal" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Set a goal" }));
+    await user.clear(screen.getByLabelText("Target percent for Mensuration"));
+    await user.type(screen.getByLabelText("Target percent for Mensuration"), "80");
+    await user.type(screen.getByLabelText("Due date for Mensuration"), "2026-12-01");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText("On track")).toBeInTheDocument();
+    expect(await screen.findByText("Achieved ✓")).toBeInTheDocument();
     expect(screen.getByText(/Goal: 80% by/)).toBeInTheDocument();
-    expect(setSubtopicGoal).toHaveBeenCalledWith("cuboid-1", {
+    expect(within(ideas).queryByRole("button", { name: "Set a goal" })).not.toBeInTheDocument();
+    expect(setTopicGoal).toHaveBeenCalledWith("mensuration", {
       target_percent: 80,
       due_at: "2026-12-01T23:59:59.000Z",
     });
 
     await user.click(screen.getByRole("button", { name: "Remove goal" }));
-    expect(await screen.findAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
-    expect(deleteSubtopicGoal).toHaveBeenCalledWith("cuboid-1");
+    expect(await screen.findByRole("button", { name: "Set a goal" })).toBeInTheDocument();
+    expect(within(ideas).queryByRole("button")).not.toBeInTheDocument();
+    expect(deleteTopicGoal).toHaveBeenCalledWith("mensuration");
   });
 
   it("shows the engagement badge and the confidence note on the subject page", async () => {
@@ -336,7 +343,7 @@ describe("feedback hierarchy", () => {
     expect(await screen.findByText(/50% engaged · Skimmed/)).toBeInTheDocument();
     expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
     expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
-    expect(screen.getByText(/You're just 45% from your goal on Area of a polygon/)).toBeInTheDocument();
+    expect(screen.getByText("45% to go to reach your goal on Mensuration.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View report card" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confident" }));
     expect(

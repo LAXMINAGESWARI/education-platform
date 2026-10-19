@@ -107,8 +107,8 @@ class SetGoalRequest(BaseModel):
 
 
 class GoalOut(BaseModel):
-    subtopic_id: UUID
-    subtopic_name: str
+    topic_id: UUID
+    topic_name: str
     target_percent: Decimal
     due_at: datetime
     current_percent: Decimal | None
@@ -216,12 +216,13 @@ class FeedbackTopicScore(BaseModel):
     badge: Literal["not_attempted", "keep_going", "passed"]
     quiz_id: UUID | None
     has_lesson: bool
+    goal: GoalOut | None = None
 
 
 class FeedbackFocus(BaseModel):
-    """How far the weakest concept is from the student's goal, or from a pass."""
+    """How far a topic quiz's best score is from the student's goal for that topic."""
 
-    concept_name: str
+    topic_name: str
     topic_id: UUID
     gap_percent: int
 
@@ -274,7 +275,6 @@ class FeedbackSubtopicStrength(BaseModel):
     answered_count: int
     percent: Decimal
     band: Literal["strong", "okay", "needs_work"]
-    goal: GoalOut | None = None
 
 
 class FeedbackTopicDetail(BaseModel):
@@ -292,5 +292,6 @@ class FeedbackTopicDetail(BaseModel):
     has_lesson: bool
     summary: str
     subtopics: list[FeedbackSubtopicStrength]
+    goal: GoalOut | None = None
     concepts_mastered: int = 0
     concepts_attempted: int = 0

@@ -51,7 +51,7 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
-from education_platform.modules.assessments.goals_service import goal_out, goals_for_subtopics
+from education_platform.modules.assessments.goals_service import goal_out, goals_for_topics
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
     CommonMasteryQuiz,
@@ -264,24 +264,26 @@ def milestone_counts(strengths: list[FeedbackSubtopicStrength]) -> tuple[int, in
 
 
 def focus_gap(
-    concepts: list[tuple[str, Decimal, UUID, Decimal | None]],
+    topics: list[tuple[str, Decimal | None, UUID, Decimal | None]],
 ) -> tuple[str, UUID, int] | None:
-    """Lowest concept still under 90, and how far it is from its goal.
+    """Closest topic goal the student has not reached.
 
-    ``concepts`` items are (name, percent, topic id, goal target or None).
-    With no goal, the pass mark is the target. A concept already at that
-    target has no gap.
+    Items are (topic name, best score, topic id, goal target). A topic with
+    no goal, or with no visible best score, is skipped. An unattempted topic
+    is not treated as 0. The smallest positive gap wins; ties break on name.
     """
-    if not concepts:
+    candidates: list[tuple[int, str, UUID]] = []
+    for name, best, topic_id, target in topics:
+        if best is None or target is None:
+            continue
+        gap = int((target - best).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if gap <= 0:
+            continue
+        candidates.append((gap, name, topic_id))
+    if not candidates:
         return None
-    name, percent, topic_id, target = min(concepts, key=lambda item: (item[1], item[0]))
-    if percent >= Decimal("90"):
-        return None
-    goal = PASS_PERCENT if target is None else target
-    gap = int((goal - percent).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if gap <= 0:
-        return None
-    return name, topic_id, gap
+    points, name, topic_id = min(candidates, key=lambda item: (item[0], item[1]))
+    return name, topic_id, points
 
 
 def achievement_tier(
@@ -487,7 +489,11 @@ async def _stored_summaries(
 
 
 def _topic_score(
-    topic: _TopicRow, rollup: TopicRollup, quiz_id: UUID | None, has_lesson: bool
+    topic: _TopicRow,
+    rollup: TopicRollup,
+    quiz_id: UUID | None,
+    has_lesson: bool,
+    goal: StudentSubtopicGoal | None,
 ) -> FeedbackTopicScore:
     return FeedbackTopicScore(
         topic_id=topic.id,
@@ -501,6 +507,7 @@ def _topic_score(
         badge=rollup.badge,
         quiz_id=quiz_id,
         has_lesson=has_lesson,
+        goal=goal_out(goal, topic.name, rollup.best_score_percent) if goal is not None else None,
     )
 
 
@@ -566,37 +573,44 @@ def _card(
 def _subject_concepts(
     topics: list[_TopicRow],
     by_topic: dict[UUID, list[FeedbackSubtopicStrength]],
-) -> list[tuple[FeedbackSubtopicStrength, UUID]]:
-    paired: list[tuple[FeedbackSubtopicStrength, UUID]] = []
+) -> list[FeedbackSubtopicStrength]:
+    strengths: list[FeedbackSubtopicStrength] = []
     for topic in topics:
-        paired.extend((row, topic.id) for row in by_topic.get(topic.id, []))
-    return paired
+        strengths.extend(by_topic.get(topic.id, []))
+    return strengths
 
 
 def _focus_model(
-    paired: list[tuple[FeedbackSubtopicStrength, UUID]],
-    targets: dict[UUID, Decimal],
+    topics: list[_TopicRow],
+    rollups: dict[UUID, TopicRollup],
+    goals: dict[UUID, StudentSubtopicGoal],
 ) -> FeedbackFocus | None:
     gap = focus_gap(
         [
-            (row.name, row.percent, topic_id, targets.get(row.subtopic_id))
-            for row, topic_id in paired
+            (
+                topic.name,
+                rollups[topic.id].best_score_percent,
+                topic.id,
+                goals[topic.id].target_percent if topic.id in goals else None,
+            )
+            for topic in topics
         ]
     )
     if gap is None:
         return None
     name, topic_id, points = gap
-    return FeedbackFocus(concept_name=name, topic_id=topic_id, gap_percent=points)
+    return FeedbackFocus(topic_name=name, topic_id=topic_id, gap_percent=points)
 
 
 async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
     student_id, offerings, topics, rollups, _quiz_ids, _lessons = await _bundle(session, scope)
-    by_topic, targets = await _concept_context(session, student_id, [topic.id for topic in topics])
+    topic_ids = [topic.id for topic in topics]
+    by_topic = await _concept_strengths(session, student_id, topic_ids)
+    goals = await goals_for_topics(session, student_id, topic_ids)
     cards: list[FeedbackSubjectCard] = []
     for offering in offerings:
         subject_topics = _subject_topics(offering, topics)
-        paired = _subject_concepts(subject_topics, by_topic)
-        strengths = [row for row, _topic_id in paired]
+        strengths = _subject_concepts(subject_topics, by_topic)
         subject = rollup_subject(
             [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
         )
@@ -606,7 +620,7 @@ async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
                 subject_topics,
                 rollups,
                 strengths,
-                _focus_model(paired, targets),
+                _focus_model(subject_topics, rollups, goals),
                 achievement_tier(subject.score_percent, strengths),
             )
         )
@@ -631,11 +645,10 @@ async def get_subject(
     subject = rollup_subject(
         [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
     )
-    by_topic, targets = await _concept_context(
-        session, student_id, [topic.id for topic in subject_topics]
-    )
-    paired = _subject_concepts(subject_topics, by_topic)
-    strengths = [row for row, _topic_id in paired]
+    topic_ids = [topic.id for topic in subject_topics]
+    by_topic = await _concept_strengths(session, student_id, topic_ids)
+    goals = await goals_for_topics(session, student_id, topic_ids)
+    strengths = _subject_concepts(subject_topics, by_topic)
     stored = await _stored_summaries(session, student_id, [subject_id])
     summary = stored.get(subject_id)
     status: Literal["ready", "fallback"] = "ready" if summary else "fallback"
@@ -655,41 +668,28 @@ async def get_subject(
         summary=summary,
         summary_status=status,
         topics=[
-            _topic_score(topic, rollups[topic.id], quiz_ids.get(topic.id), topic.id in lessons)
+            _topic_score(
+                topic,
+                rollups[topic.id],
+                quiz_ids.get(topic.id),
+                topic.id in lessons,
+                goals.get(topic.id),
+            )
             for topic in subject_topics
         ],
         concepts_mastered=mastered,
         concepts_attempted=attempted,
-        focus=_focus_model(paired, targets),
+        focus=_focus_model(subject_topics, rollups, goals),
         achievement=achievement_tier(subject.score_percent, strengths),
     )
 
 
-async def _concept_context(
+async def _concept_strengths(
     session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
-) -> tuple[dict[UUID, list[FeedbackSubtopicStrength]], dict[UUID, Decimal]]:
-    """Grouped concept rows per topic, plus goal targets, in two queries."""
+) -> dict[UUID, list[FeedbackSubtopicStrength]]:
+    """Grouped concept rows per topic. Goals are topic-scoped and loaded separately."""
     by_topic = await _concept_counts(session, student_id, topic_ids)
-    strengths = {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_topic.items()}
-    subtopic_ids = [row.subtopic_id for rows in strengths.values() for row in rows]
-    goals = await goals_for_subtopics(session, student_id, subtopic_ids)
-    targets = {subtopic_id: goal.target_percent for subtopic_id, goal in goals.items()}
-    attached = {topic_id: _with_goals(rows, goals) for topic_id, rows in strengths.items()}
-    return attached, targets
-
-
-def _with_goals(
-    strengths: list[FeedbackSubtopicStrength],
-    goals: dict[UUID, StudentSubtopicGoal],
-) -> list[FeedbackSubtopicStrength]:
-    attached: list[FeedbackSubtopicStrength] = []
-    for row in strengths:
-        goal = goals.get(row.subtopic_id)
-        if goal is None:
-            attached.append(row)
-            continue
-        attached.append(row.model_copy(update={"goal": goal_out(goal, row.name, row.percent)}))
-    return attached
+    return {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_topic.items()}
 
 
 async def _concept_counts(
@@ -742,9 +742,10 @@ async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> Feed
         raise DomainError("Topic not found", status_code=404)
     offering = next(row for row in offerings if row.offering_id == topic.offering_id)
     rollup = rollups[topic.id]
-    by_topic, _targets = await _concept_context(session, student_id, [topic.id])
+    by_topic = await _concept_strengths(session, student_id, [topic.id])
     strengths = by_topic.get(topic.id, [])
     mastered, attempted = milestone_counts(strengths)
+    goal = (await goals_for_topics(session, student_id, [topic.id])).get(topic.id)
     return FeedbackTopicDetail(
         subject_id=offering.subject_id,
         subject_name=offering.subject_name,
@@ -760,6 +761,7 @@ async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> Feed
         has_lesson=topic.id in lessons,
         summary=topic_summary(topic.name, strengths),
         subtopics=strengths,
+        goal=goal_out(goal, topic.name, rollup.best_score_percent) if goal is not None else None,
         concepts_mastered=mastered,
         concepts_attempted=attempted,
     )
