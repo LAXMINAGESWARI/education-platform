@@ -59,6 +59,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /tmp/install-python.sh \
     && /tmp/install-python.sh deps
 
+# Standard PDF pipeline weights (layout, tableformer, RapidOCR torch).
+# This layer depends on the lockfile install and the prefetch script, so
+# application source changes reuse it. Weights stay at DOCLING_ARTIFACTS_PATH,
+# not /data/hf, so the hf_cache volume cannot hide them and the first upload
+# does not download models. The cache mount keeps files already fetched when
+# the script or lockfile changes and this layer runs again.
+COPY deploy/prefetch_docling_models.py /tmp/prefetch_docling_models.py
+RUN --mount=type=cache,target=/var/cache/docling-models \
+    DOCLING_PREFETCH_CACHE=/var/cache/docling-models \
+    python /tmp/prefetch_docling_models.py \
+    && rm /tmp/prefetch_docling_models.py
+
 COPY backend /app/backend
 COPY docs/curriculum /app/docs/curriculum
 COPY deploy/migrate.sh deploy/api-entrypoint.sh deploy/db_ping.py /app/deploy/
@@ -67,13 +79,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && /tmp/install-python.sh project \
     && python -c "import torch; v=torch.__version__; assert '+cpu' in v, v; print('torch', v)" \
     && rm /tmp/install-python.sh
-
-# Standard PDF pipeline weights (layout, tableformer, RapidOCR torch).
-# Baked into the image, not /data/hf, so the hf_cache volume cannot hide them
-# and the first upload does not download models.
-COPY deploy/prefetch_docling_models.py /tmp/prefetch_docling_models.py
-RUN python /tmp/prefetch_docling_models.py \
-    && rm /tmp/prefetch_docling_models.py
 
 WORKDIR /app/backend
 EXPOSE 8000
