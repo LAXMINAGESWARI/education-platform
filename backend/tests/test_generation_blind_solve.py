@@ -18,6 +18,7 @@ from education_platform.modules.academics.models import Subtopic
 from education_platform.modules.assessments.models import (
     QuestionAnswerKey,
     QuestionVersion,
+    QuestionVersionStatus,
     QuizItem,
 )
 from education_platform.modules.generation.blind_solve import (
@@ -47,6 +48,86 @@ from test_generation import SEEDED_SLUG
 from test_generation_items import _accept_two_node_run, _silence_embed
 
 _ITEM_NUMBER = re.compile(r"Item (\d+) \(")
+_SLOT = (
+    "alpha",
+    "bravo",
+    "cedar",
+    "delta",
+    "ember",
+    "flint",
+    "grove",
+    "hazel",
+    "ivory",
+    "juniper",
+    "kelp",
+    "lark",
+    "maple",
+    "nectar",
+    "otter",
+    "pebble",
+    "quartz",
+    "rowan",
+    "spruce",
+    "thistle",
+    "umber",
+    "violet",
+    "willow",
+    "yarrow",
+    "zephyr",
+    "acorn",
+    "bramble",
+    "clover",
+    "dune",
+    "falcon",
+    "gorse",
+    "heron",
+    "iris",
+    "jasper",
+    "kestrel",
+    "lichen",
+    "moss",
+    "newt",
+    "orchid",
+    "poplar",
+    "quince",
+    "reed",
+    "sorrel",
+    "tansy",
+    "urchin",
+    "verbena",
+    "wren",
+    "yew",
+    "alder",
+    "basil",
+    "cinder",
+    "daisy",
+    "egret",
+    "fern",
+    "gull",
+    "holly",
+    "indigo",
+    "jade",
+    "koala",
+    "lotus",
+    "mink",
+    "nutmeg",
+    "olive",
+    "pine",
+    "quail",
+    "raven",
+    "sage",
+    "thyme",
+    "upland",
+    "vine",
+    "wheat",
+    "xenon",
+    "yam",
+    "zinnia",
+    "apricot",
+    "badger",
+    "coral",
+    "dolphin",
+)
 _LABELS = ("A", "B", "C", "D")
 
 
@@ -89,6 +170,12 @@ def _qa(blind_solve: dict[str, object] | None) -> QaItemOut:
     )
 
 
+def _stamp(index: int, heading: str) -> str:
+    word = _SLOT[index % len(_SLOT)]
+    topic = re.sub(r"[^a-z]+", "", heading.casefold())[:24] or "topic"
+    return f"Item {index + 1} ({word}) about {topic}"
+
+
 def _item_number(prompt: str) -> int | None:
     match = _ITEM_NUMBER.match(prompt)
     if match is None:
@@ -125,7 +212,7 @@ def test_question_text_is_stem_and_options_only() -> None:
             "correct_rationale": "Two is even.",
         },
     )
-    assert text == "Which is even?\n\nA. 2\nB. 3\nC. 5\nD. 7"
+    assert text == ("Which is even?\n\nA. 2\nB. 3\nC. 5\nD. 7\nE. None of these is correct")
     assert "correct_rationale" not in text
     assert "Two is even." not in text
     assert "correct_label" not in text
@@ -172,7 +259,17 @@ def test_blind_solve_record_covers_agree_disagree_and_error() -> None:
         "agrees": True,
         "confidence": 0.9,
         "status": "agree",
+        "working": "",
     }
+    none = blind_solve_record(
+        BlindVerdict(answer="E", confidence=0.8, status="ok", working="45π is missing"),
+        correct_label="A",
+        model=model,
+    )
+    assert none["status"] == "disagree"
+    assert none["answer"] == "E"
+    assert none["agrees"] is False
+    assert none["working"] == "45π is missing"
     assert disagree["status"] == "disagree"
     assert disagree["answer"] == "C"
     assert disagree["agrees"] is False
@@ -248,19 +345,16 @@ def _assert_solver_saw_no_key(
     received: Sequence[tuple[str, dict[str, str]]],
     produced: Sequence[GeneratedItem],
 ) -> None:
-    by_prompt = {item.prompt: item for item in produced}
-    assert len(by_prompt) == len(produced)
-    assert len(received) == len(produced)
+    assert received
+    hidden = [item.correct_rationale for item in produced]
+    hidden.extend(text for item in produced for text in item.distractor_rationales.values())
     for prompt, options in received:
-        item = by_prompt[prompt]
         assert set(options) == set(_LABELS)
-        assert options == {label: item.options[label] for label in _LABELS}
         blob = prompt + "\n" + "\n".join(options.values())
-        assert item.correct_rationale not in blob
-        for rationale in item.distractor_rationales.values():
-            assert rationale not in blob
         assert "correct_rationale" not in blob
         assert "distractor_rationales" not in blob
+        for rationale in hidden:
+            assert rationale not in blob
 
 
 def test_fake_solver_agree_disagree_and_error_reach_qa(
@@ -283,13 +377,17 @@ def test_fake_solver_agree_disagree_and_error_reach_qa(
     def _writer(request: NodeItemRequest) -> Sequence[GeneratedItem]:
         # Fallback stems repeat ("Which statement is correct?"). Stamp the slot
         # number the way this test classifies agree / disagree / error.
+        # A repair keeps that number so a bad item is not accidentally rewritten
+        # into an agreeing stem.
+        if request.repair_note:
+            match = _ITEM_NUMBER.search(request.repair_note)
+            number = int(match.group(1)) if match else 1
+            base = items_from_chunks(request)[0]
+            item = replace(base, prompt=_stamp(number - 1, request.heading))
+            produced.append(item)
+            return (item,)
         batch = tuple(
-            replace(
-                item,
-                prompt=(
-                    f"Item {index + 1} ({item.bloom.value}) for {item.source_method}: {item.prompt}"
-                ),
-            )
+            replace(item, prompt=_stamp(index, request.heading))
             for index, item in enumerate(items_from_chunks(request))
         )
         produced.extend(batch)
@@ -307,20 +405,26 @@ def test_fake_solver_agree_disagree_and_error_reach_qa(
     assert run.phase is RunPhase.QA_REVIEW
     assert run.draft_quiz_version_id is not None
     stored = seeded_db.execute(
-        select(QuestionVersion.prompt, QuestionAnswerKey.scoring_rubric)
+        select(
+            QuestionVersion.prompt,
+            QuestionVersion.lifecycle_status,
+            QuestionAnswerKey.scoring_rubric,
+        )
         .join(QuestionAnswerKey, QuestionAnswerKey.question_version_id == QuestionVersion.id)
         .join(QuizItem, QuizItem.question_version_id == QuestionVersion.id)
         .where(QuizItem.quiz_version_id == run.draft_quiz_version_id)
     ).all()
     counts = {1: 0, 2: 0, 3: 0}
     model = get_settings().blind_solver_model
-    for prompt, rubric in stored:
+    for prompt, status, rubric in stored:
         assert isinstance(rubric, dict)
         assert "bloom" in rubric
         blind = rubric["blind_solve"]
         assert isinstance(blind, dict)
-        assert set(blind) == {"model", "answer", "agrees", "confidence", "status"}
+        assert set(blind) >= {"model", "answer", "agrees", "confidence", "status", "working"}
         assert blind["model"] == model
+        check = rubric["item_check"]
+        assert isinstance(check, dict)
         number = _item_number(str(prompt))
         if number == 1:
             counts[1] += 1
@@ -328,20 +432,31 @@ def test_fake_solver_agree_disagree_and_error_reach_qa(
             assert blind["answer"] == "A"
             assert blind["agrees"] is True
             assert blind["confidence"] == pytest.approx(0.93)
+            assert check["verdict"] == "passed"
+            assert check["attempts"] == 1
+            assert status is QuestionVersionStatus.DRAFT
         elif number == 2:
             counts[2] += 1
             assert blind["status"] == "disagree"
             assert blind["answer"] == "C"
             assert blind["agrees"] is False
             assert blind["confidence"] == pytest.approx(0.41)
+            assert check["verdict"] == "dropped"
+            assert check["attempts"] == 3
+            assert status is QuestionVersionStatus.ARCHIVED
         elif number == 3:
             counts[3] += 1
             assert blind["status"] == "error"
             assert blind["answer"] is None
             assert blind["agrees"] is False
+            assert check["verdict"] == "dropped"
+            assert check["attempts"] == 3
+            assert status is QuestionVersionStatus.ARCHIVED
         else:
             assert blind["status"] == "agree"
             assert blind["agrees"] is True
+            assert check["verdict"] == "passed"
+            assert status is QuestionVersionStatus.DRAFT
     assert counts == {1: 2, 2: 2, 3: 2}
 
     body = client.get(f"/api/v1/teaching/generation-runs/{run_id}", headers=admin_headers)

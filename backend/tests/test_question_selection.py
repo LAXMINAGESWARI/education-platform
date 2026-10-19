@@ -21,6 +21,7 @@ def _question(
     subtopic_id: UUID | None = None,
     sequence: int,
     question_id: UUID | None = None,
+    prompt: str = "",
 ) -> BankQuestion:
     return BankQuestion(
         question_version_id=uuid4(),
@@ -28,6 +29,7 @@ def _question(
         difficulty=difficulty,
         subtopic_id=subtopic_id or uuid4(),
         bank_sequence=sequence,
+        prompt=prompt,
     )
 
 
@@ -208,3 +210,66 @@ def test_history_matches_question_id_across_versions() -> None:
         seed=1,
     )
     assert selected[0].question_id == fresh.question_id
+
+
+def test_draw_keeps_one_item_when_only_the_numbers_change() -> None:
+    subtopic_id = uuid4()
+    copies = [
+        _question(
+            difficulty=EASY,
+            subtopic_id=subtopic_id,
+            sequence=index,
+            prompt=(
+                f"A cylinder has radius {radius} cm and height {height} cm. What is the volume?"
+            ),
+        )
+        for index, (radius, height) in enumerate(((3, 5), (4, 9), (8, 2)), start=1)
+    ]
+    fillers = [
+        _question(
+            difficulty=level,
+            subtopic_id=subtopic_id,
+            sequence=10 + index,
+            prompt=f"Distinct stem {index} about a different idea",
+        )
+        for index, level in enumerate([EASY, EASY, EASY, MEDIUM, MEDIUM, MEDIUM, HARD, HARD, HARD])
+    ]
+    selected = select_attempt_questions(copies + fillers, draw_size=10, seed=1)
+    cylinder = [
+        question
+        for question in selected
+        if "cylinder" in copies[0].prompt
+        and question.question_version_id in {item.question_version_id for item in copies}
+    ]
+    assert len(cylinder) == 1
+    assert len({question.question_id for question in selected}) == len(selected)
+
+
+def test_same_question_id_is_served_once() -> None:
+    question_id = uuid4()
+    subtopic_id = uuid4()
+    first = _question(
+        difficulty=EASY,
+        subtopic_id=subtopic_id,
+        sequence=1,
+        question_id=question_id,
+        prompt="First wording of the radius question",
+    )
+    second = _question(
+        difficulty=EASY,
+        subtopic_id=subtopic_id,
+        sequence=2,
+        question_id=question_id,
+        prompt="Completely different wording that is not a near copy",
+    )
+    other = _question(
+        difficulty=MEDIUM,
+        subtopic_id=subtopic_id,
+        sequence=3,
+        prompt="A separate question about factors",
+    )
+    selected = select_attempt_questions([first, second, other], draw_size=None, seed=1)
+    assert [question.question_version_id for question in selected] == [
+        first.question_version_id,
+        other.question_version_id,
+    ]

@@ -306,6 +306,48 @@ async def jobs_for_runs(
     return grouped
 
 
+def _item_check_fields(raw: object) -> tuple[int | None, str | None]:
+    if not isinstance(raw, dict):
+        return None, None
+    attempts = raw.get("attempts")
+    verdict = raw.get("verdict")
+    count = attempts if isinstance(attempts, int) else None
+    label = verdict.strip() if isinstance(verdict, str) and verdict.strip() else None
+    return count, label
+
+
+async def item_validation_for_runs(
+    session: AsyncSession, run_ids: Sequence[UUID]
+) -> dict[UUID, dict[str, int]]:
+    """Per-run counts stored on the latest items job."""
+    if not run_ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(GenerationJob)
+            .where(
+                GenerationJob.run_id.in_(tuple(run_ids)),
+                GenerationJob.kind == GenerationJobKind.ITEMS,
+            )
+            .order_by(GenerationJob.created_at.desc())
+        )
+    ).all()
+    found: dict[UUID, dict[str, int]] = {}
+    for row in rows:
+        if row.run_id in found:
+            continue
+        payload = row.payload if isinstance(row.payload, dict) else None
+        raw = payload.get("item_validation") if payload is not None else None
+        if not isinstance(raw, dict):
+            continue
+        found[row.run_id] = {
+            "passed": int(raw.get("passed") or 0),
+            "fixed_on_retry": int(raw.get("fixed_on_retry") or 0),
+            "dropped": int(raw.get("dropped") or 0),
+        }
+    return found
+
+
 async def submit_pdf(
     session: AsyncSession,
     scope: Scope,
@@ -1041,6 +1083,8 @@ async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[Qa
         rubric = key.scoring_rubric if key is not None else None
         raw_blind = rubric.get("blind_solve") if isinstance(rubric, dict) else None
         blind_solve = cast(dict[str, object], raw_blind) if isinstance(raw_blind, dict) else None
+        raw_check = rubric.get("item_check") if isinstance(rubric, dict) else None
+        check_attempts, check_verdict = _item_check_fields(raw_check)
         out.append(
             QaItem(
                 question_id=question.id,
@@ -1055,6 +1099,8 @@ async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[Qa
                 bloom=bloom_from_rubric(rubric),
                 misconception_labels=misconceptions_from_rubric(rubric),
                 blind_solve=blind_solve,
+                check_attempts=check_attempts,
+                check_verdict=check_verdict,
             )
         )
     return out

@@ -58,8 +58,10 @@ class Settings(BaseSettings):
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300
-    # Different model family from adk_model, so the check is not grading its own items.
-    blind_solver_model: str = "anthropic/claude-haiku-5.5"
+    # Stronger than the writer default (gpt-4o-mini) and a different model id, so the
+    # check is not grading items in the same voice that wrote them. Override with
+    # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
+    blind_solver_model: str = "openai/gpt-4o"
     chat_context_limit_tokens: int = 20_000
     chat_retrieval_limit: int = 6
 

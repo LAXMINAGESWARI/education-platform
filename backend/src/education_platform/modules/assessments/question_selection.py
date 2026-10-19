@@ -27,10 +27,12 @@ from education_platform.modules.assessments.models import (
     Question,
     QuestionDifficulty,
     QuestionVersion,
+    QuestionVersionStatus,
     QuizAttempt,
     QuizItem,
     QuizVersion,
 )
+from education_platform.modules.assessments.prompt_identity import same_stem
 from education_platform.modules.assessments.queries import questions_for_numbered
 from education_platform.modules.assessments.schemas import QuizQuestion
 
@@ -60,6 +62,7 @@ class BankQuestion:
     difficulty: QuestionDifficulty | None
     subtopic_id: UUID
     bank_sequence: int
+    prompt: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,8 +104,11 @@ def select_attempt_questions(
     balanced across difficulty, spread across subtopics, and ordered
     easy → hard with numbers 1..n.
     """
-    ordered = sorted(
-        bank, key=lambda question: (question.bank_sequence, str(question.question_version_id))
+    ordered = _one_per_stem(
+        sorted(
+            bank,
+            key=lambda question: (question.bank_sequence, str(question.question_version_id)),
+        )
     )
     if draw_size is None or len(ordered) <= draw_size:
         return [_selected(question, question.bank_sequence) for question in ordered]
@@ -117,6 +123,22 @@ def select_attempt_questions(
         )
     )
     return [_selected(question, number) for number, question in enumerate(chosen, start=1)]
+
+
+def _one_per_stem(bank: list[BankQuestion]) -> list[BankQuestion]:
+    """Keep the earliest copy of a stem, and never two rows for one question."""
+    kept: list[BankQuestion] = []
+    seen_ids: set[UUID] = set()
+    for question in bank:
+        if question.question_id in seen_ids:
+            continue
+        if question.prompt.strip() and any(
+            same_stem(question.prompt, earlier.prompt) for earlier in kept if earlier.prompt.strip()
+        ):
+            continue
+        seen_ids.add(question.question_id)
+        kept.append(question)
+    return kept
 
 
 def _selected(question: BankQuestion, number: int) -> SelectedQuestion:
@@ -367,10 +389,14 @@ async def _load_bank(session: AsyncSession, quiz_version_id: UUID) -> list[BankQ
                 QuestionVersion.question_id,
                 QuestionVersion.difficulty,
                 Question.subtopic_id,
+                QuestionVersion.prompt,
             )
             .join(QuestionVersion, QuestionVersion.id == QuizItem.question_version_id)
             .join(Question, Question.id == QuestionVersion.question_id)
-            .where(QuizItem.quiz_version_id == quiz_version_id)
+            .where(
+                QuizItem.quiz_version_id == quiz_version_id,
+                QuestionVersion.lifecycle_status != QuestionVersionStatus.ARCHIVED,
+            )
             .order_by(QuizItem.sequence)
         )
     ).all()
@@ -381,8 +407,9 @@ async def _load_bank(session: AsyncSession, quiz_version_id: UUID) -> list[BankQ
             difficulty=difficulty,
             subtopic_id=subtopic_id,
             bank_sequence=sequence,
+            prompt=prompt,
         )
-        for question_version_id, sequence, question_id, difficulty, subtopic_id in rows
+        for question_version_id, sequence, question_id, difficulty, subtopic_id, prompt in rows
     ]
 
 

@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 
-import type { BloomLevel, GenerationQaItem, LessonMaterial, RunPhase } from "../api/types";
+import type {
+  BloomLevel,
+  GenerationQaItem,
+  ItemValidationStats,
+  LessonMaterial,
+  RunPhase,
+} from "../api/types";
 import { slidesForLessonView } from "../lib/lessonSlides";
 import { presentQuizText } from "../lib/quizText";
 import { LessonSlideFrame } from "./LessonSlideFrame";
@@ -21,6 +27,7 @@ export type TopicGenerationQaProps = {
   canReject: boolean;
   onRejectSelected: (questionIds: string[]) => void;
   onRequestPublish: () => void;
+  itemValidation?: ItemValidationStats | null;
 };
 
 function bloomLabel(bloom: BloomLevel | null | undefined): string {
@@ -45,6 +52,20 @@ function misconceptionText(item: GenerationQaItem): string {
   const labels = item.misconception_labels ?? [];
   if (labels.length === 0) return "None listed";
   return labels.join(" · ");
+}
+
+function checkBadge(item: GenerationQaItem): string | null {
+  const verdict = item.check_verdict;
+  if (verdict == null || verdict === "" || verdict === "passed") return null;
+  const attempts = item.check_attempts ?? 1;
+  if (verdict === "fixed_on_retry") return `Fixed on retry · ${attempts} attempts`;
+  if (verdict === "dropped") return `Dropped · ${attempts} attempts`;
+  return verdict;
+}
+
+function validationSummary(stats: ItemValidationStats | null | undefined): string | null {
+  if (stats == null) return null;
+  return `${stats.passed} passed · ${stats.fixed_on_retry} fixed on retry · ${stats.dropped} dropped`;
 }
 
 function disputedBadge(item: GenerationQaItem): string | null {
@@ -95,6 +116,7 @@ export function TopicGenerationQa({
   canReject,
   onRejectSelected,
   onRequestPublish,
+  itemValidation = null,
 }: TopicGenerationQaProps) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const sortedItems = useMemo(
@@ -179,6 +201,9 @@ export function TopicGenerationQa({
                         ? "1 question · item bank"
                         : `${sortedItems.length} questions · item bank`}
                   </span>
+                  {validationSummary(itemValidation) ? (
+                    <span className="lesson-toolbar__hint">{validationSummary(itemValidation)}</span>
+                  ) : null}
                 </div>
               </div>
               {showActions ? (
@@ -260,6 +285,11 @@ export function TopicGenerationQa({
                           {disputedBadge(item) ? (
                             <p className="qa-review__disputed">
                               <span className="badge badge--warn">{disputedBadge(item)}</span>
+                            </p>
+                          ) : null}
+                          {checkBadge(item) ? (
+                            <p className="qa-review__disputed">
+                              <span className="badge badge--warn">{checkBadge(item)}</span>
                             </p>
                           ) : null}
                         </td>

@@ -9,7 +9,7 @@ writes published source material or released quizzes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from uuid import UUID, uuid4
 
@@ -52,6 +52,8 @@ from education_platform.modules.generation.blind_solve import (
     blind_solve_record,
     resolve_blind_solver,
 )
+from education_platform.modules.generation.item_checks import numeric_problems, structural_problems
+from education_platform.modules.generation.item_gate import gate_generated_item
 from education_platform.modules.generation.items import (
     OPTION_LABELS,
     GeneratedItem,
@@ -247,7 +249,13 @@ def process_generation_job_sync(
             _complete_job(session, job_id, ok_phases=frozenset({RunPhase.QA_REVIEW}))
             return
         if job.kind is GenerationJobKind.ITEMS:
-            _finish_items(session, job.run_id, writer=write_items, blind_solver=blind_solver)
+            _finish_items(
+                session,
+                job.run_id,
+                writer=write_items,
+                blind_solver=blind_solver,
+                job_id=job_id,
+            )
             _complete_job(session, job_id, ok_phases=_SLICE23_OK)
             return
         if job.kind is GenerationJobKind.LESSON:
@@ -429,6 +437,7 @@ def _finish_items(
     *,
     writer: ItemsWriter | None,
     blind_solver: BlindSolver | None = None,
+    job_id: UUID | None = None,
 ) -> None:
     run = session.get(ContentGenerationRun, run_id)
     if run is None or run.phase is not RunPhase.GENERATING:
@@ -503,7 +512,10 @@ def _finish_items(
         )
     solver = resolve_blind_solver(blind_solver)
     sequence = 1
-    generated_count = 0
+    considered = 0
+    stats = {"passed": 0, "fixed_on_retry": 0, "dropped": 0}
+    taken = _topic_prompts(session, run.topic_id)
+    lesson_markdown = run.draft_lesson_markdown or ""
     if writer is not None:
         for request in requests:
             try:
@@ -511,15 +523,25 @@ def _finish_items(
                     request,
                     writer=writer,
                     job_id=run.id,
-                    lesson_markdown=run.draft_lesson_markdown or "",
+                    lesson_markdown=lesson_markdown,
                 )
             except Exception as exc:
                 _fail_run(session, run, str(exc)[:2000])
                 return
-            sequence, count = _persist_produced(
-                session, quiz_version.id, produced, sequence, solver=solver
+            sequence = _persist_produced(
+                session,
+                quiz_version.id,
+                produced,
+                sequence,
+                solver=solver,
+                writer=writer,
+                request=request,
+                lesson_markdown=lesson_markdown,
+                job_id=job_id,
+                taken=taken,
+                stats=stats,
             )
-            generated_count += count
+            considered += len(produced)
             session.flush()
     else:
         try:
@@ -527,24 +549,35 @@ def _finish_items(
                 requests,
                 writer=None,
                 job_id=run.id,
-                lesson_markdown=run.draft_lesson_markdown or "",
+                lesson_markdown=lesson_markdown,
             )
         except Exception as exc:
             _fail_run(session, run, str(exc)[:2000])
             return
-        for produced in grouped:
-            sequence, count = _persist_produced(
-                session, quiz_version.id, produced, sequence, solver=solver
+        for request, produced in zip(requests, grouped, strict=True):
+            sequence = _persist_produced(
+                session,
+                quiz_version.id,
+                produced,
+                sequence,
+                solver=solver,
+                writer=None,
+                request=request,
+                lesson_markdown=lesson_markdown,
+                job_id=job_id,
+                taken=taken,
+                stats=stats,
             )
-            generated_count += count
+            considered += len(produced)
             session.flush()
-    if generated_count != expected:
+    if considered != expected:
         _fail_run(
             session,
             run,
-            f"Item writer produced {generated_count} items; expected {expected}.",
+            f"Item writer produced {considered} items; expected {expected}.",
         )
         return
+    _store_item_validation(session, job_id, stats)
     run.failure_reason = None
     _maybe_advance_to_qa_review(session, run, completing=GenerationJobKind.ITEMS)
 
@@ -805,12 +838,51 @@ def _clear_draft_items(session: Session, quiz_version_id: UUID) -> None:
 
 
 def _rubric_with_blind_solve(
-    item: GeneratedItem, blind_solve: dict[str, object] | None
+    item: GeneratedItem,
+    blind_solve: dict[str, object] | None,
+    item_check: dict[str, object] | None = None,
 ) -> dict[str, object]:
     rubric = item_scoring_rubric(item.bloom, item.misconception_labels)
     if blind_solve is not None:
         rubric["blind_solve"] = blind_solve
+    if item_check is not None:
+        rubric["item_check"] = item_check
     return rubric
+
+
+def _topic_prompts(session: Session, topic_id: UUID) -> list[str]:
+    """Stems already in this topic's bank, so a new run does not repeat them."""
+    rows = session.scalars(
+        select(QuestionVersion.prompt)
+        .join(Question, Question.id == QuestionVersion.question_id)
+        .join(Subtopic, Subtopic.id == Question.subtopic_id)
+        .where(
+            Subtopic.topic_id == topic_id,
+            QuestionVersion.lifecycle_status != QuestionVersionStatus.ARCHIVED,
+        )
+    ).all()
+    return [prompt for prompt in rows if prompt]
+
+
+def _store_item_validation(session: Session, job_id: UUID | None, stats: dict[str, int]) -> None:
+    if job_id is None:
+        return
+    job = session.get(GenerationJob, job_id)
+    if job is None:
+        return
+    payload = dict(job.payload) if isinstance(job.payload, dict) else {}
+    payload["item_validation"] = dict(stats)
+    job.payload = payload
+
+
+def _refuse_unshippable(item: GeneratedItem, *, archive: bool) -> None:
+    """Save-time backstop. Archived drops are kept for QA and are not served."""
+    if archive:
+        return
+    reasons = list(structural_problems(item.options, item.correct_label, item.correct_rationale))
+    reasons.extend(numeric_problems(item.options, item.correct_label, item.correct_rationale))
+    if reasons:
+        raise ValueError("Refusing to save an invalid multiple-choice item: " + "; ".join(reasons))
 
 
 def _blind_records(
@@ -833,14 +905,81 @@ def _persist_produced(
     sequence: int,
     *,
     solver: BlindSolver | None,
-) -> tuple[int, int]:
-    records = _blind_records(produced, solver)
-    count = 0
-    for item, record in zip(produced, records, strict=True):
-        _persist_generated_item(session, quiz_version_id, item, sequence, blind_solve=record)
+    writer: ItemsWriter | None,
+    request: NodeItemRequest,
+    lesson_markdown: str,
+    job_id: UUID | None,
+    taken: list[str],
+    stats: dict[str, int],
+) -> int:
+    for item in produced:
+        gated = gate_generated_item(
+            item,
+            solve=_solver_for(solver) if solver is not None else None,
+            rewrite=_rewriter(
+                writer,
+                request,
+                lesson_markdown=lesson_markdown,
+                job_id=job_id,
+            ),
+            taken=taken,
+        )
+        stats[gated.verdict] = stats.get(gated.verdict, 0) + 1
+        _persist_generated_item(
+            session,
+            quiz_version_id,
+            gated.item,
+            sequence,
+            blind_solve=gated.blind_solve,
+            item_check=gated.rubric(),
+            lifecycle_status=(
+                QuestionVersionStatus.DRAFT if gated.servable else QuestionVersionStatus.ARCHIVED
+            ),
+        )
         sequence += 1
-        count += 1
-    return sequence, count
+    return sequence
+
+
+def _solver_for(solver: BlindSolver) -> Callable[[GeneratedItem], dict[str, object] | None]:
+    def solve(item: GeneratedItem) -> dict[str, object] | None:
+        records = _blind_records((item,), solver)
+        return records[0]
+
+    return solve
+
+
+def _rewriter(
+    writer: ItemsWriter | None,
+    request: NodeItemRequest,
+    *,
+    lesson_markdown: str,
+    job_id: UUID | None,
+) -> Callable[[GeneratedItem, str], GeneratedItem | None]:
+    def rewrite(item: GeneratedItem, note: str) -> GeneratedItem | None:
+        repair = NodeItemRequest(
+            subtopic_id=item.subtopic_id,
+            learning_outcome_ids=item.learning_outcome_ids,
+            heading=request.heading,
+            chunk_texts=request.chunk_texts,
+            quota=1,
+            bloom=(item.bloom,),
+            repair_note=note,
+        )
+        try:
+            produced = write_items_for_node(
+                repair,
+                writer=writer,
+                job_id=job_id,
+                lesson_markdown=lesson_markdown,
+            )
+        except Exception:
+            logger.warning("Item rewrite failed", exc_info=True)
+            return None
+        if not produced:
+            return None
+        return produced[0]
+
+    return rewrite
 
 
 def _persist_generated_item(
@@ -850,7 +989,10 @@ def _persist_generated_item(
     sequence: int,
     *,
     blind_solve: dict[str, object] | None = None,
+    item_check: dict[str, object] | None = None,
+    lifecycle_status: QuestionVersionStatus = QuestionVersionStatus.DRAFT,
 ) -> None:
+    _refuse_unshippable(item, archive=lifecycle_status is QuestionVersionStatus.ARCHIVED)
     item = _item_for_storage(item)
     question = Question(subtopic_id=item.subtopic_id)
     session.add(question)
@@ -862,7 +1004,7 @@ def _persist_generated_item(
         question_type=QuestionType.MULTIPLE_CHOICE,
         difficulty=difficulty_for_bloom(item.bloom),
         item_kind=item.item_kind or item_kind_for_bloom(item.bloom),
-        lifecycle_status=QuestionVersionStatus.DRAFT,
+        lifecycle_status=lifecycle_status,
     )
     session.add(version)
     session.flush()
@@ -881,7 +1023,7 @@ def _persist_generated_item(
             correct_option_label=item.correct_label,
             correct_rationale=item.correct_rationale,
             distractor_rationales=dict(item.distractor_rationales),
-            scoring_rubric=_rubric_with_blind_solve(item, blind_solve),
+            scoring_rubric=_rubric_with_blind_solve(item, blind_solve, item_check),
         )
     )
     for outcome_id in item.learning_outcome_ids:
@@ -1360,12 +1502,29 @@ def _replace_selected_items(
         if not produced:
             _fail_run(session, run, "Item writer produced no replacement item.")
             return None
-        replacement = produced[0]
+        taken = _topic_prompts(session, run.topic_id)
+        gated = gate_generated_item(
+            produced[0],
+            solve=_solver_for(solver) if solver is not None else None,
+            rewrite=_rewriter(
+                writer,
+                request,
+                lesson_markdown=run.draft_lesson_markdown or "",
+                job_id=None,
+            ),
+            taken=taken,
+        )
         if version.lifecycle_status is QuestionVersionStatus.DRAFT:
             version.lifecycle_status = QuestionVersionStatus.ARCHIVED
-        records = _blind_records((replacement,), solver)
         new_version = _persist_question_version(
-            session, question.id, replacement, blind_solve=records[0]
+            session,
+            question.id,
+            gated.item,
+            blind_solve=gated.blind_solve,
+            item_check=gated.rubric(),
+            lifecycle_status=(
+                QuestionVersionStatus.DRAFT if gated.servable else QuestionVersionStatus.ARCHIVED
+            ),
         )
         item.question_version_id = new_version.id
         session.flush()
@@ -1404,7 +1563,10 @@ def _persist_question_version(
     item: GeneratedItem,
     *,
     blind_solve: dict[str, object] | None = None,
+    item_check: dict[str, object] | None = None,
+    lifecycle_status: QuestionVersionStatus = QuestionVersionStatus.DRAFT,
 ) -> QuestionVersion:
+    _refuse_unshippable(item, archive=lifecycle_status is QuestionVersionStatus.ARCHIVED)
     item = _item_for_storage(item)
     current = session.scalar(
         select(func.max(QuestionVersion.version_number)).where(
@@ -1418,7 +1580,7 @@ def _persist_question_version(
         question_type=QuestionType.MULTIPLE_CHOICE,
         difficulty=difficulty_for_bloom(item.bloom),
         item_kind=item.item_kind or item_kind_for_bloom(item.bloom),
-        lifecycle_status=QuestionVersionStatus.DRAFT,
+        lifecycle_status=lifecycle_status,
     )
     session.add(version)
     session.flush()
@@ -1437,7 +1599,7 @@ def _persist_question_version(
             correct_option_label=item.correct_label,
             correct_rationale=item.correct_rationale,
             distractor_rationales=dict(item.distractor_rationales),
-            scoring_rubric=_rubric_with_blind_solve(item, blind_solve),
+            scoring_rubric=_rubric_with_blind_solve(item, blind_solve, item_check),
         )
     )
     for outcome_id in item.learning_outcome_ids:

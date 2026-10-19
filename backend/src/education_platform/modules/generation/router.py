@@ -27,6 +27,7 @@ from education_platform.modules.generation.schemas import (
     GenerationAssistantReplyOut,
     GenerationAssistantTurnIn,
     GenerationRunOut,
+    ItemValidationOut,
     OutlinePatchIn,
     PublishedTopicOut,
     RejectItemsIn,
@@ -49,7 +50,10 @@ async def _run_out(request: ScopedRequest, run_id: UUID) -> GenerationRunOut:
     run = await service.get_run(request.session, request.scope, run_id)
     jobs = await service.jobs_for_runs(request.session, [run])
     qa_items = await service.qa_items_for_run(request.session, run)
-    return GenerationRunOut.from_domain(run, jobs.get(run.id, ()), qa_items)
+    stats = await service.item_validation_for_runs(request.session, [run.id])
+    return GenerationRunOut.from_domain(
+        run, jobs.get(run.id, ()), qa_items, _validation_out(stats.get(run.id))
+    )
 
 
 @router.post(
@@ -181,12 +185,27 @@ async def list_for_topic(
 ) -> list[GenerationRunOut]:
     rows = await service.list_runs(request.session, request.scope, topic_id)
     jobs = await service.jobs_for_runs(request.session, rows)
+    stats = await service.item_validation_for_runs(request.session, [row.id for row in rows])
     await request.record_rows(len(rows))
     out: list[GenerationRunOut] = []
     for row in rows:
         qa_items = await service.qa_items_for_run(request.session, row)
-        out.append(GenerationRunOut.from_domain(row, jobs.get(row.id, ()), qa_items))
+        out.append(
+            GenerationRunOut.from_domain(
+                row, jobs.get(row.id, ()), qa_items, _validation_out(stats.get(row.id))
+            )
+        )
     return out
+
+
+def _validation_out(raw: dict[str, int] | None) -> ItemValidationOut | None:
+    if raw is None:
+        return None
+    return ItemValidationOut(
+        passed=raw["passed"],
+        fixed_on_retry=raw["fixed_on_retry"],
+        dropped=raw["dropped"],
+    )
 
 
 @router.patch(

@@ -229,6 +229,8 @@ class QaItem:
     bloom: BloomLevel | None = None
     misconception_labels: tuple[str, ...] = ()
     blind_solve: dict[str, object] | None = None
+    check_attempts: int | None = None
+    check_verdict: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

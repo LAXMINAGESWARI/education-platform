@@ -665,6 +665,7 @@ export function TopicGenerationUpload({
         canReject={false}
         onRejectSelected={(questionIds) => void onRejectItems(questionIds)}
         onRequestPublish={() => setConfirm("publish")}
+        itemValidation={current.item_validation}
       />
     );
   }

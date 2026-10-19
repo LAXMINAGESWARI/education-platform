@@ -23,11 +23,14 @@ from education_platform.core.llm import OpenRouterError, build_openrouter_sync_c
 logger = logging.getLogger(__name__)
 
 _LABELS = ("A", "B", "C", "D")
+_NONE = "E"
 _POOL_WORKERS = 8
 _SYSTEM = (
     "Answer the multiple-choice question from the stem and options alone. "
-    'Reply with JSON only: {"answer": "A", "B", "C", or "D", "confidence": a number from 0 to 1}. '
-    "Do not explain."
+    "E means none of A-D is correct. Choose E when the right value is missing. "
+    "Reply with JSON only: "
+    '{"answer": "A", "B", "C", "D", or "E", "working": "the steps you used", '
+    '"confidence": a number from 0 to 1}.'
 )
 
 SolveStatus = Literal["ok", "error"]
@@ -39,6 +42,7 @@ class BlindVerdict:
     answer: str | None
     confidence: float
     status: SolveStatus
+    working: str = ""
 
 
 class BlindSolver(Protocol):
@@ -68,6 +72,7 @@ def question_text(prompt: str, options: Mapping[str, str]) -> str:
         if not isinstance(text, str) or not text.strip():
             raise ValueError(f"missing option {label}")
         lines.append(f"{label}. {text.strip()}")
+    lines.append(f"{_NONE}. None of these is correct")
     return "\n".join(lines)
 
 
@@ -103,6 +108,7 @@ def blind_solve_record(
             "agrees": False,
             "confidence": confidence,
             "status": "error",
+            "working": verdict.working.strip(),
         }
     agrees = answer == _canonical_label(correct_label)
     status: StoredStatus = "agree" if agrees else "disagree"
@@ -112,6 +118,7 @@ def blind_solve_record(
         "agrees": agrees,
         "confidence": confidence,
         "status": status,
+        "working": verdict.working.strip(),
     }
 
 
@@ -171,10 +178,12 @@ def _verdict_from_payload(data: Mapping[str, Any]) -> BlindVerdict:
     answer = _canonical_label(data.get("answer") if isinstance(data.get("answer"), str) else None)
     if answer is None:
         return error_verdict()
+    working = data.get("working")
     return BlindVerdict(
         answer=answer,
         confidence=_clamp_confidence(_as_float(data.get("confidence"))),
         status="ok",
+        working=working.strip() if isinstance(working, str) else "",
     )
 
 
@@ -182,7 +191,7 @@ def _canonical_label(raw: str | None) -> str | None:
     if raw is None:
         return None
     text = raw.strip().upper()
-    if text in _LABELS:
+    if text in _LABELS or text == _NONE:
         return text
     return None
 

@@ -172,6 +172,8 @@ class QaItemOut(BaseModel):
     misconception_labels: list[str] = Field(default_factory=list)
     key_disputed: bool = False
     blind_answer: str | None = None
+    check_attempts: int | None = None
+    check_verdict: str | None = None
 
     @classmethod
     def from_domain(cls, item: QaItem) -> QaItemOut:
@@ -190,7 +192,15 @@ class QaItemOut(BaseModel):
             misconception_labels=list(item.misconception_labels),
             key_disputed=disputed,
             blind_answer=blind_answer,
+            check_attempts=item.check_attempts,
+            check_verdict=item.check_verdict,
         )
+
+
+class ItemValidationOut(BaseModel):
+    passed: int = 0
+    fixed_on_retry: int = 0
+    dropped: int = 0
 
 
 class PublishedTopicOut(BaseModel):
@@ -230,6 +240,7 @@ class GenerationRunOut(BaseModel):
     published_quiz_version_id: UUID | None = None
     qa_items: list[QaItemOut] = Field(default_factory=list)
     jobs: list[GenerationJobOut]
+    item_validation: ItemValidationOut | None = None
     created_at: datetime
 
     @classmethod
@@ -238,6 +249,7 @@ class GenerationRunOut(BaseModel):
         run: GenerationRun,
         jobs: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
         qa_items: list[QaItem] | tuple[QaItem, ...] = (),
+        item_validation: ItemValidationOut | None = None,
     ) -> GenerationRunOut:
         outline = None
         if run.outline is not None:
@@ -260,6 +272,7 @@ class GenerationRunOut(BaseModel):
             published_quiz_version_id=run.published_quiz_version_id,
             qa_items=[QaItemOut.from_domain(item) for item in qa_items],
             jobs=[GenerationJobOut(kind=kind, status=status) for kind, status in jobs],
+            item_validation=item_validation,
             created_at=run.created_at,
         )
 

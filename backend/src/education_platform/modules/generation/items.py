@@ -39,6 +39,90 @@ _FALLBACK_PROMPTS = {
     BloomLevel.APPLY: "Which step is a valid way to continue?",
     BloomLevel.ANALYZE: "Which conclusion follows?",
 }
+# Distinct content words so heuristic slots are not the same stem. Real model
+# items are deduped separately; this only keeps the no-LLM bank from collapsing.
+_SLOT_WORDS = (
+    "amber",
+    "birch",
+    "cedar",
+    "drift",
+    "ember",
+    "flint",
+    "grove",
+    "hazel",
+    "ivory",
+    "juniper",
+    "kelp",
+    "lark",
+    "maple",
+    "nectar",
+    "otter",
+    "pebble",
+    "quartz",
+    "rowan",
+    "spruce",
+    "thistle",
+    "umber",
+    "violet",
+    "willow",
+    "yarrow",
+    "zephyr",
+    "acorn",
+    "bramble",
+    "clover",
+    "dune",
+    "falcon",
+    "gorse",
+    "heron",
+    "iris",
+    "jasper",
+    "kestrel",
+    "lichen",
+    "moss",
+    "newt",
+    "orchid",
+    "poplar",
+    "quince",
+    "reed",
+    "sorrel",
+    "tansy",
+    "urchin",
+    "verbena",
+    "wren",
+    "yew",
+    "alder",
+    "basil",
+    "cinder",
+    "daisy",
+    "egret",
+    "fern",
+    "gull",
+    "holly",
+    "indigo",
+    "jade",
+    "koala",
+    "lotus",
+    "mink",
+    "nutmeg",
+    "olive",
+    "pine",
+    "quail",
+    "raven",
+    "sage",
+    "thyme",
+    "upland",
+    "vine",
+    "wheat",
+    "xenon",
+    "yam",
+    "zinnia",
+    "apricot",
+    "badger",
+    "coral",
+    "dolphin",
+    "elk",
+    "fig",
+)
 _FALLBACK_DISTRACTORS = (
     "This reverses the correct steps.",
     "This changes the equation in a way that is not allowed.",
@@ -82,6 +166,7 @@ class NodeItemRequest:
     chunk_texts: tuple[str, ...]
     quota: int
     bloom: tuple[BloomLevel, ...]
+    repair_note: str = ""
 
 
 ItemsWriter = Callable[[NodeItemRequest], Sequence[GeneratedItem]]
@@ -247,7 +332,7 @@ def items_from_chunks(request: NodeItemRequest) -> tuple[GeneratedItem, ...]:
             GeneratedItem(
                 subtopic_id=request.subtopic_id,
                 learning_outcome_ids=request.learning_outcome_ids,
-                prompt=_FALLBACK_PROMPTS.get(bloom_enum, "Which statement is correct?"),
+                prompt=_fallback_prompt(index, request.heading, bloom_enum),
                 options=options,
                 correct_label=correct_label,
                 correct_rationale=f"Option {correct_label} states the relationship correctly.",
@@ -363,6 +448,7 @@ def _items_from_runner(
             chunk_texts=request.chunk_texts,
             quota=request.quota,
             bloom=tuple(level.value for level in request.bloom),
+            repair_note=request.repair_note,
         )
         for request in requests
     )
@@ -571,6 +657,15 @@ def _leaf_and_parent(heading: str) -> tuple[str, str | None]:
 def _slugify(value: str) -> str:
     slug = _SLUG_RE.sub("-", value.strip().lower()).strip("-")
     return (slug[:100] or "section")[:100]
+
+
+def _fallback_prompt(index: int, heading: str, bloom: BloomLevel) -> str:
+    """A stem that does not collide with the other heuristic slots."""
+    primary = _SLOT_WORDS[index % len(_SLOT_WORDS)]
+    secondary = _SLOT_WORDS[(index * 7 + 3) % len(_SLOT_WORDS)]
+    topic = _slugify(heading).replace("-", "") or "lesson"
+    lead = _FALLBACK_PROMPTS.get(bloom, "Which statement is correct?")
+    return f"{primary} {secondary} {lead} for {topic}"
 
 
 def _snippet(text: str) -> str:
