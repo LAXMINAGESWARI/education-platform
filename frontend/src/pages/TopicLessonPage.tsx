@@ -136,11 +136,18 @@ export function TopicLessonPage() {
               { label: topicTitle },
             ]}
           />
-          <div className="lesson-view__bar">
+          <h1 className="sr-only">{topicTitle}</h1>
+          <div className="lesson-stage__bar">
             <Link to={topicPath} className="lesson-back">
               Back to topic
             </Link>
-            <h1 className="sr-only">{topicTitle}</h1>
+            <SlideProgress
+              heading
+              sectionTitle={slide.sectionTitle ?? slide.title}
+              index={slideIndex}
+              total={slides.length}
+              complete={lesson.progress?.status === "completed"}
+            />
           </div>
 
           <div className="lesson-layout">
@@ -149,6 +156,8 @@ export function TopicLessonPage() {
                 title={slide.title}
                 content={slide.content}
                 ariaLabel={topicTitle}
+                scrollKey={slideIndex}
+                hideTitle
                 footer={
                   <>
                     <div className="slide-nav__controls">
@@ -189,12 +198,6 @@ export function TopicLessonPage() {
                           : "Complete the topic lesson first."}
                       </p>
                     )}
-                    <SlideProgress
-                      sectionTitle={slide.sectionTitle}
-                      index={slideIndex}
-                      total={slides.length}
-                      complete={lesson.progress?.status === "completed"}
-                    />
                   </>
                 }
               />
