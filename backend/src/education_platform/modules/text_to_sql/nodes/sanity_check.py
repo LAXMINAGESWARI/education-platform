@@ -434,6 +434,10 @@ def _zero_is_explained(state: TextToSQLState) -> bool:
       not teach — the emptiness is fully explained, not suspicious.
 
     Every other trigger still applies, and free_form (no probes) never qualifies."""
+    # The at-risk service reads the same scoped flags as the page. An empty list is
+    # "nobody is flagged", not a SQL scoping failure, so it does not need the probes.
+    if state.get("query_source") == "service" and state.get("zero_result_is_valid"):
+        return True
     results = state.get("zero_probe_results") or {}
     if state.get("zero_result_is_valid") and (results.get("visible_students") or 0) > 0:
         return True

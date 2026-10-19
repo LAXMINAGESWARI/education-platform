@@ -415,12 +415,15 @@ def _roster_with_attribute_shape(rows: list[dict[str, Any]], row_count: int) -> 
     return attribute_column
 
 
-def _roster_with_attribute_answer(column: str, rows: list[dict[str, Any]]) -> str:
+def _roster_with_attribute_answer(
+    column: str, rows: list[dict[str, Any]], criterion: str | None = None
+) -> str:
     suffix = "%" if column.lower() in PERCENTAGE_COLUMNS else ""
     entries = [f"{row['full_name']} ({row[column]}{suffix})" for row in rows]
     count = len(rows)
     noun = "record" if count == 1 else "records"
-    return f"Found {count} matching {noun}: {_english_join(entries)}."
+    qualifier = f" ({criterion})" if criterion else ""
+    return f"Found {count} matching {noun}{qualifier}: {_english_join(entries)}."
 
 
 def _roster_with_attributes_shape(rows: list[dict[str, Any]], row_count: int) -> list[str] | None:
@@ -550,7 +553,7 @@ async def _compose_core_answer(
         return _enumerated_list_answer(list_column, rows)
     roster_column = _roster_with_attribute_shape(rows, row_count)
     if roster_column is not None:
-        return _roster_with_attribute_answer(roster_column, rows)
+        return _roster_with_attribute_answer(roster_column, rows, criterion)
     attribute_columns = _roster_with_attributes_shape(rows, row_count)
     if attribute_columns is not None:
         return _roster_with_attributes_answer(attribute_columns, rows, criterion)
@@ -613,8 +616,11 @@ def _tables_referenced(sql: str | None) -> list[str]:
 
 
 def _provenance(state: TextToSQLState) -> str:
-    tables = _tables_referenced(state.get("validated_sql"))
-    parts = [f"Queried: {', '.join(tables)}." if tables else "No tables were queried."]
+    if state.get("query_source") == "service":
+        parts = ["Read the at-risk flags visible to this viewer."]
+    else:
+        tables = _tables_referenced(state.get("validated_sql"))
+        parts = [f"Queried: {', '.join(tables)}." if tables else "No tables were queried."]
     audit_entry = state.get("audit_entry") or {}
     triggers = audit_entry.get("sanity_check_triggers") or []
     if triggers:

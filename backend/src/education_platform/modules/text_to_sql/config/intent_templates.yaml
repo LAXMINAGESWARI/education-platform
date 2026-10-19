@@ -838,19 +838,12 @@ templates:
   # ---------------------------------------------------------------------------
   - name: students_needing_support
     description: >
-      The requesting teacher's students who fall below the institution's
-      defined support threshold — named list or count, depending on
-      phrasing. Same rationale as students_meeting_performance_bar —
-      "struggling" originally had no schema definition, and free-form
-      generation was once observed inventing an undisclosed <50% threshold.
-      The definition below (mastery below 60% or attendance below 80%) is
-      now approved and matches at_risk/engine.py's own calibrated
-      "struggling" level thresholds. "At risk" is treated as a synonym for
-      this same definition, not a separate template — at_risk/engine.py's
-      own dashboard flags add a mastery-trend-decline driver this template
-      deliberately omits (see approved_note), so this is the narrower,
-      current-snapshot-only reading of "at risk" a teacher asking in chat
-      gets, not the dashboard's full flag set.
+      The students on the at-risk flag list for this viewer — named list or
+      count. "Struggling" and "at risk" both mean that list, not a separate
+      mastery-or-attendance query. The answer is produced by the at-risk
+      service (the same function as GET /at-risk/flags), so the thresholds,
+      the mastery-trend driver, and who can see an attendance-only flag all
+      match the At-risk flags page for the person asking.
     example_questions:
       - "Show me the struggling students."
       - "Which of my students need extra support?"
@@ -868,11 +861,13 @@ templates:
           confidence for the same underlying fact (same pattern as
           students_below_attendance_threshold's shape parameter).
     requires_signoff: false
-    # A zero here is a genuine, expected answer (the SQL carries its own scoping), so
-    # sanity_check does not downgrade confidence for it and compose_answer says it plainly.
+    # Answered by the at-risk service, not by sql_list/sql_count. intent_router sets
+    # query_source to "service" and the graph calls list_at_risk_students.
+    service: at_risk_students
+    # A zero here is a genuine answer: nobody in this viewer's scope is flagged.
     # `empty_answer` is formatted with the validated parameters (and `criterion`) only.
     zero_is_valid: true
-    empty_answer: "None of your students currently need support ({criterion})."
+    empty_answer: "None of your students are on the at-risk list for your classes ({criterion})."
     router:
         intent_group: support_policy
         positive_examples:
@@ -891,77 +886,21 @@ templates:
         - shape
 
     approved_note: >
-      ✅ APPROVED. mastery < 60 OR attendance < 80, matching
-      at_risk.engine.DEFAULT_THRESHOLDS (mastery_level=60.0,
-      attendance_level=80.0) — calibrated against the synthetic school's
-      mastery distribution (mean 71.3%, SD 8.5; 60% is ~1.5 SD below the
-      mean) and attendance distribution (80% sits at the natural gap between
-      a 70% cluster and the next at 86%), rather than the previous, unrelated
-      75% "attendance-eligible" figure or an unprecedented 50% guess. Note
-      this template intentionally does NOT reproduce at_risk's
-      mastery-trend-decline driver — student_360 has no per-attempt series
-      to compute a trend from, only a single current mastery_percent reading.
-      This is also why a chat "how many students are at risk" count can
-      legitimately differ from the at-risk dashboard's own flag count: the
-      dashboard additionally flags students on trend decline alone, which
-      this level-only definition cannot see — and, in the other direction,
-      docs/design/08-at-risk-early-warning.md §7.2 deliberately routes an
-      attendance-only flag to administrators only, never to a subject
-      teacher (attendance is a whole-student signal with no single owning
-      teacher) — a policy this template does NOT reproduce, since
-      attendance_percent is already a column on every student_360 row this
-      teacher is independently scoped to see (RLS/apply_role_scope grant
-      that access per-row, not per-flag-type), so this is a difference in
-      which *rows* get surfaced as "struggling," not a new data exposure.
-      Confirmed live against the seeded demo data: this gap alone explained
-      a teacher's chat count (12) landing above her dashboard's level-only
-      count (8) with zero actual discrepancy once traced to specific
-      students — not a bug in either path, see conversation history.
+      The definition is the at-risk engine (mastery below 60, a mastery
+      decline of more than 15 points, attendance below 80), read through
+      list_flags for the asking viewer. An earlier SQL template used
+      mastery < 60 OR attendance < 80 on student_360 and therefore counted
+      attendance-only students a teacher cannot see, and missed trend-only
+      flags. That split (a teacher's chat said 12 while the flag page said
+      9) is the bug this service binding removes. Section 7.2 still hides
+      attendance-only flags from teachers; this template follows that rule
+      rather than widening it.
     answer_note: >
-      compose_answer should state the criterion alongside the list/count, and
-      should be worded supportively — this output names (or counts) specific
-      children as struggling, and how it is phrased matters. See `criterion`
-      below, threaded through as state["answer_criterion"] for the
-      deterministic count path; the list path still relies on the LLM
-      summarization prompt to mention it, which is not yet guaranteed the
-      way the count path now is.
-    criterion: mastery below 60% or attendance below 80%
-    sql_list: |
-      SELECT DISTINCT sp.full_name, s.mastery_percent, s.attendance_percent
-      FROM student_360 s
-      JOIN student_profiles sp ON sp.id = s.student_id
-      JOIN academic_periods ap ON ap.id = s.academic_period_id
-      WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
-             OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
-        AND ap.status = 'active'
-        AND (s.student_id, s.grade_subject_offering_id) IN (
-          SELECT sse.student_id, sse.grade_subject_offering_id
-          FROM student_subject_enrollments sse
-          JOIN teaching_assignments ta
-            ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
-          LEFT JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
-          WHERE ta.teacher_user_id = :current_user_id
-            AND ta.status = 'active'
-            AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
-        )
-      ORDER BY s.mastery_percent ASC
-    sql_count: |
-      SELECT COUNT(DISTINCT s.student_id) AS student_count
-      FROM student_360 s
-      JOIN academic_periods ap ON ap.id = s.academic_period_id
-      WHERE (s.mastery_percent < 60.00        -- ✅ APPROVED (matches at_risk engine)
-             OR s.attendance_percent < 80.00) -- ✅ APPROVED (matches at_risk engine)
-        AND ap.status = 'active'
-        AND (s.student_id, s.grade_subject_offering_id) IN (
-          SELECT sse.student_id, sse.grade_subject_offering_id
-          FROM student_subject_enrollments sse
-          JOIN teaching_assignments ta
-            ON ta.grade_subject_offering_id = sse.grade_subject_offering_id
-          LEFT JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
-          WHERE ta.teacher_user_id = :current_user_id
-            AND ta.status = 'active'
-            AND (ta.section_id IS NULL OR ta.section_id = sge.section_id)
-        )
+      Say that the answer uses the at-risk definition and is the same set as
+      the At-risk flags page. Name each student and the reason (low
+      attendance, low mastery, declining trend). Do not describe this as a
+      broader "struggling" cut.
+    criterion: "using the at-risk definition for your classes, the same students as the at-risk flags. A flag is low mastery (below 60%), a mastery decline of more than 15 points, or low attendance (below 80%) when that flag is visible to you. Attendance-only flags are an administrator view and are not included for a teacher"
 
   # ---------------------------------------------------------------------------
   # 12. LOW ATTENDANCE  (golden eval rows 23/24 — Finding 1 regression pair)

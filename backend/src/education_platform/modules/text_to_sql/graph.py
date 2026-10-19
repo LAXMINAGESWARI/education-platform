@@ -84,6 +84,7 @@ from education_platform.modules.text_to_sql.nodes import (
     link_schema,
     load_schema,
     question_validator,
+    resolve_at_risk,
     sanity_check,
     validate_sql,
 )
@@ -109,8 +110,15 @@ def _route_after_question_validator(state: TextToSQLState) -> Literal["ok", "blo
     return "blocked" if state.get("error") else "ok"
 
 
-def _route_after_intent_router(state: TextToSQLState) -> Literal["template", "free_form"]:
-    return "template" if state.get("intent_route") == "template" else "free_form"
+def _route_after_intent_router(
+    state: TextToSQLState,
+) -> Literal["template", "service", "free_form"]:
+    if state.get("intent_route") != "template":
+        return "free_form"
+    # students_needing_support is answered by the at-risk service, not by SQL.
+    if state.get("query_source") == "service":
+        return "service"
+    return "template"
 
 
 def _route_after_load_schema(state: TextToSQLState) -> Literal["ok", "error"]:
@@ -155,6 +163,12 @@ def _route_after_apply_role_scope(state: TextToSQLState) -> Literal["ok", "refus
     return "refuse" if state.get("error") else "ok"
 
 
+def _route_after_resolve_at_risk(state: TextToSQLState) -> Literal["ok", "refuse"]:
+    # Same as execute_sql: a failure loading flags is not something generate_sql can
+    # repair, so it goes to honest_refusal.
+    return "refuse" if state.get("error") else "ok"
+
+
 def _route_after_execute(state: TextToSQLState) -> Literal["ok", "refuse"]:
     # execute_sql sets state["error"] (EXECUTION_ERROR) on a genuine DB-level failure —
     # timeout, connection failure, unexpected constraint violation. The SQL was already
@@ -186,6 +200,7 @@ def build_text_to_sql_graph() -> CompiledStateGraph[TextToSQLState, None, TextTo
     graph.add_node("validate_sql", validate_sql)
     graph.add_node("apply_role_scope", apply_role_scope)
     graph.add_node("execute_sql", execute_sql)
+    graph.add_node("resolve_at_risk", resolve_at_risk)
     graph.add_node("sanity_check", sanity_check)
     graph.add_node("compose_answer", compose_answer)
     graph.add_node("audit_log", audit_log)
@@ -213,7 +228,16 @@ def build_text_to_sql_graph() -> CompiledStateGraph[TextToSQLState, None, TextTo
         _route_after_intent_router,
         {
             "template": "validate_sql",
+            "service": "resolve_at_risk",
             "free_form": "load_schema",
+        },
+    )
+    graph.add_conditional_edges(
+        "resolve_at_risk",
+        _route_after_resolve_at_risk,
+        {
+            "ok": "sanity_check",
+            "refuse": "honest_refusal",
         },
     )
     graph.add_conditional_edges(

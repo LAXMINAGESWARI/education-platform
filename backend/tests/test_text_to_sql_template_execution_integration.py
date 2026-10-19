@@ -708,59 +708,17 @@ async def test_students_meeting_performance_bar_sql_is_correctly_scoped(seeded: 
     assert teacher2_result["query_result"][0]["student_count"] == 1
 
 
-# --- 12. students_needing_support ("struggling"/"at risk" -- approved: mastery < 60 OR -----
-# --- attendance < 80, matching at_risk.engine.DEFAULT_THRESHOLDS; both sql_list and --------
-# --- sql_count shapes) ----------------------------------------------------------------------
+# --- 12. students_needing_support is no longer a SQL template ------------------------------
 
 
-async def test_students_needing_support_sql_is_correctly_scoped(seeded: _Fixture) -> None:
-    # Teacher (a_math 85/90%, a_science 70/80%): neither is below the approved 60 mastery
-    # or 80 attendance floor -- a_science sits exactly at the 80% attendance boundary,
-    # which is not "< 80" -- a legitimate zero-row result, not an error.
-    teacher_result = await _run_template(
-        "students_needing_support",
-        user_id=seeded.teacher_user_id,
-        institution_id=seeded.institution_id,
-        parameters={"shape": "list"},
-        sql_key="sql_list",
-    )
-    assert teacher_result["result_row_count"] == 0
-
-    # Teacher2 (a_math fine, b_math 45%/50%): b_math qualifies on both criteria under
-    # either the old (50/75) or the new, approved (60/80) thresholds.
-    teacher2_result = await _run_template(
-        "students_needing_support",
-        user_id=seeded.teacher2_user_id,
-        institution_id=seeded.institution_id,
-        parameters={"shape": "list"},
-        sql_key="sql_list",
-    )
-    assert {row["full_name"] for row in teacher2_result["query_result"]} == {"stu-b-math"}
-
-
-async def test_students_needing_support_count_shape_matches_list_shape(
-    seeded: _Fixture,
-) -> None:
-    list_result = await _run_template(
-        "students_needing_support",
-        user_id=seeded.teacher2_user_id,
-        institution_id=seeded.institution_id,
-        parameters={"shape": "list"},
-        sql_key="sql_list",
-    )
-    count_result = await _run_template(
-        "students_needing_support",
-        user_id=seeded.teacher2_user_id,
-        institution_id=seeded.institution_id,
-        parameters={"shape": "count"},
-        sql_key="sql_count",
-    )
-    # Same Finding 1 regression-pair discipline as students_below_attendance_threshold:
-    # list and count shapes must agree on the same underlying fact. b_math is the one
-    # qualifying (student, subject) row, so the DISTINCT student count is 1.
-    assert count_result["query_result"][0]["student_count"] == len(
-        {row["full_name"] for row in list_result["query_result"]}
-    )
+def test_students_needing_support_is_the_at_risk_service_not_a_second_query() -> None:
+    """The old mastery<60 OR attendance<80 SQL was a second definition of struggling.
+    The template must not grow that SQL back."""
+    template = _template("students_needing_support")
+    assert template["service"] == "at_risk_students"
+    assert "sql" not in template
+    assert "sql_list" not in template
+    assert "sql_count" not in template
 
 
 # --- 13. students_below_attendance_threshold (both sql_list and sql_count shapes) ---------
@@ -831,7 +789,7 @@ def test_student_360_templates_scope_on_the_student_offering_pair() -> None:
             assert "s.student_id IN (" not in sql.replace(
                 "(s.student_id, s.grade_subject_offering_id) IN (", ""
             ), where
-    assert checked == 9  # every student_360 query; update deliberately if one is added
+    assert checked == 7  # every student_360 query; students_needing_support is not one of them
 
 
 # --- zero-result probes (run by execute_sql, in the same RLS-scoped transaction) ------------
