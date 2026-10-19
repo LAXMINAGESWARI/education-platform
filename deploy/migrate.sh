@@ -1,19 +1,24 @@
 #!/bin/sh
-# Alembic, then the optional synthetic demo school.
+# Timestamped backup, then Alembic, then synthetic Core topic promotion,
+# then the optional synthetic demo school.
+# A failed backup stops the script before migrations.
 # SEED_SYNTHETIC=true seeds once. SEED_SYNTHETIC=always rebuilds that school.
 set -eu
 
 cd /app/backend
 
-echo "Running alembic upgrade head"
-alembic upgrade head
-
-echo "Backing up the database before topic promotion"
+echo "Backing up the database before migrations and topic promotion"
 backup_dir="${BACKUP_DIR:-/backups}"
 mkdir -p "$backup_dir"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 export BACKUP_FILE="${backup_dir}/education-${stamp}.dump"
-python -m education_platform.db.pg_backup
+if ! python -m education_platform.db.pg_backup; then
+  echo "Database backup failed. Stopping before migrations." >&2
+  exit 1
+fi
+
+echo "Running alembic upgrade head"
+alembic upgrade head
 
 echo "Promoting synthetic Core topics"
 python -m education_platform.modules.synthetic.promote
