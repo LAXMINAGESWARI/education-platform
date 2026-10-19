@@ -235,6 +235,7 @@ export type LessonSlide = {
   number: number;
   title: string;
   content: string;
+  sectionTitle?: string;
 };
 
 export type LessonMaterial = {

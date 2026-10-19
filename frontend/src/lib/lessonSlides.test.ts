@@ -105,6 +105,30 @@ describe("lessonSlides", () => {
     ]);
   });
 
+  it("merges a short h3 into the same h2 slide", () => {
+    const slides = slidesFromMarkdown(
+      [
+        "## Trapezoids",
+        "",
+        "A short note.",
+        "",
+        "### Formula",
+        "",
+        "$$\\frac{1}{2} \\times (base_1 + base_2) \\times height$$",
+        "",
+        "### Check",
+        "",
+        "Subtract the inner shape.",
+      ].join("\n"),
+      "Mensuration",
+    );
+    expect(slides).toHaveLength(1);
+    expect(slides[0]?.sectionTitle).toBe("Trapezoids");
+    expect(slides[0]?.content).toContain("### Formula");
+    expect(slides[0]?.content).toContain("### Check");
+    expect(slides[0]?.content).toContain("\\frac{1}{2}");
+  });
+
   it("splits h2 and h3 sections without cutting a table or a multi-line formula", () => {
     const formula = [
       "$$\\text{Required area} = (l + 2w)(b + 2w) - lb",
@@ -133,8 +157,8 @@ describe("lessonSlides", () => {
       "Subtract the park.",
     ].join("\n");
     const slides = slidesFromMarkdown(markdown, "Mensuration");
-    expect(slides.map((slide) => slide.title)).toContain("Check");
-    expect(slides.some((slide) => slide.title.startsWith("Area of the path"))).toBe(true);
+    expect(slides.every((slide) => slide.sectionTitle === "Area of the path")).toBe(true);
+    expect(slides.some((slide) => slide.content.includes("Subtract the park."))).toBe(true);
     const formulaSlides = slides.filter(
       (slide) => slide.content.includes("Required area") || slide.content.includes("8000"),
     );
@@ -143,27 +167,30 @@ describe("lessonSlides", () => {
     expect(formulaSlides[0]?.content).toContain("Required area");
     expect(formulaSlides[0]?.content).toContain("8000");
     expect(slides.filter((slide) => slide.content.includes("| Shape | Area |"))).toHaveLength(1);
+    expect(formulaSlides[0]?.content.split("$$").length - 1).toBe(2);
   });
 
-  it("splits a full mensuration lesson into many slides without cutting tables or formulas", () => {
+  it("packs a full mensuration lesson into a screenful of slides without cutting tables or formulas", () => {
     const markdown = mensurationLessonMarkdown();
     expect(markdown.length).toBeGreaterThan(60_000);
     const slides = slidesFromMarkdown(markdown, "Mensuration");
-    expect(slides.length).toBeGreaterThan(20);
-    const tables = slides.filter((slide) => slide.title.endsWith("measurements"));
+    expect(slides.length).toBeGreaterThanOrEqual(20);
+    expect(slides.length).toBeLessThanOrEqual(35);
+    const sections = new Set(slides.map((slide) => slide.sectionTitle));
+    expect(sections.size).toBe(12);
+    const tables = slides.filter((slide) => slide.content.includes("| Shape | Length |"));
     expect(tables).toHaveLength(12);
     for (const slide of tables) {
-      const rows = slide.content.split("\n").filter((line) => /^\|/.test(line) && !line.includes("---"));
+      const rows = slide.content
+        .split("\n")
+        .filter((line) => /^\|/.test(line) && !line.includes("---"));
       expect(rows.length).toBe(7);
-      expect(slide.content).not.toContain("$$");
     }
-    const formulas = slides.filter((slide) => slide.title.endsWith("formula"));
+    const formulas = slides.filter((slide) => slide.content.includes("$$"));
     expect(formulas).toHaveLength(12);
     for (const slide of formulas) {
-      expect(slide.content.startsWith("$$")).toBe(true);
-      expect(slide.content.endsWith("$$")).toBe(true);
+      expect(slide.content.split("$$").length - 1).toBe(2);
       expect(slide.content).toContain("\n=");
-      expect(slide.content).not.toContain("| Shape |");
     }
   });
 

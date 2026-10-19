@@ -7,6 +7,7 @@ import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PushButton } from "../components/PushButton";
+import { SlideProgress } from "../components/SlideProgress";
 import { slidesForLessonView } from "../lib/lessonSlides";
 import { quizActionLabel } from "../lib/quizAction";
 import { resumeSlideIndex, useSubtopicLesson } from "../lib/useSubtopicLesson";
@@ -235,10 +236,12 @@ export function LessonSlidesPage() {
                     </PushButton>
                   )}
                 </div>
-                <p className="slide-nav__status">
-                  Slide {slideIndex + 1} of {slides.length}
-                  {lessonComplete ? " · complete" : ""}
-                </p>
+                <SlideProgress
+                  sectionTitle={slide.sectionTitle}
+                  index={slideIndex}
+                  total={slides.length}
+                  complete={lessonComplete}
+                />
               </div>
             </article>
           </div>

@@ -156,7 +156,6 @@ describe("TopicLessonPage", () => {
   });
 
   it("shows a mensuration-style topic lesson as slides and unlocks the quiz on the last slide", async () => {
-    const user = userEvent.setup();
     const formula = [
       "$$\\text{Required area} = (l + 2w)(b + 2w) - lb",
       "= 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
@@ -185,14 +184,30 @@ describe("TopicLessonPage", () => {
       markdown,
       quiz_unlocked: false,
     });
-    updateTopicMaterialProgress.mockImplementation(async (_topicId: string, body: { status: string; last_unit_ordinal: number }) => ({
-      status: body.status,
-      last_unit_ordinal: body.last_unit_ordinal,
-      opened_at: "2026-08-09T21:00:00Z",
-      last_opened_at: "2026-08-09T21:00:00Z",
-      completed_at: body.status === "completed" ? "2026-08-09T21:10:00Z" : null,
-      source_material_version_id: "ver-topic-1",
-    }));
+    let releaseProgress: (value: {
+      status: string;
+      last_unit_ordinal: number;
+      opened_at: string;
+      last_opened_at: string;
+      completed_at: string | null;
+      source_material_version_id: string;
+    }) => void = () => undefined;
+    updateTopicMaterialProgress.mockImplementation(
+      (_topicId: string, body: { status: string; last_unit_ordinal: number }) =>
+        new Promise((resolve) => {
+          releaseProgress = resolve;
+          if (body.status !== "completed") {
+            resolve({
+              status: body.status,
+              last_unit_ordinal: body.last_unit_ordinal,
+              opened_at: "2026-08-09T21:00:00Z",
+              last_opened_at: "2026-08-09T21:00:00Z",
+              completed_at: null,
+              source_material_version_id: "ver-topic-1",
+            });
+          }
+        }),
+    );
     fetchLearningDirectory.mockResolvedValue({
       ...directory,
       subjects: [
@@ -225,23 +240,55 @@ describe("TopicLessonPage", () => {
     expect(screen.getByText("Complete the topic lesson first.")).toBeInTheDocument();
     expect(screen.queryByText(/unlocks when/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Start quiz" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Slide 1 of 2/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Area of the path" })).toBeInTheDocument();
+    expect(screen.getByText("Area of the path", { selector: ".slide-nav__section" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Check" })).toBeInTheDocument();
+    expect(screen.getByText(/Slide 1 of 1/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next slide" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Next slide" }));
-
-    expect(await screen.findByRole("heading", { name: "Check" })).toBeInTheDocument();
-    expect(screen.getByText(/Slide 2 of 2/)).toBeInTheDocument();
     await waitFor(() => {
       expect(updateTopicMaterialProgress).toHaveBeenCalledWith("topic-1", {
         status: "completed",
-        last_unit_ordinal: 2,
+        last_unit_ordinal: 1,
       });
+    });
+    releaseProgress({
+      status: "completed",
+      last_unit_ordinal: 1,
+      opened_at: "2026-08-09T21:00:00Z",
+      last_opened_at: "2026-08-09T21:00:00Z",
+      completed_at: "2026-08-09T21:10:00Z",
+      source_material_version_id: "ver-topic-1",
     });
     expect(await screen.findByRole("link", { name: "Start quiz" })).toHaveAttribute(
       "href",
       "/quizzes/overall-1",
     );
     expect(screen.getByText("Topic quiz follows the slides.")).toBeInTheDocument();
+  });
+
+  it("keeps Next slide enabled until the last slide", async () => {
+    const user = userEvent.setup();
+    getTopicMaterial.mockResolvedValue({
+      ...lessonPayload,
+      title: "Mensuration",
+      markdown: ["## Perimeter", "", "Walk the outside.", "", "## Area", "", "Cover the inside."].join(
+        "\n",
+      ),
+      quiz_unlocked: false,
+    });
+    renderTopicLesson();
+
+    const next = await screen.findByRole("button", { name: "Next slide" });
+    expect(next).toBeEnabled();
+    expect(screen.getByText("Perimeter", { selector: ".slide-nav__section" })).toBeInTheDocument();
+    expect(screen.getByText(/Slide 1 of 2/)).toBeInTheDocument();
+
+    await user.click(next);
+
+    expect(screen.getByText("Area", { selector: ".slide-nav__section" })).toBeInTheDocument();
+    expect(screen.getByText(/Slide 2 of 2/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next slide" })).not.toBeInTheDocument();
   });
 
   it("explains when the topic lesson is not published yet", async () => {

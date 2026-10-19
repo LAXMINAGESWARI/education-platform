@@ -2242,6 +2242,25 @@ a.list-item__title:hover {
   gap: 0.75rem;
 }
 
+.slide-nav__progress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.slide-nav__section {
+  margin: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+
 .lesson-overview__footer .slide-nav__status {
   margin: 0;
   font-family: var(--font-mono);
@@ -2879,9 +2898,26 @@ a.list-item__title:hover {
   font-size: 1.05em;
 }
 
-.question-prompt .markdown-content,
-.option__text .markdown-content {
+.markdown-content--inline {
   display: inline;
+}
+
+.markdown-content--inline .katex-display {
+  display: inline-block;
+  margin: 0 0.15rem;
+  text-align: left;
+}
+
+.question-prompt .markdown-content,
+.option__text .markdown-content,
+.qa-review__rationale .markdown-content,
+.draft-option .markdown-content,
+.progress-label .markdown-content {
+  display: inline;
+}
+
+.option__text {
+  min-width: 0;
 }
 
 .markdown h1,
@@ -5760,6 +5796,58 @@ body:has(.topbar) .pwa-toasts {
 
 .pwa-sheet .btn {
   min-height: 2.75rem;
+}
+
+/* Enabled primary actions stay solid green. The shared hover glass otherwise
+   washes a focused or hovered Next button into a pale chip. */
+button.btn:not(.btn--soft):not(.btn--outline):not(.btn--matte):not(.btn--complete):not(:disabled),
+a.btn:not(.btn--soft):not(.btn--outline):not(.btn--matte):not(.btn--complete):not(:disabled) {
+  background-color: var(--accent) !important;
+  background-image: none !important;
+  color: var(--accent-ink) !important;
+  opacity: 1;
+  box-shadow: none;
+}
+
+button.btn:not(.btn--soft):not(.btn--outline):not(.btn--matte):not(.btn--complete):hover:not(:disabled),
+a.btn:not(.btn--soft):not(.btn--outline):not(.btn--matte):not(.btn--complete):hover:not(:disabled) {
+  background-color: var(--accent-hover) !important;
+  background-image: none !important;
+  color: var(--accent-ink) !important;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+button.btn--outline:hover:not(:disabled),
+a.btn--outline:hover:not(:disabled) {
+  background-color: var(--surface);
+  background-image: none;
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+button.btn--soft:hover:not(:disabled),
+a.btn--soft:hover:not(:disabled) {
+  background-color: var(--surface-2);
+  background-image: none;
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+button.btn:disabled,
+a.btn:disabled,
+button.btn:disabled:hover,
+a.btn:disabled:hover {
+  background-color: var(--surface-2) !important;
+  background-image: none !important;
+  color: var(--ink-muted) !important;
+  border: 1px solid var(--border) !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  outline: none;
+  cursor: not-allowed;
+  filter: none;
 }
 
 @media (max-width: 860px) {

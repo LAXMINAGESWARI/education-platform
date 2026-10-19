@@ -6,6 +6,7 @@ import { getSubtopicMaterial, getTopicMaterial } from "../../api/materials";
 import type { GenerationQaItem, GenerationRun, LessonMaterial, LessonSlide } from "../../api/types";
 import { Crumbs, type Crumb } from "../../components/Crumbs";
 import { LessonSlideFrame } from "../../components/LessonSlideFrame";
+import { SlideProgress } from "../../components/SlideProgress";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 import { TopicGenerationUpload } from "../../components/TopicGenerationUpload";
@@ -179,9 +180,11 @@ function AdminPublishedSlides({
                     Next slide
                   </PushButton>
                 </div>
-                <p className="slide-nav__status">
-                  Slide {slideIndex + 1} of {slides.length}
-                </p>
+                <SlideProgress
+                  sectionTitle={slide.sectionTitle}
+                  index={slideIndex}
+                  total={slides.length}
+                />
               </>
             }
           />

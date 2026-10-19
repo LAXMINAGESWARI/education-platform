@@ -12,6 +12,7 @@ import {
 import { Crumbs } from "../components/Crumbs";
 import { LessonSlideFrame } from "../components/LessonSlideFrame";
 import { PushButton } from "../components/PushButton";
+import { SlideProgress } from "../components/SlideProgress";
 import { slidesForLessonView } from "../lib/lessonSlides";
 import { latestRetakeLabel, passedBestLabel, quizActionLabel, trackedAttempts } from "../lib/quizAction";
 import { useTopicLesson } from "../lib/useTopicLesson";
@@ -176,10 +177,12 @@ export function TopicLessonPage() {
                         </PushButton>
                       )}
                     </div>
-                    <p className="slide-nav__status">
-                      Slide {slideIndex + 1} of {slides.length}
-                      {lesson.progress?.status === "completed" ? " · complete" : ""}
-                    </p>
+                    <SlideProgress
+                      sectionTitle={slide.sectionTitle}
+                      index={slideIndex}
+                      total={slides.length}
+                      complete={lesson.progress?.status === "completed"}
+                    />
                   </>
                 }
               />
