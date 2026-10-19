@@ -135,7 +135,7 @@ describe("HomePage", () => {
     expect(screen.queryByRole("link", { name: /Back to subjects/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Personal material" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Topics" })).toBeInTheDocument();
-    expect(screen.getByText("Open a topic lesson, then take its quiz.")).toBeInTheDocument();
+    expect(screen.getByText("Choose the lesson or the quiz for a topic.")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Subtopics" })).not.toBeInTheDocument();
     expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
@@ -184,13 +184,87 @@ describe("HomePage", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Topics" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Approved Materials/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Approved Materials" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1",
+    );
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
       "href",
       "/subjects/math-1/topics/topic-1/lesson",
+    );
+    expect(screen.getByText("Start")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Quiz/ })).toHaveAttribute(
+      "href",
+      "/quizzes/overall-1",
     );
     expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByText(/correct_rationale/i)).not.toBeInTheDocument();
+  });
+
+  it("shows Continue and Retake on a topic the student has already opened", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      ...mockDirectory,
+      subjects: [
+        {
+          ...mockDirectory.subjects[0],
+          topics: [
+            {
+              ...mockDirectory.subjects[0].topics[0],
+              title: "Mensuration",
+              has_topic_lesson: true,
+              topic_lesson_completed: false,
+              topic_lesson_progress: {
+                status: "opened",
+                opened_at: "2026-08-09T21:00:00Z",
+                last_opened_at: "2026-08-09T21:00:00Z",
+                completed_at: null,
+                last_unit_ordinal: 3,
+                source_material_version_id: "ver-topic-1",
+              },
+              overall_quiz: {
+                ...mockDirectory.subjects[0].topics[0].overall_quiz!,
+                unlocked: true,
+                locked_reason: null,
+                attempt_count: 1,
+                best_score_percent: 64,
+                recent_attempts: [
+                  {
+                    id: "att-1",
+                    attempt_number: 1,
+                    status: "submitted",
+                    score_percent: 64,
+                    passed: false,
+                    started_at: "2026-08-09T22:00:00Z",
+                    submitted_at: "2026-08-09T22:20:00Z",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as never);
+
+    render(
+      <MemoryRouter
+        initialEntries={["/subjects/math-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Continue")).toBeInTheDocument();
+    expect(screen.getByText("In progress · slide 3")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Quiz/ })).toHaveAttribute(
+      "href",
+      "/quizzes/overall-1",
+    );
+    expect(screen.getByText("Retake")).toBeInTheDocument();
+    expect(screen.getByText("Last score 64%")).toBeInTheDocument();
   });
 
   it("locks the topic quiz with complete-the-topic-lesson copy", async () => {
@@ -229,6 +303,12 @@ describe("HomePage", () => {
     );
 
     expect(await screen.findByText("Complete the topic lesson first.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1/lesson",
+    );
+    expect(screen.queryByRole("link", { name: /Quiz/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Take quiz")).toBeInTheDocument();
     expect(screen.queryByText(/unlocks when/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/published/i)).not.toBeInTheDocument();
   });

@@ -144,7 +144,11 @@ describe("TopicLessonPage", () => {
       "href",
       "/quizzes/overall-1",
     );
-    expect(screen.getByText("Unlocked")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to topic" })).toHaveAttribute(
+      "href",
+      "/subjects/subj-1/topics/topic-1",
+    );
+    expect(screen.queryByRole("complementary", { name: "Topic quiz" })).not.toBeInTheDocument();
     expect(screen.queryByText(/correct_rationale/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/qa_items/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /answer key/i })).not.toBeInTheDocument();
@@ -289,6 +293,71 @@ describe("TopicLessonPage", () => {
     expect(screen.getByText("Area", { selector: ".slide-nav__section" })).toBeInTheDocument();
     expect(screen.getByText(/Slide 2 of 2/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Next slide" })).not.toBeInTheDocument();
+  });
+
+  it("offers a completed lesson and its quiz as separate topic entries", async () => {
+    getTopicMaterial.mockResolvedValue({
+      ...lessonPayload,
+      progress: {
+        status: "completed",
+        opened_at: "2026-08-09T21:00:00Z",
+        last_opened_at: "2026-08-09T21:00:00Z",
+        completed_at: "2026-08-09T21:10:00Z",
+        last_unit_ordinal: 4,
+        source_material_version_id: "ver-topic-1",
+      },
+    });
+    fetchLearningDirectory.mockResolvedValue({
+      ...directory,
+      subjects: [
+        {
+          ...directory.subjects[0],
+          topics: [
+            {
+              ...directory.subjects[0].topics[0],
+              title: "Mensuration",
+              topic_lesson_completed: true,
+              progress_percent: 50,
+              overall_quiz: {
+                ...directory.subjects[0].topics[0].overall_quiz!,
+                unlocked: true,
+                attempt_count: 1,
+                best_score_percent: 80,
+                passed: true,
+                recent_attempts: [
+                  {
+                    id: "att-1",
+                    attempt_number: 1,
+                    status: "submitted",
+                    score_percent: 80,
+                    passed: true,
+                    started_at: "2026-08-09T22:00:00Z",
+                    submitted_at: "2026-08-09T22:20:00Z",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    renderTopicLesson("/subjects/subj-1/topics/topic-1");
+
+    expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
+      "href",
+      "/subjects/subj-1/topics/topic-1/lesson",
+    );
+    expect(screen.getByText("Review")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Quiz/ })).toHaveAttribute(
+      "href",
+      "/quizzes/overall-1",
+    );
+    expect(screen.getByText("Retake")).toBeInTheDocument();
+    expect(screen.getByText("Last score 80%")).toBeInTheDocument();
+    expect(screen.queryByText("A rectangle has four right angles.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Topic quiz" })).not.toBeInTheDocument();
   });
 
   it("explains when the topic lesson is not published yet", async () => {

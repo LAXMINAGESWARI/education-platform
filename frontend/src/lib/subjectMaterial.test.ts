@@ -7,7 +7,10 @@ import {
   overallQuizGate,
   subjectTopicLessonTopics,
   subjectUnitEntries,
+  topicLessonEntry,
   topicLessonPath,
+  topicPagePath,
+  topicQuizEntry,
 } from "./subjectMaterial";
 
 const baseTopic: TopicNode = {
@@ -155,9 +158,65 @@ describe("subjectMaterial topic lesson helpers", () => {
   });
 
   it("builds the student topic lesson route", () => {
+    expect(topicPagePath("subj-1", "topic-1")).toBe("/subjects/subj-1/topics/topic-1");
     expect(topicLessonPath("subj-1", "topic-1")).toBe(
       "/subjects/subj-1/topics/topic-1/lesson",
     );
+  });
+
+  it("labels a topic lesson Start, Continue, or Review from saved progress", () => {
+    expect(topicLessonEntry({ topic_lesson_completed: false })).toEqual({
+      action: "Start",
+      detail: "Not started",
+    });
+    expect(
+      topicLessonEntry({
+        topic_lesson_completed: false,
+        topic_lesson_progress: {
+          status: "opened",
+          opened_at: "2026-08-09T21:00:00Z",
+          last_opened_at: "2026-08-09T21:00:00Z",
+          completed_at: null,
+          last_unit_ordinal: 3,
+          source_material_version_id: "ver-1",
+        },
+      }),
+    ).toEqual({ action: "Continue", detail: "In progress · slide 3" });
+    expect(topicLessonEntry({ topic_lesson_completed: true })).toEqual({
+      action: "Review",
+      detail: "Lesson complete",
+    });
+  });
+
+  it("keeps the topic quiz locked until the lesson is complete and shows the last score", () => {
+    expect(
+      topicQuizEntry({ ...baseTopic.overall_quiz!, unlocked: false }),
+    ).toEqual({
+      action: "Take quiz",
+      detail: "Complete the topic lesson first.",
+      href: null,
+    });
+    expect(
+      topicQuizEntry({
+        ...baseTopic.overall_quiz!,
+        unlocked: true,
+        recent_attempts: [
+          {
+            id: "att-1",
+            attempt_number: 1,
+            status: "submitted",
+            score_percent: 80,
+            passed: true,
+            started_at: "2026-08-09T22:00:00Z",
+            submitted_at: "2026-08-09T22:20:00Z",
+          },
+        ],
+      }),
+    ).toEqual({
+      action: "Retake",
+      detail: "Last score 80%",
+      href: "/quizzes/overall-1",
+    });
   });
 
   it("unlocks copy from a published topic lesson, not complete-the-lesson-first", () => {

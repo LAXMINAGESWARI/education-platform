@@ -1,4 +1,12 @@
-import type { LearningDirectory, SubjectNode, SubtopicNode, TopicNode } from "../api/types";
+import type {
+  LearningDirectory,
+  MaterialProgress,
+  QuizSummary,
+  SubjectNode,
+  SubtopicNode,
+  TopicNode,
+} from "../api/types";
+import { trackedAttempts } from "./quizAction";
 
 /** POC school curriculum lives in the first (and usually only) published topic bucket. */
 export function schoolTopic(subject: SubjectNode): TopicNode | null {
@@ -50,8 +58,61 @@ export function subjectProgress(subject: SubjectNode): {
   };
 }
 
+export function topicPagePath(subjectId: string, topicId: string): string {
+  return `/subjects/${subjectId}/topics/${topicId}`;
+}
+
 export function topicLessonPath(subjectId: string, topicId: string): string {
   return `/subjects/${subjectId}/topics/${topicId}/lesson`;
+}
+
+export type TopicLessonEntry = {
+  action: "Start" | "Continue" | "Review";
+  detail: string;
+};
+
+export function topicLessonEntry(
+  topic: Pick<TopicNode, "topic_lesson_completed" | "topic_lesson_progress">,
+  progress?: MaterialProgress | null,
+): TopicLessonEntry {
+  const lessonProgress = progress ?? topic.topic_lesson_progress;
+  if (topic.topic_lesson_completed || lessonProgress?.status === "completed") {
+    return { action: "Review", detail: "Lesson complete" };
+  }
+  if (lessonProgress?.status === "opened") {
+    const slide = lessonProgress.last_unit_ordinal;
+    return {
+      action: "Continue",
+      detail: slide ? `In progress · slide ${slide}` : "In progress",
+    };
+  }
+  return { action: "Start", detail: "Not started" };
+}
+
+export type TopicQuizEntry = {
+  action: "Take quiz" | "Retake";
+  detail: string;
+  href: string | null;
+};
+
+export function topicQuizEntry(quiz: QuizSummary | null | undefined): TopicQuizEntry {
+  if (!quiz?.available || !quiz.id) {
+    return { action: "Take quiz", detail: "No quiz yet", href: null };
+  }
+  const finished = trackedAttempts(quiz.recent_attempts).find(
+    (attempt) => attempt.status !== "in_progress",
+  );
+  const action = finished ? "Retake" : "Take quiz";
+  if (!quiz.unlocked) {
+    return { action, detail: "Complete the topic lesson first.", href: null };
+  }
+  const score =
+    finished?.score_percent == null ? null : Math.round(Number(finished.score_percent));
+  return {
+    action,
+    detail: score == null ? "Ready" : `Last score ${score}%`,
+    href: `/quizzes/${quiz.id}`,
+  };
 }
 
 export function hasPublishedTopicLesson(topic: TopicNode): boolean {

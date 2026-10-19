@@ -324,7 +324,7 @@ describe("QuizPage", () => {
     expect(screen.getByText("Quiz · Attempt 1 · overall")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Approved Materials" })).toHaveAttribute(
       "href",
-      "/subjects/subj-1/topics/topic-1/lesson",
+      "/subjects/subj-1/topics/topic-1",
     );
     expect(screen.queryByText(/correct_rationale/i)).not.toBeInTheDocument();
   });

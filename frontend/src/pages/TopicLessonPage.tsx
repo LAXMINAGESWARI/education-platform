@@ -3,24 +3,20 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { updateTopicMaterialProgress } from "../api/materials";
 import { ApiError } from "../api/types";
-import {
-  AttemptHistoryList,
-  AttemptHistoryTrigger,
-  formatAttempt,
-  formatAttemptWhen,
-} from "../components/AttemptHistory";
 import { Crumbs } from "../components/Crumbs";
 import { LessonSlideFrame } from "../components/LessonSlideFrame";
 import { PushButton } from "../components/PushButton";
 import { SlideProgress } from "../components/SlideProgress";
 import { slidesForLessonView } from "../lib/lessonSlides";
-import { latestRetakeLabel, passedBestLabel, quizActionLabel, trackedAttempts } from "../lib/quizAction";
+import { quizActionLabel } from "../lib/quizAction";
+import { topicPagePath } from "../lib/subjectMaterial";
 import { useTopicLesson } from "../lib/useTopicLesson";
 import { resumeSlideIndex } from "../lib/useSubtopicLesson";
 import { clearLearningDirectoryCache } from "./HomePage";
 
 export function TopicLessonPage() {
   const {
+    subjectId,
     topicId,
     lesson,
     setLesson,
@@ -31,7 +27,6 @@ export function TopicLessonPage() {
     subjectPath,
   } = useTopicLesson();
   const [searchParams] = useSearchParams();
-  const [showHistory, setShowHistory] = useState(false);
   const [slideIndex, setSlideIndex] = useState(0);
   const [progressError, setProgressError] = useState<string | null>(null);
   const positioned = useRef(false);
@@ -108,12 +103,8 @@ export function TopicLessonPage() {
 
   const quizUnlocked = Boolean(lesson?.quiz_unlocked && lesson.quiz_id);
   const quizId = lesson?.quiz_id ?? quizSummary?.id ?? null;
-  const attempts = trackedAttempts(quizSummary?.recent_attempts ?? []);
-  const latestAttempt = attempts[0] ?? null;
   const quizCta = quizActionLabel(quizSummary);
-  const latestWhen = latestAttempt ? formatAttemptWhen(latestAttempt) : null;
-  const passedLabel = passedBestLabel(quizSummary);
-  const retakeLabel = latestRetakeLabel(quizSummary);
+  const topicPath = topicPagePath(subjectId, topicId);
 
   return (
     <>
@@ -145,7 +136,12 @@ export function TopicLessonPage() {
               { label: topicTitle },
             ]}
           />
-          <h1 className="sr-only">{topicTitle}</h1>
+          <div className="lesson-view__bar">
+            <Link to={topicPath} className="lesson-back">
+              Back to topic
+            </Link>
+            <h1 className="sr-only">{topicTitle}</h1>
+          </div>
 
           <div className="lesson-layout">
             <section className="lesson-layout__main lesson-slides" aria-label={topicTitle}>
@@ -164,11 +160,20 @@ export function TopicLessonPage() {
                       >
                         Previous
                       </PushButton>
-                      {atEnd ? (
-                        <span className="lesson-toolbar__hint">Topic quiz follows the slides.</span>
+                      {atEnd && quizId ? (
+                        quizUnlocked ? (
+                          <Link to={`/quizzes/${quizId}`} className="btn btn--sm">
+                            {quizCta}
+                          </Link>
+                        ) : (
+                          <PushButton size="sm" disabled>
+                            Start quiz
+                          </PushButton>
+                        )
                       ) : (
                         <PushButton
                           size="sm"
+                          disabled={atEnd}
                           onClick={() =>
                             setSlideIndex((index) => Math.min(slides.length - 1, index + 1))
                           }
@@ -177,6 +182,13 @@ export function TopicLessonPage() {
                         </PushButton>
                       )}
                     </div>
+                    {atEnd && (
+                      <p className="lesson-toolbar__hint">
+                        {quizUnlocked
+                          ? "Topic quiz follows the slides."
+                          : "Complete the topic lesson first."}
+                      </p>
+                    )}
                     <SlideProgress
                       sectionTitle={slide.sectionTitle}
                       index={slideIndex}
@@ -192,77 +204,6 @@ export function TopicLessonPage() {
                 </p>
               )}
             </section>
-
-            <aside className="lesson-layout__aside" aria-label="Topic quiz" id="quiz">
-              <div className="lesson-quiz-panel">
-                <div className="lesson-quiz-panel__hero">
-                  <div>
-                    <h2 className="lesson-quiz-panel__title">Topic quiz</h2>
-                    <div className="lesson-quiz-panel__meta">
-                      {passedLabel ? (
-                        <span className="badge badge--ok">{passedLabel}</span>
-                      ) : quizUnlocked ? (
-                        <span className="badge badge--info">Unlocked</span>
-                      ) : (
-                        <span className="badge badge--locked">Locked</span>
-                      )}
-                      <span className="lesson-toolbar__hint">
-                        {quizSummary
-                          ? `${quizSummary.attempt_count} attempt${quizSummary.attempt_count === 1 ? "" : "s"}`
-                          : "No quiz linked"}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="lesson-quiz-panel__actions">
-                    {quizUnlocked && quizId ? (
-                      <Link to={`/quizzes/${quizId}`} className="btn btn--sm">
-                        {quizCta}
-                      </Link>
-                    ) : (
-                      <button type="button" className="btn btn--sm" disabled>
-                        Start quiz
-                      </button>
-                    )}
-                    {!quizUnlocked && (
-                      <p className="lesson-toolbar__hint">Complete the topic lesson first.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="lesson-quiz-panel__latest">
-                  <h3>Last attempt</h3>
-                  {latestAttempt ? (
-                    <div className="lesson-quiz-panel__latest-row">
-                      <p>
-                        <strong>{retakeLabel ?? formatAttempt(latestAttempt)}</strong>
-                        {!retakeLabel && latestWhen && (
-                          <span className="lesson-toolbar__hint"> · {latestWhen}</span>
-                        )}
-                        {!retakeLabel && quizSummary?.best_score_percent != null && (
-                          <span className="lesson-toolbar__hint">
-                            {" "}
-                            · Best {Math.round(Number(quizSummary.best_score_percent))}%
-                          </span>
-                        )}
-                      </p>
-                      <Link to={`/attempts/${latestAttempt.id}`} className="btn btn--soft btn--sm">
-                        View attempt
-                      </Link>
-                    </div>
-                  ) : (
-                    <p className="lesson-toolbar__hint">No attempts yet.</p>
-                  )}
-                </div>
-
-                <AttemptHistoryTrigger
-                  title="Show full history"
-                  attempts={attempts}
-                  active={showHistory}
-                  onOpen={() => setShowHistory(true)}
-                />
-                {showHistory && <AttemptHistoryList attempts={attempts} />}
-              </div>
-            </aside>
           </div>
         </div>
       )}

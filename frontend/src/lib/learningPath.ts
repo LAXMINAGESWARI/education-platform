@@ -1,5 +1,5 @@
 import type { AttemptResult, LearningDirectory, StartAttemptResponse, TopicNode } from "../api/types";
-import { hasPublishedTopicLesson, topicLessonPath } from "./subjectMaterial";
+import { hasPublishedTopicLesson, topicLessonPath, topicPagePath } from "./subjectMaterial";
 
 export type LearningPath = {
   subjectId: string;
@@ -123,8 +123,8 @@ export function learningPathCrumb(path: LearningPath): { label: string; to: stri
   if (path.subtopicTitle && path.quizTabPath) {
     return { label: path.subtopicTitle, to: path.quizTabPath };
   }
-  if (path.hasTopicLesson && path.lessonPath) {
-    return { label: path.topicTitle, to: path.lessonPath };
+  if (path.hasTopicLesson) {
+    return { label: path.topicTitle, to: topicPagePath(path.subjectId, path.topicId) };
   }
   return null;
 }
