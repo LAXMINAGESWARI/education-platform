@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LessonMaterial } from "../api/types";
+import { mensurationLessonMarkdown } from "./mensurationFixture";
 import { findSummarySlide, slidesForLessonView, slidesFromMarkdown } from "./lessonSlides";
 
 function lesson(over: Partial<LessonMaterial> = {}): LessonMaterial {
@@ -142,6 +143,28 @@ describe("lessonSlides", () => {
     expect(formulaSlides[0]?.content).toContain("Required area");
     expect(formulaSlides[0]?.content).toContain("8000");
     expect(slides.filter((slide) => slide.content.includes("| Shape | Area |"))).toHaveLength(1);
+  });
+
+  it("splits a full mensuration lesson into many slides without cutting tables or formulas", () => {
+    const markdown = mensurationLessonMarkdown();
+    expect(markdown.length).toBeGreaterThan(60_000);
+    const slides = slidesFromMarkdown(markdown, "Mensuration");
+    expect(slides.length).toBeGreaterThan(20);
+    const tables = slides.filter((slide) => slide.title.endsWith("measurements"));
+    expect(tables).toHaveLength(12);
+    for (const slide of tables) {
+      const rows = slide.content.split("\n").filter((line) => /^\|/.test(line) && !line.includes("---"));
+      expect(rows.length).toBe(7);
+      expect(slide.content).not.toContain("$$");
+    }
+    const formulas = slides.filter((slide) => slide.title.endsWith("formula"));
+    expect(formulas).toHaveLength(12);
+    for (const slide of formulas) {
+      expect(slide.content.startsWith("$$")).toBe(true);
+      expect(slide.content.endsWith("$$")).toBe(true);
+      expect(slide.content).toContain("\n=");
+      expect(slide.content).not.toContain("| Shape |");
+    }
   });
 
   it("wraps heading-less markdown as a single slide", () => {

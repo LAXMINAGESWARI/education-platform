@@ -2702,6 +2702,33 @@ a.list-item__title:hover {
     padding: 1.1rem 1rem calc(2.5rem + env(safe-area-inset-bottom));
   }
 
+  /* A phone lesson is a document. The slide card grows with its table and
+     formulas, and the page scrolls. A viewport-height card clipped rows
+     above Previous/Next, and the inner scroller had no visible affordance. */
+  .main:has(.lesson-view),
+  .route-motion:has(.lesson-view),
+  .route-motion__page:has(.lesson-view),
+  .main__inner:has(.lesson-view),
+  .lesson-view,
+  .lesson-layout,
+  .lesson-slides,
+  .lesson-slides .lesson-overview,
+  .lesson-overview {
+    flex: none;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .lesson-overview__scroll,
+  .lesson-slides .lesson-overview__scroll,
+  .topic-lesson-page .lesson-overview__scroll {
+    flex: none;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
+  }
+
   .main:has(.topic-view) {
     padding-right: 0;
   }
