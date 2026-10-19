@@ -1,6 +1,7 @@
 import { Children, isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 import { normalizeMarkdownMath } from "../lib/markdownMath";
@@ -34,6 +35,13 @@ function markdownComponents(inline: boolean): Components {
       }
       return <pre>{children}</pre>;
     },
+    table({ children }) {
+      return (
+        <div className="markdown-table-scroll">
+          <table>{children}</table>
+        </div>
+      );
+    },
     code({ className, children, node: _node, ...props }) {
       if (fenceLanguage(className) === "mermaid") {
         return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
@@ -57,7 +65,7 @@ export function MarkdownContent({
   return (
     <Tag className={classes}>
       <ReactMarkdown
-        remarkPlugins={[remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
         components={markdownComponents(inline)}
       >

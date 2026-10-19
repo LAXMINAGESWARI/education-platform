@@ -270,7 +270,7 @@ describe("QuizPage", () => {
 
     expect(await screen.findByText("What is a square?")).toBeInTheDocument();
     expect(screen.getByText("Quiz · Attempt 1 · overall")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Topic lesson" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Approved Materials" })).toHaveAttribute(
       "href",
       "/subjects/subj-1/topics/topic-1/lesson",
     );

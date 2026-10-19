@@ -192,4 +192,44 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByText(/correct_rationale/i)).not.toBeInTheDocument();
   });
+
+  it("locks the topic quiz with complete-the-topic-lesson copy", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      ...mockDirectory,
+      subjects: [
+        {
+          ...mockDirectory.subjects[0],
+          topics: [
+            {
+              ...mockDirectory.subjects[0].topics[0],
+              title: "Mensuration",
+              has_topic_lesson: true,
+              topic_lesson_completed: false,
+              topic_source_material_version_id: "ver-topic-1",
+              overall_quiz: {
+                ...mockDirectory.subjects[0].topics[0].overall_quiz!,
+                unlocked: false,
+                locked_reason: "unlocks when this lesson is published",
+              },
+            },
+          ],
+        },
+      ],
+    } as never);
+
+    render(
+      <MemoryRouter
+        initialEntries={["/subjects/math-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Complete the topic lesson first.")).toBeInTheDocument();
+    expect(screen.queryByText(/unlocks when/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/published/i)).not.toBeInTheDocument();
+  });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
 import {
@@ -9,6 +10,7 @@ import {
   wasInstalled,
 } from "../pwa/installPrompt";
 import { isIosSafari, isStandaloneDisplay, shouldShowInstallBanner, snoozeInstallBanner } from "../pwa/installState";
+import { reloadApp, updateReloadBlocked } from "../pwa/serviceWorkerUpdate";
 
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
 
@@ -22,12 +24,18 @@ export function PwaPrompts() {
 }
 
 function PwaUpdatePrompt() {
+  const location = useLocation();
+  const onQuiz = updateReloadBlocked(location.pathname);
   const [later, setLater] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
   const stopRef = useRef<(() => void) | null>(null);
   const {
     needRefresh: [needRefresh],
     updateServiceWorker,
   } = useRegisterSW({
+    onNeedReload() {
+      setUpdateReady(true);
+    },
     onRegisteredSW(_url, registration) {
       if (!registration) return;
       stopRef.current?.();
@@ -48,7 +56,13 @@ function PwaUpdatePrompt() {
 
   useEffect(() => () => stopRef.current?.(), []);
 
-  if (!needRefresh || later) return null;
+  useEffect(() => {
+    if (!updateReady || later || onQuiz) return;
+    reloadApp();
+  }, [updateReady, later, onQuiz]);
+
+  const showPrompt = (needRefresh || (updateReady && onQuiz)) && !later;
+  if (!showPrompt) return null;
 
   return (
     <div className="pwa-toast" role="status">
@@ -56,7 +70,14 @@ function PwaUpdatePrompt() {
       <button type="button" className="btn btn--soft btn--sm" onClick={() => setLater(true)}>
         Later
       </button>
-      <button type="button" className="btn btn--sm" onClick={() => void updateServiceWorker(true)}>
+      <button
+        type="button"
+        className="btn btn--sm"
+        onClick={() => {
+          if (needRefresh) void updateServiceWorker(true);
+          else reloadApp();
+        }}
+      >
         Reload
       </button>
     </div>

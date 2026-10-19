@@ -21,11 +21,23 @@ function unescapeLatexBody(body: string): string {
   return body.replace(/\\\\/g, "\\");
 }
 
+function formatDisplayMath(body: string): string {
+  const inner = unescapeLatexBody(body.trim());
+  if (!inner) return "";
+  // Alignments need their row breaks. Any other newline inside `$$...$$`
+  // leaves the closer off the opening line, and remark-math treats the rest
+  // of the lesson as one unclosed display block.
+  if (/\\begin\{/.test(inner)) {
+    return `\n$$\n${inner}\n$$\n`;
+  }
+  const collapsed = inner.replace(/\s*\n\s*/g, " ");
+  return `$$${collapsed}$$`;
+}
+
 function tightenDollarMath(markdown: string): string {
-  let text = markdown.replace(/\$\$([\s\S]*?)\$\$/g, (_match, body: string) => {
-    const inner = unescapeLatexBody(body.trim());
-    return inner ? `$$${inner}$$` : "";
-  });
+  let text = markdown.replace(/\$\$([\s\S]*?)\$\$/g, (_match, body: string) =>
+    formatDisplayMath(body),
+  );
   return text.replace(/\$([^$\n]+?)\$/g, (_match, body: string) => {
     const inner = unescapeLatexBody(body.trim());
     return inner ? `$${inner}$` : "";
@@ -258,7 +270,7 @@ function normalizeMathInProse(markdown: string): string {
   text = convertEscapedDelimiters(text);
   text = text.replace(
     /(^|\n)[ \t]*\$\$([\s\S]*?)\$\$[ \t]*(?=\n|$)/g,
-    (_match, lead: string, body: string) => `${lead}\n\n$$${unescapeLatexBody(body.trim())}$$\n\n`,
+    (_match, lead: string, body: string) => `${lead}\n\n${formatDisplayMath(body)}\n\n`,
   );
   return repairDisplayMath(tightenDollarMath(text));
 }

@@ -175,6 +175,21 @@ describe("subjectMaterial topic lesson helpers", () => {
     expect(copy.body).not.toMatch(/every unit quiz/i);
   });
 
+  it("locks a published topic quiz until the topic lesson is complete", () => {
+    const topic: TopicNode = {
+      ...baseTopic,
+      has_topic_lesson: true,
+      topic_source_material_version_id: "ver-1",
+      overall_quiz: {
+        ...baseTopic.overall_quiz!,
+        unlocked: false,
+        locked_reason: "Complete the topic lesson first",
+      },
+    };
+    expect(overallQuizCopy(topic).body).toBe("Complete the topic lesson first.");
+    expect(overallQuizCopy(topic).body).not.toMatch(/published/i);
+  });
+
   it("keeps the seeded pass-all-subtopic-quizzes gate without a topic lesson", () => {
     expect(overallQuizGate(baseTopic)).toBe("subtopic_quizzes");
     expect(overallQuizCopy(baseTopic).eyebrow).toBe("After subtopic quizzes");

@@ -46,7 +46,12 @@ function pathForTopic(
     topicPath: subjectPath,
     lessonPath,
     quizTabPath: lessonPath,
-    slidesPath: subtopic && lessonPath ? `${lessonPath}/slides` : null,
+    slidesPath:
+      subtopic && lessonPath
+        ? `${lessonPath}/slides`
+        : hasTopicLesson && lessonPath
+          ? lessonPath
+          : null,
     quizHistoryPath: subtopic && lessonPath ? `${lessonPath}/history` : null,
     overallUnlocked: Boolean(topic.overall_quiz?.unlocked),
     topicComplete: topic.complete,
@@ -119,7 +124,7 @@ export function learningPathCrumb(path: LearningPath): { label: string; to: stri
     return { label: path.subtopicTitle, to: path.quizTabPath };
   }
   if (path.hasTopicLesson && path.lessonPath) {
-    return { label: "Topic lesson", to: path.lessonPath };
+    return { label: path.topicTitle, to: path.lessonPath };
   }
   return null;
 }

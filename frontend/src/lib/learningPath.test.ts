@@ -78,12 +78,12 @@ describe("learningPath", () => {
     const path = resolveLearningPath(directory, "topic_mastery", "topic-1");
     expect(path).toMatchObject({
       lessonPath: "/subjects/subj-1/topics/topic-1/lesson",
-      slidesPath: null,
+      slidesPath: "/subjects/subj-1/topics/topic-1/lesson",
       hasTopicLesson: true,
       overallUnlocked: true,
     });
     expect(learningPathCrumb(path!)).toEqual({
-      label: "Topic lesson",
+      label: "Approved Materials",
       to: "/subjects/subj-1/topics/topic-1/lesson",
     });
     expect(resolvePathFromQuizId(directory, "overall-1")?.lessonPath).toBe(

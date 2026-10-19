@@ -104,6 +104,46 @@ describe("lessonSlides", () => {
     ]);
   });
 
+  it("splits h2 and h3 sections without cutting a table or a multi-line formula", () => {
+    const formula = [
+      "$$\\text{Required area} = (l + 2w)(b + 2w) - lb",
+      "= 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
+    ].join("\n");
+    const table = ["| Shape | Area |", "| --- | --- |", "| Park | 1200 |"].join("\n");
+    const filler = Array.from(
+      { length: 30 },
+      (_, index) => `Sentence ${index} walks through the outer rectangle in plain language.`,
+    ).join("\n\n");
+    const markdown = [
+      "# Mensuration",
+      "",
+      "## Area of the path",
+      "",
+      filler,
+      "",
+      table,
+      "",
+      formula,
+      "",
+      filler,
+      "",
+      "### Check",
+      "",
+      "Subtract the park.",
+    ].join("\n");
+    const slides = slidesFromMarkdown(markdown, "Mensuration");
+    expect(slides.map((slide) => slide.title)).toContain("Check");
+    expect(slides.some((slide) => slide.title.startsWith("Area of the path"))).toBe(true);
+    const formulaSlides = slides.filter(
+      (slide) => slide.content.includes("Required area") || slide.content.includes("8000"),
+    );
+    expect(formulaSlides).toHaveLength(1);
+    expect(formulaSlides[0]?.content).toContain("| Park | 1200 |");
+    expect(formulaSlides[0]?.content).toContain("Required area");
+    expect(formulaSlides[0]?.content).toContain("8000");
+    expect(slides.filter((slide) => slide.content.includes("| Shape | Area |"))).toHaveLength(1);
+  });
+
   it("wraps heading-less markdown as a single slide", () => {
     const slides = slidesFromMarkdown("Just a paragraph.", "Approved Materials");
     expect(slides).toEqual([

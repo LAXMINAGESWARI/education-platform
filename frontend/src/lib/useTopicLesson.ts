@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { useParams } from "react-router-dom";
 
-import { fetchLearningDirectory, getTopicMaterial, updateTopicMaterialProgress } from "../api/materials";
+import { fetchLearningDirectory, getTopicMaterial } from "../api/materials";
 import type { LessonMaterial, QuizSummary } from "../api/types";
 import { ApiError } from "../api/types";
-import { clearLearningDirectoryCache } from "../pages/HomePage";
 import { findSubjectTopic, topicLessonPath } from "./subjectMaterial";
 
 type CachedTopicLesson = {
@@ -28,7 +27,7 @@ export function useTopicLesson() {
   const { subjectId = "", topicId = "" } = useParams();
   const key = cacheKey(subjectId, topicId);
   const cached = cache.get(key);
-  const [lesson, setLesson] = useState<LessonMaterial | null>(cached?.lesson ?? null);
+  const [lesson, setLessonState] = useState<LessonMaterial | null>(cached?.lesson ?? null);
   const [subjectName, setSubjectName] = useState(cached?.subjectName ?? "Subject");
   const [topicTitle, setTopicTitle] = useState(cached?.topicTitle ?? "Topic lesson");
   const [quizSummary, setQuizSummary] = useState<QuizSummary | null>(cached?.quizSummary ?? null);
@@ -37,41 +36,46 @@ export function useTopicLesson() {
   const subjectPath = `/subjects/${subjectId}`;
   const lessonPath = topicLessonPath(subjectId, topicId);
 
+  const setLesson: Dispatch<SetStateAction<LessonMaterial | null>> = useCallback(
+    (update) => {
+      setLessonState((prev) => {
+        const next = typeof update === "function" ? update(prev) : update;
+        const current = cache.get(key);
+        if (next == null) {
+          cache.delete(key);
+        } else if (current) {
+          cache.set(key, { ...current, lesson: next });
+        }
+        return next;
+      });
+    },
+    [key],
+  );
+
   useEffect(() => {
     let cancelled = false;
     const hit = cache.get(key);
     if (hit) {
-      setLesson(hit.lesson);
+      setLessonState(hit.lesson);
       setSubjectName(hit.subjectName);
       setTopicTitle(hit.topicTitle);
       setQuizSummary(hit.quizSummary);
       setError(null);
     } else {
-      setLesson(null);
+      setLessonState(null);
       setQuizSummary(null);
       setError(null);
     }
 
     void (async () => {
       try {
-        let data = await getTopicMaterial(topicId);
+        const data = await getTopicMaterial(topicId);
         if (cancelled) return;
-        if (data.progress?.status !== "completed") {
-          try {
-            await updateTopicMaterialProgress(topicId, { status: "completed" });
-            data = await getTopicMaterial(topicId);
-            clearLearningDirectoryCache();
-          } catch (progressError) {
-            if (!(progressError instanceof ApiError) || progressError.status !== 403) {
-              throw progressError;
-            }
-          }
-        }
         const directory = await fetchLearningDirectory();
         if (cancelled) return;
         const found = findSubjectTopic(directory, subjectId, topicId);
         const nextSubjectName = found?.subject.name ?? "Subject";
-        const nextTopicTitle = data.title || found?.topic.title || "Topic lesson";
+        const nextTopicTitle = found?.topic.title || data.title || "Topic";
         const nextQuiz = found?.topic.overall_quiz ?? null;
         cache.set(key, {
           lesson: data,
@@ -82,7 +86,7 @@ export function useTopicLesson() {
         setSubjectName(nextSubjectName);
         setTopicTitle(nextTopicTitle);
         setQuizSummary(nextQuiz);
-        setLesson(data);
+        setLessonState(data);
       } catch (err) {
         if (!cancelled) {
           const fallback =
@@ -104,6 +108,7 @@ export function useTopicLesson() {
     subjectPath,
     lessonPath,
     lesson,
+    setLesson,
     subjectName,
     topicTitle,
     quizSummary,

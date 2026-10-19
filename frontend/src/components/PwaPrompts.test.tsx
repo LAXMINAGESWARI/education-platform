@@ -1,8 +1,10 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getInstallPrompt, resetInstallPromptState } from "../pwa/installPrompt";
+import * as serviceWorkerUpdate from "../pwa/serviceWorkerUpdate";
 import {
   INSTALL_BANNER_DISMISS_LIMIT,
   INSTALL_BANNER_KEY,
@@ -12,15 +14,19 @@ import { PwaPrompts } from "./PwaPrompts";
 
 const sw = vi.hoisted(() => ({
   needRefresh: false,
+  onNeedReload: undefined as (() => void) | undefined,
   updateServiceWorker: vi.fn(async () => undefined),
 }));
 
 vi.mock("virtual:pwa-register/react", () => ({
-  useRegisterSW: () => ({
-    needRefresh: [sw.needRefresh, vi.fn()] as const,
-    offlineReady: [false, vi.fn()] as const,
-    updateServiceWorker: sw.updateServiceWorker,
-  }),
+  useRegisterSW: (options?: { onNeedReload?: () => void }) => {
+    sw.onNeedReload = options?.onNeedReload;
+    return {
+      needRefresh: [sw.needRefresh, vi.fn()] as const,
+      offlineReady: [false, vi.fn()] as const,
+      updateServiceWorker: sw.updateServiceWorker,
+    };
+  },
 }));
 
 const IOS_SAFARI =
@@ -62,7 +68,7 @@ describe("PwaPrompts", () => {
 
     const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { until: number };
     localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: 1, until: stored.until - INSTALL_BANNER_SNOOZE_MS }));
-    view.rerender(<PwaPrompts />);
+    view.rerender(promptAt());
     expect(screen.getByRole("button", { name: "Install app" })).toBeInTheDocument();
   });
 
@@ -77,14 +83,14 @@ describe("PwaPrompts", () => {
       if (dismissals === INSTALL_BANNER_DISMISS_LIMIT) break;
       const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { count: number };
       localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: stored.count, until: 0 }));
-      view.rerender(<PwaPrompts />);
+      view.rerender(promptAt());
     }
 
     localStorage.setItem(
       INSTALL_BANNER_KEY,
       JSON.stringify({ count: INSTALL_BANNER_DISMISS_LIMIT, until: 0 }),
     );
-    view.rerender(<PwaPrompts />);
+    view.rerender(promptAt());
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
   });
 
@@ -109,12 +115,12 @@ describe("PwaPrompts", () => {
     await user.click(screen.getByRole("button", { name: "Not now" }));
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
 
-    view.rerender(<PwaPrompts />);
+    view.rerender(promptAt());
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
 
     const stored = JSON.parse(localStorage.getItem(INSTALL_BANNER_KEY) ?? "{}") as { until: number };
     localStorage.setItem(INSTALL_BANNER_KEY, JSON.stringify({ count: 1, until: stored.until - INSTALL_BANNER_SNOOZE_MS }));
-    view.rerender(<PwaPrompts />);
+    view.rerender(promptAt());
     expect(screen.getByRole("region", { name: "Install CurioEd" })).toBeInTheDocument();
   });
 
@@ -130,6 +136,25 @@ describe("PwaPrompts", () => {
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
   });
 
+  it("reloads as soon as a new service worker activates outside a quiz", () => {
+    const reload = vi.spyOn(serviceWorkerUpdate, "reloadApp").mockImplementation(() => undefined);
+    renderPrompt("/");
+    act(() => sw.onNeedReload?.());
+    expect(reload).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("holds the service worker reload while a quiz is open", async () => {
+    const reload = vi.spyOn(serviceWorkerUpdate, "reloadApp").mockImplementation(() => undefined);
+    const user = userEvent.setup();
+    renderPrompt("/quizzes/overall-1");
+    act(() => sw.onNeedReload?.());
+    expect(reload).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("A new version of CurioEd is available.");
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
   it("offers a reload when a new service worker is waiting", async () => {
     sw.needRefresh = true;
     const user = userEvent.setup();
@@ -142,8 +167,19 @@ describe("PwaPrompts", () => {
   });
 });
 
-function renderPrompt() {
-  return render(<PwaPrompts />);
+function promptAt(path = "/") {
+  return (
+    <MemoryRouter
+      initialEntries={[path]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <PwaPrompts />
+    </MemoryRouter>
+  );
+}
+
+function renderPrompt(path = "/") {
+  return render(promptAt(path));
 }
 
 function setUserAgent(userAgent: string) {

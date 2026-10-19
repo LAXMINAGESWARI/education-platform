@@ -100,7 +100,7 @@ export function overallQuizCopy(topic: TopicNode): OverallQuizCopy {
           ? passed
             ? "You passed the topic quiz."
             : "The topic lesson is complete. You can take the topic quiz now."
-          : "The topic quiz unlocks when this lesson is marked complete.",
+          : "Complete the topic lesson first.",
       };
     case "subtopic_quizzes":
       return {
