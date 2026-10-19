@@ -336,7 +336,13 @@ async def _policy_json(
     *,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Flag off calls the legacy client with the same arguments as before."""
+    """Flag off calls the legacy chat client with the same arguments as before.
+
+    This helper is only for chat completions. Jev Decisions (``classify_noul``
+    on ``jev_client``) is a different API and stays outside ``complete``. When
+    the guard moves to that client, call it from the node and leave this helper
+    on the answer path.
+    """
     if not gateway_enabled("policy_chat", settings):
         return await chat_completion_json(messages, settings=settings)
     result = await complete(

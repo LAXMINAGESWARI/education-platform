@@ -9,17 +9,26 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from education_platform.ai_platform.gateway import api, control
 from education_platform.ai_platform.gateway import usage as usage_mod
-from education_platform.ai_platform.gateway.api import CallContext, complete, complete_sync
+from education_platform.ai_platform.gateway.api import (
+    CallContext,
+    complete,
+    complete_sync,
+    drain_metering,
+)
 from education_platform.ai_platform.gateway.client import (
     HTTP_REFERER,
     bind_http_clients,
@@ -32,10 +41,14 @@ from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.ai_platform.gateway.models import LlmGatewayCall
 from education_platform.ai_platform.gateway.registry import resolve, step_ids
 from education_platform.ai_platform.gateway.usage import UsageRecord, write_usage
-from education_platform.core.config import Settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import _OPENROUTER_HEADERS, OpenRouterError
 from education_platform.db.url import to_sync_url
-from education_platform.modules.assistant.graph import injection_guard, summarize_node
+from education_platform.modules.assistant.graph import (
+    GUARD_UNAVAILABLE_REPLY,
+    injection_guard,
+    summarize_node,
+)
 
 _PROMPT = "PROMPT-SENTINEL-do-not-store"
 _RESPONSE = "RESPONSE-SENTINEL-do-not-store"
@@ -48,6 +61,7 @@ def _reset_gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     bind_http_clients()
     monkeypatch.setattr(api, "write_usage", lambda _record: None)
     yield
+    drain_metering()
     bind_http_clients()
     reset_clients()
     reset_controls()
@@ -559,6 +573,7 @@ async def test_metering_writes_row_without_prompt_or_response(
         ctx=_ctx("policy_chat", settings),
     )
     assert result.text == _RESPONSE
+    drain_metering()
     engine = create_engine(to_sync_url(clean_db))
     try:
         with Session(engine) as session:
@@ -581,6 +596,13 @@ async def test_metering_writes_row_without_prompt_or_response(
         assert _RESPONSE not in stored
     finally:
         engine.dispose()
+
+
+def _alembic_heads() -> list[str]:
+    backend_root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(backend_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_root / "alembic"))
+    return list(ScriptDirectory.from_config(cfg).get_heads())
 
 
 def test_migration_creates_usage_table(clean_db: str) -> None:
@@ -606,7 +628,7 @@ def test_migration_creates_usage_table(clean_db: str) -> None:
         }
         with engine.connect() as conn:
             versions = list(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
-        assert versions == ["b3c4d5e6f7a8"]
+        assert versions == list(_alembic_heads())
     finally:
         engine.dispose()
 
@@ -744,3 +766,169 @@ def test_sync_completion_uses_the_shared_client() -> None:
     body = json.loads(script.requests[0].content.decode())
     assert body["model"] == settings.openrouter_model
     assert float(script.requests[0].headers["x-stainless-read-timeout"]) == 20.0
+
+
+def _admin_headers(client: TestClient) -> dict[str, str]:
+    settings = get_settings()
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": settings.demo_admin_email,
+            "password": settings.demo_admin_password,
+            "institution_name": "POC Demo School",
+        },
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+class _PolicyTurn:
+    """Three scripted chat completions: guard, validator, then the answer."""
+
+    def __init__(self, *, answer: str) -> None:
+        self.answer = answer
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        body = json.loads(request.content.decode())
+        blob = json.dumps(body["messages"])
+        if "security classifier" in blob:
+            content = json.dumps({"injection": False, "reason": "ok"})
+        elif "valid question" in blob:
+            content = json.dumps({"valid": True, "reason": "ok"})
+        else:
+            content = self.answer
+        return httpx.Response(200, json=_completion(content, model=str(body["model"])))
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_policy_chat_api_flag_on_meters_three_steps(
+    client: TestClient, clean_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "write_usage", write_usage)
+    question = "What is the late homework policy for grade six?"
+    answer = "## Late homework\n\nSubmit the work on the next school day."
+    script = _PolicyTurn(answer=answer)
+    _bind_async(script)
+    flagged = get_settings().model_copy(
+        update={"openrouter_api_key": "test-key", "ai_gateway_policy_chat": True}
+    )
+    monkeypatch.setattr(
+        "education_platform.modules.assistant.graph.get_settings",
+        lambda: flagged,
+    )
+
+    async def _empty_retrieve(state: dict[str, Any]) -> dict[str, Any]:
+        return {**state, "retrieved_chunks": []}
+
+    monkeypatch.setattr(
+        "education_platform.modules.assistant.graph.retrieve_node",
+        _empty_retrieve,
+    )
+    headers = _admin_headers(client)
+    created = client.post("/api/v1/chats", json={"title": "Homework"}, headers=headers)
+    assert created.status_code == 201, created.text
+    posted = client.post(
+        f"/api/v1/chats/{created.json()['id']}/messages",
+        json={"content": question},
+        headers=headers,
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["assistant_message"]["content"] == answer
+    assert len(script.requests) == 3
+    drain_metering()
+
+    engine = create_engine(to_sync_url(clean_db))
+    try:
+        with Session(engine) as session:
+            rows = list(session.scalars(select(LlmGatewayCall).order_by(LlmGatewayCall.created_at)))
+        assert {row.step for row in rows} == {
+            "policy_chat.guard",
+            "policy_chat.validator",
+            "policy_chat.answer",
+        }
+        assert len(rows) == 3
+        assert {row.status for row in rows} == {"ok"}
+        stored = " ".join(
+            str(getattr(row, column.name)) for row in rows for column in row.__table__.columns
+        )
+        assert question not in stored
+        assert answer not in stored
+        assert "security classifier" not in stored
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_flag_on_guard_non_json_fails_closed() -> None:
+    script = _Script([200], content="this is not json")
+    _bind_async(script)
+    settings = _settings(ai_gateway_policy_chat=True)
+    result = await injection_guard(
+        _guard_state("What is the late homework policy?"),
+        settings=settings,
+    )
+    assert result["injection_blocked"] is True
+    assert result["early_reply"] == GUARD_UNAVAILABLE_REPLY
+    assert "this is not json" not in (result["early_reply"] or "")
+
+
+@pytest.mark.asyncio
+async def test_async_metering_does_not_block_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    saw_progress: list[bool] = []
+    progressed = False
+
+    def slow(_record: UsageRecord) -> None:
+        entered.set()
+        release.wait(timeout=1.5)
+        saw_progress.append(progressed)
+
+    monkeypatch.setattr(api, "write_usage", slow)
+    script = _Script([200], content="ok")
+    _bind_async(script)
+    call = asyncio.create_task(
+        complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "hi"}],
+            ctx=_ctx("policy_chat", _settings()),
+        )
+    )
+    deadline = time.monotonic() + 2
+    while not entered.is_set():
+        if time.monotonic() > deadline:
+            release.set()
+            drain_metering()
+            raise AssertionError("metering did not start on a worker thread")
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0)
+    progressed = True
+    release.set()
+    result = await asyncio.wait_for(call, timeout=2)
+    drain_metering()
+    assert result.text == "ok"
+    assert saw_progress == [True]
+
+
+def test_flags_parse_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_GATEWAY_FEATURES", " Policy_Chat ,text_to_sql")
+    for name in (
+        "AI_GATEWAY_POLICY_CHAT",
+        "AI_GATEWAY_TEXT_TO_SQL",
+        "AI_GATEWAY_GENERATION",
+        "AI_GATEWAY_FEEDBACK",
+        "AI_GATEWAY_REVIEW_CHAT",
+        "AI_GATEWAY_AUTHORING",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(_env_file=None)
+    assert gateway_enabled("policy_chat", settings) is True
+    assert gateway_enabled("POLICY_CHAT", settings) is True
+    assert gateway_enabled("text_to_sql", settings) is True
+    assert gateway_enabled("generation", settings) is False
+    assert gateway_enabled(" feedback ", settings) is False

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,11 +72,11 @@ async def complete(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
     except Exception as exc:
-        _safe_meter(_error_record(profile, exc, _latency_ms(started)))
+        _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
-    _safe_meter(_ok_record(profile, usage, served, _latency_ms(started)))
+    _schedule_meter(_ok_record(profile, usage, served, _latency_ms(started)))
     parsed = _parse_json(text) if response_format is not None else None
     return Completion(text=text, parsed_json=parsed, usage=usage, served_model=served)
 
@@ -460,6 +461,64 @@ def _safe_meter(record: UsageRecord) -> None:
             record.step,
             type(exc).__name__,
         )
+
+
+_meter_futures: set[Future[None]] = set()
+
+
+def _schedule_meter(record: UsageRecord) -> None:
+    """Insert usage on a worker thread and return without waiting.
+
+    Database errors stay inside ``write_usage``, which logs the step and the
+    error class. An unexpected failure is logged here. Neither one fails the
+    completion.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _safe_meter(record)
+        return
+    box: Future[None] = Future()
+
+    def _run() -> None:
+        try:
+            write_usage(record)
+        except Exception as exc:
+            logger.warning(
+                "LLM gateway metering failed step=%s error_class=%s",
+                record.step,
+                type(exc).__name__,
+            )
+            if not box.done():
+                box.set_exception(exc)
+            return
+        if not box.done():
+            box.set_result(None)
+
+    scheduled = loop.run_in_executor(None, _run)
+    _meter_futures.add(box)
+    box.add_done_callback(_meter_futures.discard)
+    scheduled.add_done_callback(_retrieve_executor_error)
+
+
+def _retrieve_executor_error(done: asyncio.Future[None]) -> None:
+    try:
+        done.exception()
+    except asyncio.CancelledError:
+        return
+
+
+def drain_metering(timeout: float = 2.0) -> None:
+    """Wait for scheduled usage writes. Tests use this; requests do not."""
+    pending = list(_meter_futures)
+    for future in pending:
+        try:
+            future.result(timeout=timeout)
+        except Exception as exc:
+            logger.warning(
+                "LLM gateway metering failed error_class=%s",
+                type(exc).__name__,
+            )
 
 
 async def _async_sleep(seconds: float) -> None:
