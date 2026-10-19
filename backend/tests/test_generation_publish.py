@@ -273,7 +273,7 @@ def test_publish_is_idempotent_and_unlocks_student_material(
     assert "distractor_rationales" not in serialized
     assert "correct_option_label" not in serialized
     assert payload["quiz_id"]
-    assert payload["quiz_unlocked"] is True
+    assert payload["quiz_unlocked"] is False
 
     after = client.get("/api/v1/me/learning-directory", headers=enrolled_student_headers)
     assert after.status_code == 200, after.text
@@ -281,8 +281,32 @@ def test_publish_is_idempotent_and_unlocks_student_material(
     assert after_topic["has_topic_lesson"] is True
     assert after_topic["topic_source_material_version_id"] == published["lesson_version_id"]
     assert after_topic["overall_quiz"] is not None
-    assert after_topic["overall_quiz"]["unlocked"] is True
-    assert after_topic["overall_quiz"]["locked_reason"] is None
+    assert after_topic["overall_quiz"]["unlocked"] is False
+    assert after_topic["overall_quiz"]["locked_reason"] == "Complete the topic lesson first"
+    blocked = client.post(
+        f"/api/v1/quizzes/{after_topic['overall_quiz']['id']}/attempts",
+        headers=enrolled_student_headers,
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"] == "Complete the topic lesson first"
+    completed = client.put(
+        f"/api/v1/topics/{seeded_topic_id}/material-progress",
+        headers=enrolled_student_headers,
+        json={"status": "completed"},
+    )
+    assert completed.status_code == 200, completed.text
+    unlocked = client.get(
+        f"/api/v1/topics/{seeded_topic_id}/material",
+        headers=enrolled_student_headers,
+    )
+    assert unlocked.status_code == 200, unlocked.text
+    assert unlocked.json()["quiz_unlocked"] is True
+    after_progress = client.get("/api/v1/me/learning-directory", headers=enrolled_student_headers)
+    assert after_progress.status_code == 200, after_progress.text
+    progressed = _directory_topic(after_progress.json(), seeded_topic_id)
+    assert progressed["topic_lesson_completed"] is True
+    assert progressed["overall_quiz"]["unlocked"] is True
+    assert progressed["overall_quiz"]["locked_reason"] is None
     get_settings.cache_clear()
 
 

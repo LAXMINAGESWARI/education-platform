@@ -127,8 +127,8 @@ export function SubjectMaterialsPage() {
       </section>
 
       <div className="teacher-materials">
-        <aside className="teacher-materials__topics" aria-label="Units">
-          <h2 className="section-title">Units</h2>
+        <aside className="teacher-materials__topics" aria-label="Topics">
+          <h2 className="section-title">Topics</h2>
           <ul className="teacher-topic-list">
             {subject.topics.map((topic) => {
               const isActive = topic.id === activeTopicId;
@@ -210,7 +210,7 @@ export function SubjectMaterialsPage() {
               {quiz && openItem?.kind === "quiz" && <QuizPreview quiz={quiz} />}
             </>
           ) : (
-            <div className="alert alert--info">No units published for this subject yet.</div>
+            <div className="alert alert--info">No topics published for this subject yet.</div>
           )}
         </div>
       </div>

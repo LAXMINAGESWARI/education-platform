@@ -1,13 +1,8 @@
 import { Link } from "react-router-dom";
 
-import type { AttemptHistoryItem, MaterialProgress, QuizSummary, SubtopicNode, TopicNode } from "../api/types";
-import { trackedAttempts } from "../lib/quizAction";
-import {
-  hasPublishedTopicLesson,
-  subjectTopicLessonTopics,
-  subjectUnitEntries,
-  topicLessonPath,
-} from "../lib/subjectMaterial";
+import type { AttemptHistoryItem, MaterialProgress, QuizSummary, TopicNode } from "../api/types";
+import { latestRetakeLabel, passedBestLabel, trackedAttempts } from "../lib/quizAction";
+import { topicLessonPath } from "../lib/subjectMaterial";
 import { formatAttemptWhen } from "./AttemptHistory";
 
 function lessonStarted(progress: MaterialProgress | null | undefined, progressPercent: number): boolean {
@@ -23,7 +18,6 @@ function unitStatus(
   label: string;
   cls: string;
 } {
-  if (quiz?.passed) return { label: "Quiz passed", cls: "badge--ok" };
   if (lessonDone && quiz?.unlocked) return { label: "Quiz unlocked", cls: "badge--info" };
   if (lessonDone) return { label: "Lesson done", cls: "badge--info" };
   if (lessonStarted(progress, progressPercent)) return { label: "In progress", cls: "badge--warn" };
@@ -78,43 +72,7 @@ function UnitQuizMeta({ quiz }: { quiz: QuizSummary | null }) {
   );
 }
 
-function SubtopicUnitCard({
-  subjectId,
-  subtopic,
-  index,
-}: {
-  subjectId: string;
-  subtopic: SubtopicNode;
-  index: number;
-}) {
-  const status = unitStatus(
-    subtopic.lesson_completed,
-    subtopic.quiz,
-    subtopic.progress,
-    subtopic.progress_percent,
-  );
-
-  return (
-    <li className="subtopic-card">
-      <Link to={`/subjects/${subjectId}/subtopics/${subtopic.id}/lesson`} className="subtopic-card__head">
-        <div className="list-item__num">{String(index + 1).padStart(2, "0")}</div>
-        <div>
-          <p className="list-item__title">{subtopic.title}</p>
-          <p className="list-item__meta">{Math.round(subtopic.progress_percent)}% complete</p>
-        </div>
-        <div className="subtopic-card__quiz-col">
-          <span className={`badge ${status.cls}`}>{status.label}</span>
-          <UnitQuizMeta quiz={subtopic.quiz} />
-        </div>
-        <span className="subtopic-card__chevron" aria-hidden="true">
-          ›
-        </span>
-      </Link>
-    </li>
-  );
-}
-
-function TopicUnitCard({
+function TopicCard({
   subjectId,
   topic,
   index,
@@ -125,11 +83,18 @@ function TopicUnitCard({
 }) {
   const quiz = topic.overall_quiz;
   const lessonDone = Boolean(topic.topic_lesson_completed);
-  const status = unitStatus(lessonDone, quiz, null, topic.progress_percent);
+  const passedLabel = passedBestLabel(quiz);
+  const retake = latestRetakeLabel(quiz);
+  const status = passedLabel
+    ? { label: passedLabel, cls: "badge--ok" }
+    : unitStatus(lessonDone, quiz, null, topic.progress_percent);
+  const href = topic.has_topic_lesson
+    ? topicLessonPath(subjectId, topic.id)
+    : `/subjects/${subjectId}/topics/${topic.id}`;
 
   return (
     <li className="subtopic-card">
-      <Link to={topicLessonPath(subjectId, topic.id)} className="subtopic-card__head">
+      <Link to={href} className="subtopic-card__head">
         <div className="list-item__num">{String(index + 1).padStart(2, "0")}</div>
         <div>
           <p className="list-item__title">{topic.title}</p>
@@ -137,7 +102,11 @@ function TopicUnitCard({
         </div>
         <div className="subtopic-card__quiz-col">
           <span className={`badge ${status.cls}`}>{status.label}</span>
-          <UnitQuizMeta quiz={quiz} />
+          {passedLabel ? (
+            retake ? <p className="subtopic-card__quiz-meta">{retake}</p> : null
+          ) : (
+            <UnitQuizMeta quiz={quiz} />
+          )}
         </div>
         <span className="subtopic-card__chevron" aria-hidden="true">
           ›
@@ -155,70 +124,24 @@ export function SchoolMaterialPanel({
   subjectName: string;
   topics: TopicNode[];
 }) {
-  const topicLessons = subjectTopicLessonTopics(topics);
-  const units = subjectUnitEntries(topics);
-
   return (
     <div className="topic-layout">
       <div className="topic-layout__main">
-        <div className="school-material-stack">
-          {topicLessons.map((topic) => (
-            <section
-              key={topic.id}
-              className="school-section school-section--topic-lesson"
-              aria-labelledby={`topic-lesson-heading-${topic.id}`}
-            >
-              <header className="school-section__head">
-                <div>
-                  <p className="school-section__eyebrow">Topic lesson</p>
-                  <h2 id={`topic-lesson-heading-${topic.id}`}>{topic.title}</h2>
-                  <p>Published lesson that covers this subject.</p>
-                </div>
-                {hasPublishedTopicLesson(topic) ? (
-                  <span className="badge badge--ok">published</span>
-                ) : null}
-              </header>
-              <p className="topic-lesson-card__copy">
-                Open the topic lesson slides, then take the overall quiz when it unlocks.
-              </p>
-              <div className="topic-lesson-card__actions">
-                <Link to={topicLessonPath(subjectId, topic.id)} className="btn btn--sm">
-                  Open topic lesson
-                </Link>
-              </div>
-            </section>
-          ))}
-
-          <section className="school-section school-section--units" aria-labelledby="units-heading">
-            <header className="school-section__head">
-              <h2 id="units-heading">Units</h2>
-              <p>Work through each unit lesson and quiz.</p>
-            </header>
-            {units.length === 0 ? (
-              <p className="muted">No units published for this subject yet.</p>
-            ) : (
-              <ul className="list">
-                {units.map((entry, index) =>
-                  entry.subtopic ? (
-                    <SubtopicUnitCard
-                      key={entry.subtopic.id}
-                      subjectId={subjectId}
-                      subtopic={entry.subtopic}
-                      index={index}
-                    />
-                  ) : (
-                    <TopicUnitCard
-                      key={entry.topic.id}
-                      subjectId={subjectId}
-                      topic={entry.topic}
-                      index={index}
-                    />
-                  ),
-                )}
-              </ul>
-            )}
-          </section>
-        </div>
+        <section className="school-section school-section--units" aria-labelledby="topics-heading">
+          <header className="school-section__head">
+            <h2 id="topics-heading">Topics</h2>
+            <p>Open a topic lesson, then take its quiz.</p>
+          </header>
+          {topics.length === 0 ? (
+            <p className="muted">No topics published for this subject yet.</p>
+          ) : (
+            <ul className="list">
+              {topics.map((topic, index) => (
+                <TopicCard key={topic.id} subjectId={subjectId} topic={topic} index={index} />
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
     </div>
   );

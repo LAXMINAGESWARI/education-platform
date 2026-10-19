@@ -81,8 +81,8 @@ def test_lesson_markdown_depends_only_on_the_seed() -> None:
         seed=20260812,
         grade_name="Grade 6",
         subject_name="Mathematics",
-        title="Mathematics Core",
-        units=("Fractions", "Decimals"),
+        title="Fractions",
+        subtopics=("Equivalent fractions", "Mixed numbers"),
     )
     assert parse_slides(overview)
     assert "Fractions" in overview
@@ -90,7 +90,7 @@ def test_lesson_markdown_depends_only_on_the_seed() -> None:
 
 def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db: str) -> None:
     engine = create_engine(to_sync_url(clean_db), pool_pre_ping=True)
-    expected_lessons = len(SPEC.grades) * len(SPEC.subjects) * (1 + SPEC.quizzes_per_subject)
+    expected_lessons = len(SPEC.grades) * len(SPEC.subjects) * SPEC.quizzes_per_subject
     with Session(engine) as session:
         result = generate_school(session, SPEC)
         session.commit()
@@ -116,10 +116,12 @@ def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db
             quiz_version = session.get(QuizVersion, attempt.quiz_version_id)
             assert quiz_version is not None
             quiz = session.get(CommonMasteryQuiz, quiz_version.quiz_id)
-            assert quiz is not None and quiz.subtopic_id is not None
+            assert quiz is not None and quiz.quiz_scope == QuizScope.TOPIC_MASTERY
+            assert quiz.topic_id is not None and quiz.subtopic_id is None
+            assert quiz_version.max_attempts is None
             material = session.scalar(
                 select(SourceMaterial).where(
-                    SourceMaterial.subtopic_id == quiz.subtopic_id,
+                    SourceMaterial.topic_id == quiz.topic_id,
                     SourceMaterial.slug == "lesson",
                 )
             )
@@ -156,8 +158,7 @@ def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db
         assert release.window_starts_at is not None and release.window_starts_at <= now
         assert release.window_ends_at is not None and release.window_ends_at >= now
         fractions = session.scalar(
-            select(Subtopic)
-            .join(Topic, Topic.id == Subtopic.topic_id)
+            select(Topic)
             .join(GradeSubjectOffering, GradeSubjectOffering.id == Topic.grade_subject_offering_id)
             .join(Subject, Subject.id == GradeSubjectOffering.subject_id)
             .join(PeriodGrade, PeriodGrade.id == GradeSubjectOffering.period_grade_id)
@@ -168,19 +169,29 @@ def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db
                 Institution.name == SPEC.institution_name,
                 Subject.code == "MATH",
                 Grade.name == "Grade 6",
-                Subtopic.name == "Fractions",
+                Topic.name == "Fractions",
             )
         )
         assert fractions is not None
         fractions_quiz = session.scalar(
             select(CommonMasteryQuiz).where(
-                CommonMasteryQuiz.subtopic_id == fractions.id,
-                CommonMasteryQuiz.quiz_scope == QuizScope.SUBTOPIC_MASTERY,
+                CommonMasteryQuiz.topic_id == fractions.id,
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
             )
         )
         assert fractions_quiz is not None
-        topic_id = fractions.topic_id
-        fractions_id = fractions.id
+        diagnostic = session.scalar(
+            select(Subtopic).where(
+                Subtopic.topic_id == fractions.id,
+                Subtopic.name == "Equivalent fractions",
+            )
+        )
+        assert diagnostic is not None
+        subtopic_quiz = session.scalar(
+            select(CommonMasteryQuiz).where(CommonMasteryQuiz.subtopic_id == diagnostic.id)
+        )
+        assert subtopic_quiz is None
+        topic_id = fractions.id
         quiz_id = fractions_quiz.id
     engine.dispose()
 
@@ -189,22 +200,22 @@ def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db
     assert directory.status_code == 200, directory.text
     math = next(row for row in directory.json()["subjects"] if row["name"] == "Mathematics")
     assert math["grade_name"] == "Grade 6"
-    unit = next(
-        subtopic
-        for topic in math["topics"]
-        for subtopic in topic["subtopics"]
-        if subtopic["title"] == "Fractions"
+    fractions_node = next(topic for topic in math["topics"] if topic["title"] == "Fractions")
+    assert fractions_node["has_topic_lesson"] is True
+    assert fractions_node["topic_lesson_completed"] is True
+    assert fractions_node["overall_quiz"]["unlocked"] is True
+    assert fractions_node["progress_percent"] in {50, 100}
+    assert all(
+        node["quiz"] is None and node["has_lesson"] is False for node in fractions_node["subtopics"]
     )
-    assert unit["has_lesson"] is True
-    assert unit["lesson_completed"] is True
-    assert unit["quiz"]["unlocked"] is True
+    assert math["done"] == sum(1 for topic in math["topics"] if topic["complete"])
+    assert math["total"] == len(math["topics"])
+    assert math["progress_percent"] == round(100 * math["done"] / math["total"])
 
-    lesson = client.get(f"/api/v1/subtopics/{fractions_id}/material", headers=headers)
-    assert lesson.status_code == 200, lesson.text
-    assert lesson.json()["slides"]
     topic_lesson = client.get(f"/api/v1/topics/{topic_id}/material", headers=headers)
     assert topic_lesson.status_code == 200, topic_lesson.text
     assert topic_lesson.json()["slides"]
+    assert topic_lesson.json()["quiz_unlocked"] is True
 
     started = client.post(f"/api/v1/quizzes/{quiz_id}/attempts", headers=headers)
     assert 200 <= started.status_code < 300, started.text
@@ -214,10 +225,10 @@ def test_published_lessons_unlock_attempted_quizzes(client: TestClient, clean_db
     assert other.status_code == 200, other.text
     assert {row["grade_name"] for row in other.json()["subjects"]} == {"Grade 7"}
     science = next(row for row in other.json()["subjects"] if row["name"] == "Science")
-    subtopic_id = science["topics"][0]["subtopics"][0]["id"]
-    other_lesson = client.get(f"/api/v1/subtopics/{subtopic_id}/material", headers=grade7)
+    other_topic = science["topics"][0]
+    other_lesson = client.get(f"/api/v1/topics/{other_topic['id']}/material", headers=grade7)
     assert other_lesson.status_code == 200, other_lesson.text
-    other_quiz = science["topics"][0]["subtopics"][0]["quiz"]["id"]
+    other_quiz = other_topic["overall_quiz"]["id"]
     other_attempt = client.post(f"/api/v1/quizzes/{other_quiz}/attempts", headers=grade7)
     assert 200 <= other_attempt.status_code < 300, other_attempt.text
 
@@ -283,7 +294,5 @@ def test_rebuild_keeps_uploads_and_other_schools(clean_db: str) -> None:
                 SourceMaterialVersion.submitted_by_user_id.is_not(None),
             )
         )
-        assert still_published == len(SPEC.grades) * len(SPEC.subjects) * (
-            1 + SPEC.quizzes_per_subject
-        )
+        assert still_published == (len(SPEC.grades) * len(SPEC.subjects) * SPEC.quizzes_per_subject)
     engine.dispose()

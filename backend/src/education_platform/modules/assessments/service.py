@@ -123,6 +123,23 @@ async def _ensure_lesson_completed(
         raise DomainError("Complete the lesson first", status_code=403)
 
 
+async def _ensure_topic_lesson_completed(
+    session: AsyncSession, *, topic_id: UUID, enrollment_id: UUID
+) -> None:
+    version = await published_topic_material_version(session, topic_id)
+    if version is None:
+        return
+    progress = await session.scalar(
+        select(StudentMaterialProgress).where(
+            StudentMaterialProgress.student_subject_enrollment_id == enrollment_id,
+            StudentMaterialProgress.source_material_version_id == version.id,
+            StudentMaterialProgress.status == MaterialProgressStatus.COMPLETED,
+        )
+    )
+    if progress is None:
+        raise DomainError("Complete the topic lesson first", status_code=403)
+
+
 async def _ensure_subtopic_quizzes_passed(
     session: AsyncSession, student_id: UUID, topic_id: UUID
 ) -> None:
@@ -199,6 +216,10 @@ async def start_attempt(
         topic_lesson = await published_topic_material_version(session, node.topic.id)
         if topic_lesson is None:
             await _ensure_subtopic_quizzes_passed(session, student_id, node.topic.id)
+        else:
+            await _ensure_topic_lesson_completed(
+                session, topic_id=node.topic.id, enrollment_id=enrollment_id
+            )
     release = await open_release_for_quiz_version(session, quiz_version.id)
     if release is None:
         raise DomainError("Quiz is not open", status_code=403)

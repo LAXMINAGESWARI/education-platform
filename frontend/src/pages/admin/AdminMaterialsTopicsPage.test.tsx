@@ -134,19 +134,19 @@ describe("AdminMaterialsTopicsPage", () => {
   it("lists chapter cards instead of only the parent topic row", async () => {
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "Topics" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Units" })).toBeInTheDocument();
+    expect(await screen.findAllByRole("heading", { name: "Topics" })).not.toHaveLength(0);
+    expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Subtopics" })).not.toBeInTheDocument();
-    expect(screen.getByText("Properties of Rectangles and Squares")).toBeInTheDocument();
-    expect(screen.getByText("Square Numbers and Odd Number Sums")).toBeInTheDocument();
+    expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
+    expect(screen.queryByText("Square Numbers and Odd Number Sums")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Approved Materials").length).toBeGreaterThan(0);
     expect(screen.getByText("Fractions")).toBeInTheDocument();
     expect(screen.queryByText(/Unit 1/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/subtopic/i)).not.toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: /Properties of Rectangles and Squares/i }),
+      screen.getByRole("link", { name: /Approved Materials/i }),
     ).toHaveAttribute(
       "href",
-      "/admin/materials/grades/grade-8/subjects/subj-math-uuid/topics/topic-1-uuid?tab=published&unit=st-1-uuid",
+      "/admin/materials/grades/grade-8/subjects/subj-math-uuid/topics/topic-1-uuid?tab=published",
     );
     expect(screen.getByRole("link", { name: /Fractions/i })).toHaveAttribute(
       "href",
@@ -300,7 +300,7 @@ describe("AdminMaterialsTopicsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("Properties of Rectangles and Squares")).toBeInTheDocument();
+    expect(await screen.findByText("Fractions")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Remove" }));
     await user.click(screen.getByRole("button", { name: "Confirm remove" }));
@@ -309,7 +309,6 @@ describe("AdminMaterialsTopicsPage", () => {
     await waitFor(() => {
       expect(screen.queryByText("Fractions")).not.toBeInTheDocument();
     });
-    expect(screen.getByText("Properties of Rectangles and Squares")).toBeInTheDocument();
-    expect(screen.getByText("Square Numbers and Odd Number Sums")).toBeInTheDocument();
+    expect(screen.getAllByText("Approved Materials").length).toBeGreaterThan(0);
   });
 });

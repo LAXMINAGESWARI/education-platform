@@ -47,7 +47,7 @@ function topic(id: string, withQuiz: boolean, subtopicQuizzes = 0): AdminTopic {
   return {
     id,
     title: id,
-    unitLabel: "Unit 1",
+    unitLabel: "Topic 1",
     order: 1,
     status: "published",
     hasTopicLesson: true,

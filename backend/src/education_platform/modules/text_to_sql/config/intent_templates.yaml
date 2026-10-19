@@ -354,13 +354,15 @@ templates:
   # ---------------------------------------------------------------------------
   # SUBTOPIC QUIZ AVERAGE
   # ---------------------------------------------------------------------------
-  # student_360.mastery_percent is the subject-level average. A named subtopic
-  # ("Fractions") has to be averaged from quiz_attempts through the quiz's subtopic.
+  # student_360.mastery_percent is the subject-level average. A named concept
+  # ("Fractions") is topics.name. Diagnostic tags stay on subtopics.name.
   - name: average_subtopic_quiz_score
     description: >
-      Average quiz score_percent for one named subtopic and one section, limited
-      to the requesting teacher's own students. "Grade 8 section A" is section
-      name 8A, not the words Section A. This is not subject-level mastery.
+      Average quiz score_percent for one named topic or diagnostic subtopic and
+      one section, limited to the requesting teacher's own students. "Grade 8
+      section A" is section name 8A, not the words Section A. Fractions matches
+      topics.name. Equivalent fractions matches subtopics.name. This is not
+      subject-level mastery.
     example_questions:
       - "What is the average quiz score on the Fractions subtopic for my Grade 8 section A students?"
       - "What is the average Fractions quiz score in section 8A?"
@@ -395,11 +397,12 @@ templates:
       FROM quiz_attempts qa
       JOIN quiz_versions qv ON qv.id = qa.quiz_version_id
       JOIN common_mastery_quizzes cmq ON cmq.id = qv.quiz_id
-      JOIN subtopics st ON st.id = cmq.subtopic_id
+      LEFT JOIN subtopics st ON st.id = cmq.subtopic_id
+      LEFT JOIN topics topic_match ON topic_match.id = cmq.topic_id
       JOIN student_subject_enrollments sse ON sse.id = qa.student_subject_enrollment_id
       JOIN student_grade_enrollments sge ON sge.id = sse.grade_enrollment_id
       JOIN sections sec ON sec.id = sge.section_id
-      WHERE st.name = :subtopic_name
+      WHERE (st.name = :subtopic_name OR topic_match.name = :subtopic_name)
         AND sec.name = :section_name
         AND qa.score_percent IS NOT NULL
         AND sse.status = 'active'

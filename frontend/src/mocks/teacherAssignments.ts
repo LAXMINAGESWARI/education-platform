@@ -94,7 +94,7 @@ const MATH_TOPICS_G8: TopicMaterial[] = [
     ],
     quizzes: [
       { id: "qz-int-sub", title: "Integers check-in", kind: "subtopic", status: "published" },
-      { id: "qz-int-topic", title: "Unit mastery · Integers", kind: "topic", status: "published" },
+      { id: "qz-int-topic", title: "Topic mastery · Integers", kind: "topic", status: "published" },
     ],
   },
   {
@@ -106,7 +106,7 @@ const MATH_TOPICS_G8: TopicMaterial[] = [
     ],
     quizzes: [
       { id: "qz-alg-sub", title: "Expressions practice", kind: "subtopic", status: "published" },
-      { id: "qz-alg-topic", title: "Unit mastery · Algebra", kind: "topic", status: "draft" },
+      { id: "qz-alg-topic", title: "Topic mastery · Algebra", kind: "topic", status: "draft" },
     ],
   },
 ];
@@ -122,7 +122,7 @@ const SCIENCE_TOPICS_G9: TopicMaterial[] = [
     ],
     quizzes: [
       { id: "qz-mat-sub", title: "States quiz", kind: "subtopic", status: "published" },
-      { id: "qz-mat-topic", title: "Unit mastery · Matter", kind: "topic", status: "published" },
+      { id: "qz-mat-topic", title: "Topic mastery · Matter", kind: "topic", status: "published" },
     ],
   },
   {
@@ -134,7 +134,7 @@ const SCIENCE_TOPICS_G9: TopicMaterial[] = [
     ],
     quizzes: [
       { id: "qz-liv-sub", title: "Cell check-in", kind: "subtopic", status: "published" },
-      { id: "qz-liv-topic", title: "Unit mastery · Living world", kind: "topic", status: "draft" },
+      { id: "qz-liv-topic", title: "Topic mastery · Living world", kind: "topic", status: "draft" },
     ],
   },
 ];
@@ -158,7 +158,7 @@ export const TEACHER_SECTIONS: TeacherSection[] = [
         progress: {
           label: "Class progress · Mathematics",
           pct: 62,
-          detail: "4 of 5 published lessons started · Integers unit nearly complete",
+          detail: "4 of 5 published lessons started · Integers topic nearly complete",
         },
       },
     ],
@@ -202,7 +202,7 @@ export const TEACHER_SECTIONS: TeacherSection[] = [
         progress: {
           label: "Class progress · Science",
           pct: 35,
-          detail: "Matter unit underway · Living world not started for most students",
+          detail: "Matter topic underway · Living world not started for most students",
         },
       },
     ],

@@ -1,6 +1,6 @@
 """Published lessons for the synthetic school.
 
-Content is a pure function of ``SYNTHETIC_SEED`` and the unit name, so a rebuild
+Content is a pure function of ``SYNTHETIC_SEED`` and the topic name, so a rebuild
 matches and the score generator's random stream stays untouched.
 
 Each lesson is submitted by the subject teacher, held as awaiting approval long
@@ -52,7 +52,7 @@ def subtopic_lesson_markdown(
         f"- Explain {title.lower()} in the language of {grade_name} {subject_name}.\n"
         f"- Use one worked example before the mastery check.\n\n"
         f"## Slide 2 — The idea\n"
-        f"{title} is a {grade_name} {subject_name} unit. "
+        f"{title} is a {grade_name} {subject_name} subtopic. "
         f"Students start from a concrete case, name the parts, and then apply the same "
         f"step to a new question.\n\n"
         f"Worked example: split a set of {whole} into equal groups and take {part}. "
@@ -69,21 +69,21 @@ def topic_lesson_markdown(
     grade_name: str,
     subject_name: str,
     title: str,
-    units: tuple[str, ...],
+    subtopics: tuple[str, ...],
 ) -> str:
-    """Topic overview that names every seeded unit."""
+    """One topic lesson. Subtopic names are ideas inside it, not separate lessons."""
     rng = random.Random(f"{seed}|{grade_name}|{subject_name}|{title}|topic")
     minutes = rng.randint(8, 14)
-    unit_lines = "\n".join(f"- {unit}" for unit in units)
+    idea_lines = "\n".join(f"- {name}" for name in subtopics)
     return (
         f"# {title}\n\n"
         f"## Slide 1 — This topic\n"
-        f"{title} collects the {grade_name} {subject_name} units for this term. "
-        f"Plan about {minutes} minutes for the overview, then open each unit lesson.\n\n"
-        f"## Slide 2 — Units\n"
-        f"{unit_lines}\n\n"
-        f"Finish a unit lesson before its quiz. A quiz you have already taken stays "
-        f"available because that lesson is marked complete.\n"
+        f"{title} is a {grade_name} {subject_name} topic. "
+        f"Plan about {minutes} minutes, then take the topic quiz.\n\n"
+        f"## Slide 2 — Ideas in this topic\n"
+        f"{idea_lines}\n\n"
+        f"The topic quiz stays locked until this lesson is marked complete. "
+        f"A quiz you have already passed stays marked passed.\n"
     )
 
 

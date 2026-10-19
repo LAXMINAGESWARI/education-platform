@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import { fetchLearningDirectory, getTopicMaterial } from "../api/materials";
+import { fetchLearningDirectory, getTopicMaterial, updateTopicMaterialProgress } from "../api/materials";
 import type { LessonMaterial, QuizSummary } from "../api/types";
 import { ApiError } from "../api/types";
+import { clearLearningDirectoryCache } from "../pages/HomePage";
 import { findSubjectTopic, topicLessonPath } from "./subjectMaterial";
 
 type CachedTopicLesson = {
@@ -53,10 +54,20 @@ export function useTopicLesson() {
 
     void (async () => {
       try {
-        const [data, directory] = await Promise.all([
-          getTopicMaterial(topicId),
-          fetchLearningDirectory(),
-        ]);
+        let data = await getTopicMaterial(topicId);
+        if (cancelled) return;
+        if (data.progress?.status !== "completed") {
+          try {
+            await updateTopicMaterialProgress(topicId, { status: "completed" });
+            data = await getTopicMaterial(topicId);
+            clearLearningDirectoryCache();
+          } catch (progressError) {
+            if (!(progressError instanceof ApiError) || progressError.status !== 403) {
+              throw progressError;
+            }
+          }
+        }
+        const directory = await fetchLearningDirectory();
         if (cancelled) return;
         const found = findSubjectTopic(directory, subjectId, topicId);
         const nextSubjectName = found?.subject.name ?? "Subject";

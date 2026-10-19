@@ -134,19 +134,18 @@ describe("HomePage", () => {
     );
     expect(screen.queryByRole("link", { name: /Back to subjects/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Personal material" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Units" })).toBeInTheDocument();
-    expect(screen.getByText("Work through each unit lesson and quiz.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Topics" })).toBeInTheDocument();
+    expect(screen.getByText("Open a topic lesson, then take its quiz.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Subtopics" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Chapters" })).not.toBeInTheDocument();
-    expect(screen.getByText("Properties of Rectangles and Squares")).toBeInTheDocument();
-    expect(screen.queryByText("Approved Materials")).not.toBeInTheDocument();
+    expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
+    expect(screen.getByText("Approved Materials")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Mathematics quiz" })).not.toBeInTheDocument();
-    expect(screen.queryByText("After all units")).not.toBeInTheDocument();
     expect(screen.getByText(/Subject completion/)).toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: /Properties of Rectangles and Squares/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Approved Materials/ })).toHaveAttribute(
       "href",
-      "/subjects/math-1/subtopics/st-1/lesson",
+      "/subjects/math-1/topics/topic-1",
     );
   });
 
@@ -184,18 +183,13 @@ describe("HomePage", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "Units" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open topic lesson" })).toHaveAttribute(
+    expect(await screen.findByRole("heading", { name: "Topics" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Approved Materials/ })).toHaveAttribute(
       "href",
       "/subjects/math-1/topics/topic-1/lesson",
     );
-    expect(screen.getByRole("link", { name: /Properties of Rectangles and Squares/ })).toHaveAttribute(
-      "href",
-      "/subjects/math-1/subtopics/st-1/lesson",
-    );
-    expect(screen.getByRole("heading", { name: "Approved Materials" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Mathematics quiz" })).not.toBeInTheDocument();
-    expect(screen.queryByText("After all units")).not.toBeInTheDocument();
+    expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
     expect(screen.queryByText(/correct_rationale/i)).not.toBeInTheDocument();
   });
 });

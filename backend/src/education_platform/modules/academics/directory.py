@@ -130,8 +130,8 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
                 and topic_progress.status == MaterialProgressStatus.COMPLETED
             )
             if topic_lesson is not None:
-                overall_unlocked = True
-                locked_reason = "Complete the lesson first"
+                overall_unlocked = topic_lesson_completed
+                locked_reason = "Complete the topic lesson first"
             else:
                 overall_unlocked = bool(quiz_nodes) and all(
                     node.quiz is not None and node.quiz.passed for node in quiz_nodes
@@ -145,11 +145,20 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
                 unlocked=overall_unlocked,
                 locked_reason=locked_reason,
             )
-            units = [node.progress_percent for node in subtopic_nodes]
-            if overall.available:
-                units.append(100 if overall.passed else 0)
-            progress_percent = round(sum(units) / len(units)) if units else 0
-            topic_complete = overall_unlocked and (not overall.available or overall.passed)
+            if topic_lesson is not None:
+                if topic_lesson_completed and overall.passed:
+                    progress_percent = 100
+                elif topic_lesson_completed:
+                    progress_percent = 50
+                else:
+                    progress_percent = 0
+                topic_complete = progress_percent == 100
+            else:
+                units = [node.progress_percent for node in subtopic_nodes]
+                if overall.available:
+                    units.append(100 if overall.passed else 0)
+                progress_percent = round(sum(units) / len(units)) if units else 0
+                topic_complete = overall_unlocked and (not overall.available or overall.passed)
             objectives = await _topic_objectives(session, topic.id)
             if scope.self_student_id is not None and not _released_to_students(
                 topic_lesson=topic_lesson,
@@ -175,11 +184,9 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
             )
         if scope.self_student_id is not None and not topic_nodes:
             continue
-        subject_progress = (
-            round(sum(topic.progress_percent for topic in topic_nodes) / len(topic_nodes))
-            if topic_nodes
-            else 0
-        )
+        done = sum(1 for topic in topic_nodes if topic.complete)
+        total = len(topic_nodes)
+        subject_progress = round(100 * done / total) if total else 0
         subjects.append(
             SubjectNodeOut(
                 id=subject.id,
@@ -188,6 +195,8 @@ async def build_learning_directory(session: AsyncSession, scope: Scope) -> Learn
                 grade_name=grade.name,
                 academic_period_name=period.name,
                 progress_percent=subject_progress,
+                done=done,
+                total=total,
                 topics=topic_nodes,
             )
         )

@@ -85,7 +85,7 @@ describe("adaptLearningDirectory", () => {
     const subject = adaptLearningDirectory(directory)[0]?.subjects[0];
     expect(subject).toBeDefined();
     expect(subjectUnitCards(subject!).map((card) => card.title)).toEqual([
-      "Place value",
+      "Numbers",
       "Decimals",
     ]);
     expect(subjectTopicLessonTopics(subject!).map((topic) => topic.title)).toEqual(["Numbers"]);
@@ -180,7 +180,7 @@ describe("adaptLearningDirectory", () => {
       ],
     });
     const subject = grades[0]?.subjects[0];
-    expect(subjectUnitCards(subject!).map((card) => card.title)).toEqual(["Place value"]);
+    expect(subjectUnitCards(subject!).map((card) => card.title)).toEqual(["Numbers"]);
     expect(subjectTopicLessonTopics(subject!).map((topic) => topic.title)).toEqual(["Numbers"]);
   });
 });

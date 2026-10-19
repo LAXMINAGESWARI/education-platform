@@ -9,7 +9,7 @@ import {
 } from "../components/AttemptHistory";
 import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
-import { quizActionLabel, trackedAttempts } from "../lib/quizAction";
+import { latestRetakeLabel, passedBestLabel, quizActionLabel, trackedAttempts } from "../lib/quizAction";
 import { useTopicLesson } from "../lib/useTopicLesson";
 
 export function TopicLessonPage() {
@@ -29,6 +29,8 @@ export function TopicLessonPage() {
   const latestAttempt = attempts[0] ?? null;
   const quizCta = quizActionLabel(quizSummary);
   const latestWhen = latestAttempt ? formatAttemptWhen(latestAttempt) : null;
+  const passedLabel = passedBestLabel(quizSummary);
+  const retakeLabel = latestRetakeLabel(quizSummary);
   const markdownStartsWithHeading = /^#\s+/m.test(lesson?.markdown.trim() ?? "");
 
   return (
@@ -83,8 +85,8 @@ export function TopicLessonPage() {
                   <div>
                     <h2 className="lesson-quiz-panel__title">Topic quiz</h2>
                     <div className="lesson-quiz-panel__meta">
-                      {quizSummary?.passed ? (
-                        <span className="badge badge--ok">Passed</span>
+                      {passedLabel ? (
+                        <span className="badge badge--ok">{passedLabel}</span>
                       ) : quizUnlocked ? (
                         <span className="badge badge--info">Unlocked</span>
                       ) : (
@@ -109,7 +111,7 @@ export function TopicLessonPage() {
                     )}
                     {!quizUnlocked && (
                       <p className="lesson-toolbar__hint">
-                        The topic quiz unlocks when this lesson is published.
+                        Complete the topic lesson first.
                       </p>
                     )}
                   </div>
@@ -120,11 +122,11 @@ export function TopicLessonPage() {
                   {latestAttempt ? (
                     <div className="lesson-quiz-panel__latest-row">
                       <p>
-                        <strong>{formatAttempt(latestAttempt)}</strong>
-                        {latestWhen && (
+                        <strong>{retakeLabel ?? formatAttempt(latestAttempt)}</strong>
+                        {!retakeLabel && latestWhen && (
                           <span className="lesson-toolbar__hint"> · {latestWhen}</span>
                         )}
-                        {quizSummary?.best_score_percent != null && (
+                        {!retakeLabel && quizSummary?.best_score_percent != null && (
                           <span className="lesson-toolbar__hint">
                             {" "}
                             · Best {Math.round(Number(quizSummary.best_score_percent))}%

@@ -60,6 +60,8 @@ services:
       # Shared by api and worker. Self-host merges this file, so the VM stack
       # and ./deploy/selfhost.sh use the same cache.
       TORCHINDUCTOR_CACHE_DIR: /data/torchinductor
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
     depends_on:
       postgres:
         condition: service_healthy

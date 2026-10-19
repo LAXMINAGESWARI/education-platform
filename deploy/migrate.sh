@@ -8,6 +8,51 @@ cd /app/backend
 echo "Running alembic upgrade head"
 alembic upgrade head
 
+echo "Backing up the database before topic promotion"
+backup_dir="${BACKUP_DIR:-/backups}"
+mkdir -p "$backup_dir"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+export BACKUP_FILE="${backup_dir}/education-${stamp}.dump"
+python - <<'PY'
+import os
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+from education_platform.core.config import get_settings
+from education_platform.db.url import to_sync_url
+
+sync_url = to_sync_url(get_settings().database_url)
+parsed = urlparse(sync_url.replace("postgresql+psycopg", "postgresql", 1))
+env = os.environ.copy()
+if parsed.password:
+    env["PGPASSWORD"] = parsed.password
+outfile = os.environ["BACKUP_FILE"]
+command = [
+    "pg_dump",
+    "--format=custom",
+    "--no-owner",
+    "--file",
+    outfile,
+    "-h",
+    parsed.hostname or "localhost",
+    "-p",
+    str(parsed.port or 5432),
+    "-U",
+    parsed.username or "education",
+    "-d",
+    (parsed.path or "/education").lstrip("/"),
+]
+completed = subprocess.run(command, env=env, check=False)
+if completed.returncode != 0:
+    print("Database backup failed. Topic promotion was not started.", file=sys.stderr)
+    sys.exit(completed.returncode)
+print(f"Database backup written: {os.path.basename(outfile)}")
+PY
+
+echo "Promoting synthetic Core topics"
+python -m education_platform.modules.synthetic.promote
+
 mode="${SEED_SYNTHETIC:-false}"
 case "$mode" in
   false | 0 | "")

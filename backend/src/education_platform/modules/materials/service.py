@@ -170,7 +170,11 @@ async def get_topic_lesson(session: AsyncSession, scope: Scope, topic_id: UUID) 
         slides=slides,
         progress=_progress_out(progress),
         source_material_version_id=version.id,
-        quiz_unlocked=quiz is not None,
+        quiz_unlocked=(
+            quiz is not None
+            and progress is not None
+            and progress.status == MaterialProgressStatus.COMPLETED
+        ),
         quiz_id=quiz[0].id if quiz else None,
     )
 
@@ -219,12 +223,35 @@ async def update_material_progress(
     version = await published_material_version(session, subtopic_id)
     if version is None:
         raise DomainError("Lesson not found", status_code=404)
+    return await _save_progress(session, enrollment.id, version.id, payload)
+
+
+async def update_topic_material_progress(
+    session: AsyncSession,
+    scope: Scope,
+    topic_id: UUID,
+    payload: MaterialProgressUpdate,
+) -> MaterialProgressOut:
+    node = await _covered_topic_node(session, scope, topic_id)
+    enrollment = await require_subject_enrollment(session, scope, node.offering.id)
+    version = await published_topic_material_version(session, topic_id)
+    if version is None:
+        raise DomainError("Lesson not found", status_code=404)
+    return await _save_progress(session, enrollment.id, version.id, payload)
+
+
+async def _save_progress(
+    session: AsyncSession,
+    enrollment_id: UUID,
+    version_id: UUID,
+    payload: MaterialProgressUpdate,
+) -> MaterialProgressOut:
     now = datetime.now(UTC)
-    progress = await progress_for(session, enrollment.id, version.id)
+    progress = await progress_for(session, enrollment_id, version_id)
     if progress is None:
         progress = StudentMaterialProgress(
-            student_subject_enrollment_id=enrollment.id,
-            source_material_version_id=version.id,
+            student_subject_enrollment_id=enrollment_id,
+            source_material_version_id=version_id,
             status=MaterialProgressStatus.OPENED,
             opened_at=now,
             last_opened_at=now,
