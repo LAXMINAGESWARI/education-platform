@@ -160,6 +160,10 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |
+| `JEV_MODEL` | `typesafe/jev-1.14` | Decision model. Empty `JEV_BASE_URL` posts to OpenRouter `/api/alpha/decisions` |
+| `JEV_BASE_URL` | empty | Server root for OpenJev `POST /v1/systemone`. Empty keeps OpenRouter |
+| `JEV_MODE` | `shadow` | `off`, `shadow` (store only), `augment`, or `replace` |
+| `JEV_NOUL_ACCEPT` / `JEV_NOUL_REJECT` | `0.80` / `0.35` | Noul accept and reject thresholds |
 | `CHAT_CONTEXT_LIMIT_TOKENS` | `20000` | Context meter denominator |
 | `CHAT_RETRIEVAL_LIMIT` | `6` | Default `retrieve_chunks` top-k |
 

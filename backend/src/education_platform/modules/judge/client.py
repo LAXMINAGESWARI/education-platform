@@ -1,0 +1,284 @@
+"""HTTP adapter for Jev on OpenRouter, and for a local OpenJev server.
+
+OpenRouter calls a decisions model with:
+
+``POST https://openrouter.ai/api/alpha/decisions``
+
+Authorization is ``Bearer <OPENROUTER_API_KEY>``. The JSON body is ``model``,
+``state`` (string, object, or array), and ``questions`` keyed by caller ids.
+Each question is ``noul``, ``choice``, or ``score``. The response is ``id``,
+``model``, ``provider``, ``answers``, and ``usage`` (``input_tokens``,
+``output_tokens``, ``cost``). That shape is the OpenAPI operation
+"Submit a Decisions request"
+(https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request)
+and the condensed reference
+https://github.com/OpenRouterTeam/skills/blob/main/skills/openrouter-decisions/references/decisions-api.md.
+
+The same body is what TypeSafe documents for ``POST /v1/systemone``
+(https://docs.typesafe.ai/api) and what OpenJev serves at
+``{base}/v1/systemone``. Set ``JEV_BASE_URL`` to a server root such as
+``http://127.0.0.1:8080`` and this client posts there. Leave it empty to use
+the OpenRouter decisions route. The chat base ``OPENROUTER_BASE_URL``
+(``/api/v1``) is a different API and is not prefixed onto this path.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Mapping
+
+import httpx
+
+from education_platform.core.config import Settings, get_settings
+from education_platform.modules.judge.errors import (
+    JudgeError,
+    JudgePaymentRequired,
+    JudgeRateLimited,
+    JudgeResponseError,
+)
+from education_platform.modules.judge.types import (
+    Answer,
+    ChoiceAnswer,
+    DecisionRequest,
+    DecisionResult,
+    NoulAnswer,
+    ScoreAnswer,
+)
+
+OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
+INPUT_USD_PER_MILLION = 0.042
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 529})
+_HEADERS = {
+    "HTTP-Referer": "https://github.com/aushakanuj/education-platform",
+    "X-Title": "CurioEd Jev Judge",
+}
+
+
+def _default_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def decisions_endpoint(settings: Settings) -> str:
+    base = settings.jev_base_url.strip().rstrip("/")
+    if base:
+        return f"{base}/v1/systemone"
+    return OPENROUTER_DECISIONS_URL
+
+
+def estimate_cost_usd(input_tokens: int) -> float:
+    """Jev output tokens are free. Input is priced per million."""
+    if input_tokens < 0:
+        return 0.0
+    return input_tokens * INPUT_USD_PER_MILLION / 1_000_000
+
+
+class HttpJudge:
+    """Decisions client with a 30s timeout and backoff on rate limits."""
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = _default_sleep,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._client = client
+        self._sleep = sleep
+        self._clock = clock
+
+    def decide(self, request: DecisionRequest) -> DecisionResult:
+        settings = self._settings
+        url = decisions_endpoint(settings)
+        api_key = (settings.openrouter_api_key or "").strip()
+        if not settings.jev_base_url.strip() and not api_key:
+            raise JudgeError(
+                "OPENROUTER_API_KEY is not configured. Jev cannot score this artifact."
+            )
+        payload = request.to_api(model=settings.jev_model)
+        headers = dict(_HEADERS)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        owns_client = self._client is None
+        client = self._client or httpx.Client(timeout=settings.jev_timeout_seconds)
+        attempts = max(0, settings.jev_max_retries) + 1
+        try:
+            return self._send(client, url, payload, headers, attempts)
+        finally:
+            if owns_client:
+                client.close()
+
+    def _send(
+        self,
+        client: httpx.Client,
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        attempts: int,
+    ) -> DecisionResult:
+        last_status: int | None = None
+        for attempt in range(attempts):
+            started = self._clock()
+            try:
+                response = client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException as exc:
+                if attempt + 1 >= attempts:
+                    raise JudgeError("Jev request timed out.") from exc
+                self._sleep(_backoff(attempt))
+                continue
+            except httpx.HTTPError as exc:
+                if attempt + 1 >= attempts:
+                    raise JudgeError("Jev request failed before a response.") from exc
+                self._sleep(_backoff(attempt))
+                continue
+            elapsed_ms = int((self._clock() - started) * 1000)
+            status = response.status_code
+            last_status = status
+            if status == 402:
+                raise JudgePaymentRequired(
+                    "OpenRouter returned HTTP 402 Payment Required. "
+                    "Jev credits are exhausted or the account cannot be billed."
+                )
+            if status in _RETRYABLE_STATUS and attempt + 1 < attempts:
+                self._sleep(_backoff(attempt))
+                continue
+            if status == 429:
+                raise JudgeRateLimited(
+                    "OpenRouter rate limited the Jev decisions request (HTTP 429) after retries."
+                )
+            if status >= 400:
+                raise JudgeError(
+                    f"Jev request failed with HTTP {status}: {_snippet(response.text)}"
+                )
+            return _parse_result(response.json(), latency_ms=max(elapsed_ms, 0))
+        raise JudgeError(f"Jev request failed with HTTP {last_status}.")
+
+
+def _backoff(attempt: int) -> float:
+    return float(min(8.0, 0.5 * (2**attempt)))
+
+
+def _snippet(body: str) -> str:
+    text = " ".join(body.split())
+    if len(text) > 200:
+        return text[:200]
+    return text
+
+
+def _parse_result(payload: object, *, latency_ms: int) -> DecisionResult:
+    if not isinstance(payload, dict):
+        raise JudgeResponseError("Jev response was not a JSON object.")
+    answers_raw = payload.get("answers")
+    if not isinstance(answers_raw, dict) or not answers_raw:
+        raise JudgeResponseError("Jev response did not include answers.")
+    answers: dict[str, Answer] = {}
+    for key, value in answers_raw.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            raise JudgeResponseError("Jev returned an answer that is not an object.")
+        answers[key] = _parse_answer(key, value)
+    usage = payload.get("usage")
+    input_tokens = 0
+    output_tokens = 0
+    cost: float | None = None
+    if isinstance(usage, dict):
+        input_tokens = _nonneg_int(usage.get("input_tokens"))
+        output_tokens = _nonneg_int(usage.get("output_tokens"))
+        cost = _optional_float(usage.get("cost"))
+    model = payload.get("model")
+    provider = payload.get("provider")
+    request_id = payload.get("id")
+    return DecisionResult(
+        model=model if isinstance(model, str) and model else "",
+        answers=answers,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_usd=cost,
+        latency_ms=latency_ms,
+        request_id=request_id if isinstance(request_id, str) else None,
+        provider=provider if isinstance(provider, str) else None,
+    )
+
+
+def _parse_answer(key: str, value: Mapping[str, object]) -> Answer:
+    kind = value.get("type")
+    if kind == "noul":
+        noul = _required_unit(value.get("noul"), key)
+        return NoulAnswer(noul=noul)
+    if kind == "choice":
+        choice = value.get("choice")
+        if not isinstance(choice, str) or not choice:
+            raise JudgeResponseError(f"Jev choice answer {key} did not name an option.")
+        return ChoiceAnswer(
+            choice=choice,
+            probabilities=_probability_map(value.get("probabilities")),
+            confidence=_optional_unit(value.get("confidence")),
+        )
+    if kind == "score":
+        score = value.get("score")
+        if isinstance(score, bool) or not isinstance(score, int | float):
+            raise JudgeResponseError(f"Jev score answer {key} did not include a score.")
+        return ScoreAnswer(
+            score=float(score),
+            probabilities=_probability_map(value.get("probabilities")),
+            confidence=_optional_unit(value.get("confidence")),
+            legend=_legend(value.get("legend")),
+        )
+    raise JudgeResponseError(f"Jev answer {key} has unexpected type {kind!r}.")
+
+
+def _probability_map(raw: object) -> dict[str, float] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise JudgeResponseError("Jev probabilities were not an object.")
+    parsed: dict[str, float] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            raise JudgeResponseError("Jev probability keys must be strings.")
+        parsed[key] = _required_unit(value, key)
+    return parsed
+
+
+def _legend(raw: object) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise JudgeResponseError("Jev score legend was not an object.")
+    parsed: dict[str, str] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, str):
+            parsed[key] = value
+    return parsed
+
+
+def _required_unit(raw: object, key: str) -> float:
+    value = _optional_unit(raw)
+    if value is None:
+        raise JudgeResponseError(f"Jev answer {key} is missing a probability.")
+    return value
+
+
+def _optional_unit(raw: object) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise JudgeResponseError("Jev returned a probability that is not a number.")
+    value = float(raw)
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def _optional_float(raw: object) -> float | None:
+    if raw is None or isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    return float(raw)
+
+
+def _nonneg_int(raw: object) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return 0
+    return max(0, int(raw))

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from education_platform.modules.generation.schemas import QaItemOut
 from education_platform.modules.generation.step_read import (
@@ -24,6 +24,7 @@ from education_platform.modules.generation.step_read import (
     StepTiming,
     SubtopicCount,
 )
+from education_platform.modules.judge.views import JudgeCheckView, JudgeReadout
 
 
 class GenerationStepTimingOut(BaseModel):
@@ -185,15 +186,59 @@ class OutlineReviewStepOut(BaseModel):
         return cls(rounds=[ReviewRoundStepOut.from_domain(row) for row in detail.rounds])
 
 
+class JudgeCheckOut(BaseModel):
+    check_id: str
+    kind: str
+    decision: str
+    summary: str
+    probabilities: dict[str, float]
+
+    @classmethod
+    def from_domain(cls, check: JudgeCheckView) -> JudgeCheckOut:
+        return cls(
+            check_id=check.check_id,
+            kind=check.kind,
+            decision=check.decision,
+            summary=check.summary,
+            probabilities=check.probabilities,
+        )
+
+
+class JudgeReadoutOut(BaseModel):
+    subject_kind: str
+    subject_key: UUID | None
+    label: str
+    decision: str
+    reasons: list[str]
+    checks: list[JudgeCheckOut]
+    model: str | None
+    question_version_id: UUID | None = None
+
+    @classmethod
+    def from_domain(cls, readout: JudgeReadout) -> JudgeReadoutOut:
+        return cls(
+            subject_kind=readout.subject_kind,
+            subject_key=readout.subject_key,
+            label=readout.label,
+            decision=readout.decision,
+            reasons=list(readout.reasons),
+            checks=[JudgeCheckOut.from_domain(check) for check in readout.checks],
+            model=readout.model,
+            question_version_id=readout.question_version_id,
+        )
+
+
 class LessonStepOut(BaseModel):
     markdown: str | None
     published_lesson_version_id: UUID | None
+    judge: list[JudgeReadoutOut] = Field(default_factory=list)
 
     @classmethod
     def from_domain(cls, detail: LessonDetail) -> LessonStepOut:
         return cls(
             markdown=detail.markdown,
             published_lesson_version_id=detail.published_lesson_version_id,
+            judge=[JudgeReadoutOut.from_domain(item) for item in detail.judge],
         )
 
 
@@ -232,6 +277,7 @@ class ItemsStepOut(BaseModel):
     dropped: int | None
     key_disputed: int
     items: list[QaItemOut]
+    judge: list[JudgeReadoutOut] = Field(default_factory=list)
 
     @classmethod
     def from_domain(cls, detail: ItemsDetail) -> ItemsStepOut:
@@ -245,6 +291,7 @@ class ItemsStepOut(BaseModel):
             dropped=detail.dropped,
             key_disputed=detail.key_disputed,
             items=[QaItemOut.from_domain(item) for item in detail.items],
+            judge=[JudgeReadoutOut.from_domain(item) for item in detail.judge],
         )
 
 
