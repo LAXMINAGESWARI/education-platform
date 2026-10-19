@@ -7,6 +7,8 @@ import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PushButton } from "../components/PushButton";
+import { SlideProgress } from "../components/SlideProgress";
+import { slidesForLessonView } from "../lib/lessonSlides";
 import { quizActionLabel } from "../lib/quizAction";
 import { resumeSlideIndex, useSubtopicLesson } from "../lib/useSubtopicLesson";
 
@@ -18,12 +20,12 @@ export function LessonSlidesPage() {
     subtopicTitle,
     error,
     setError,
-    slides,
     subjectPath,
     lessonPath,
     subtopicId,
     quizSummary,
   } = useSubtopicLesson();
+  const slides = lesson ? slidesForLessonView(lesson) : [];
   const [searchParams] = useSearchParams();
   const [slideIndex, setSlideIndex] = useState(0);
   const startedRef = useRef(false);
@@ -106,7 +108,7 @@ export function LessonSlidesPage() {
     if (!lesson || startedRef.current) return;
     startedRef.current = true;
     const fromStart = searchParams.get("from") === "start";
-    setSlideIndex(fromStart ? 0 : resumeSlideIndex(lesson, lesson.slides));
+    setSlideIndex(fromStart ? 0 : resumeSlideIndex(lesson, slidesForLessonView(lesson)));
   }, [lesson, searchParams]);
 
   const slide = slides[slideIndex];
@@ -234,10 +236,12 @@ export function LessonSlidesPage() {
                     </PushButton>
                   )}
                 </div>
-                <p className="slide-nav__status">
-                  Slide {slideIndex + 1} of {slides.length}
-                  {lessonComplete ? " · complete" : ""}
-                </p>
+                <SlideProgress
+                  sectionTitle={slide.sectionTitle}
+                  index={slideIndex}
+                  total={slides.length}
+                  complete={lessonComplete}
+                />
               </div>
             </article>
           </div>

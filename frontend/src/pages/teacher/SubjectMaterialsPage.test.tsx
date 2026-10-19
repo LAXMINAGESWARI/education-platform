@@ -10,6 +10,7 @@ import type { LearningDirectory, LessonMaterial, QuizMaterial, QuizSummary } fro
 const fetchStudentInsights = vi.fn();
 const fetchLearningDirectory = vi.fn();
 const getSubtopicMaterial = vi.fn();
+const getTopicMaterial = vi.fn();
 const getSubtopicQuiz = vi.fn();
 const startAttempt = vi.fn();
 
@@ -20,6 +21,7 @@ vi.mock("../../api/insights", () => ({
 vi.mock("../../api/materials", () => ({
   fetchLearningDirectory: () => fetchLearningDirectory(),
   getSubtopicMaterial: (...args: unknown[]) => getSubtopicMaterial(...args),
+  getTopicMaterial: (...args: unknown[]) => getTopicMaterial(...args),
   getSubtopicQuiz: (...args: unknown[]) => getSubtopicQuiz(...args),
 }));
 
@@ -105,6 +107,33 @@ function directory(): LearningDirectory {
               scope: "topic_mastery",
             }),
           },
+          {
+            id: "topic-frac",
+            title: "Fractions",
+            slug: "fractions",
+            sequence: 2,
+            progress_percent: 0,
+            complete: false,
+            objectives: [],
+            has_topic_lesson: true,
+            subtopics: [
+              {
+                id: "st-eq",
+                title: "Equivalent fractions",
+                slug: "equivalent-fractions",
+                sequence: 1,
+                has_lesson: false,
+                lesson_completed: false,
+                progress_percent: 0,
+                quiz: null,
+              },
+            ],
+            overall_quiz: quizSummary({
+              id: "quiz-frac",
+              title: "Fractions topic mastery",
+              scope: "topic_mastery",
+            }),
+          },
         ],
       },
     ],
@@ -169,19 +198,24 @@ describe("SubjectMaterialsPage", () => {
     fetchStudentInsights.mockReset();
     fetchLearningDirectory.mockReset();
     getSubtopicMaterial.mockReset();
+    getTopicMaterial.mockReset();
     getSubtopicQuiz.mockReset();
     startAttempt.mockReset();
     fetchStudentInsights.mockResolvedValue(insightPage());
     fetchLearningDirectory.mockResolvedValue(directory());
     getSubtopicMaterial.mockResolvedValue(lesson());
+    getTopicMaterial.mockResolvedValue(lesson());
     getSubtopicQuiz.mockResolvedValue(quizMaterial());
   });
 
   it("loads live directory units instead of fixtures", async () => {
     renderPage();
     expect(await screen.findByRole("heading", { level: 1, name: "Mathematics" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Number/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Fractions/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Topics" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Units" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Number/ })).toHaveTextContent("1 lesson · 2 quizzes");
+    expect(screen.getByRole("button", { name: /1 lesson · 1 quiz/ })).toBeInTheDocument();
+    expect(screen.getByText(/Read-only — no attempts/)).toBeInTheDocument();
   });
 
   it("links the active unit to the teacher generation review route", async () => {
@@ -193,7 +227,7 @@ describe("SubjectMaterialsPage", () => {
   it("opens a published lesson from the live material GET", async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /Fractions/ }));
+    await user.click(await screen.findByRole("button", { name: /Fractions Published/ }));
 
     expect(getSubtopicMaterial).toHaveBeenCalledWith("st-1");
     expect(await screen.findByRole("article", { name: "Lesson preview" })).toBeInTheDocument();
@@ -213,6 +247,17 @@ describe("SubjectMaterialsPage", () => {
     expect(await screen.findByText("What is 1/2 + 1/2?")).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /submit/i })).not.toBeInTheDocument();
+    expect(startAttempt).not.toHaveBeenCalled();
+  });
+
+  it("opens the topic lesson from the topic row", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /1 lesson · 1 quiz/ }));
+    await user.click(screen.getByRole("button", { name: /Fractions lesson/ }));
+
+    expect(getTopicMaterial).toHaveBeenCalledWith("topic-frac");
+    expect(await screen.findByRole("article", { name: "Lesson preview" })).toBeInTheDocument();
     expect(startAttempt).not.toHaveBeenCalled();
   });
 });

@@ -311,7 +311,7 @@ describe("ResultPage", () => {
       "href",
       "/subjects/subj-1/topics/topic-1/lesson",
     );
-    expect(screen.getByRole("link", { name: "Topic lesson" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Approved Materials" })).toHaveAttribute(
       "href",
       "/subjects/subj-1/topics/topic-1/lesson",
     );

@@ -11,7 +11,9 @@ import type {
   QuizField,
   ReviewWorkspace,
 } from "../api/types";
+import { presentQuizText } from "../lib/quizText";
 import { GenerationReviewAssistant } from "./GenerationReviewAssistant";
+import { MarkdownContent } from "./MarkdownContent";
 import { PushButton } from "./PushButton";
 
 const CHANGE_KINDS: ChangeKind[] = [
@@ -623,10 +625,12 @@ function QaReviewBoard({
           return (
             <li key={item.item_key} className="outline-review__node">
               <p className="outline-review__sequence">
-                Item {item.sequence}: {item.prompt}
+                Item {item.sequence}:{" "}
+                <MarkdownContent inline>{presentQuizText(item.prompt)}</MarkdownContent>
               </p>
               <p className="muted">
-                Correct {item.correct_label}. {item.correct_rationale}
+                Correct {item.correct_label}.{" "}
+                <MarkdownContent inline>{presentQuizText(item.correct_rationale)}</MarkdownContent>
               </p>
               {threads.map((thread) => (
                 <p key={thread.change_request.id} className="outline-review__request">

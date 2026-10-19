@@ -42,6 +42,9 @@ function isSensitive({ url, request }: { url: URL; request: Request }): boolean 
 const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 clientsClaim();
+// autoUpdate activates the new worker immediately. The page reloads only when
+// it is safe (see PwaPrompts); a quiz stays on the bundle it started with.
+void (self as unknown as ServiceWorkerGlobalScope).skipWaiting();
 // Casts erase in the bundle, leaving the self.__WB_MANIFEST injection point.
 precacheAndRoute((self as unknown as ServiceWorkerGlobalScope).__WB_MANIFEST);
 cleanupOutdatedCaches();

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Crumbs } from "../../components/Crumbs";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
+import { presentQuizText } from "../../lib/quizText";
 import {
   discardDraft,
   fetchApproved,
@@ -349,7 +351,9 @@ export function QuestionBankPage() {
                     )}
                     {tab === "approved" && <span className="badge badge--ok">approved</span>}
                   </div>
-                  <h3>{question.prompt}</h3>
+                  <h3>
+                    <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>
+                  </h3>
 
                   <ul className="draft-options">
                     {question.options.map((option) => {
@@ -360,7 +364,9 @@ export function QuestionBankPage() {
                           className={`draft-option ${isCorrect ? "is-correct" : ""}`}
                         >
                           <span className="draft-option__label">{option.label}</span>
-                          <span>{option.text}</span>
+                          <span>
+                            <MarkdownContent inline>{presentQuizText(option.text)}</MarkdownContent>
+                          </span>
                           {isCorrect && <span className="badge badge--ok">correct</span>}
                         </li>
                       );
@@ -368,7 +374,10 @@ export function QuestionBankPage() {
                   </ul>
 
                   {question.explanation && (
-                    <p className="progress-label">Why: {question.explanation}</p>
+                    <p className="progress-label">
+                      Why:{" "}
+                      <MarkdownContent inline>{presentQuizText(question.explanation)}</MarkdownContent>
+                    </p>
                   )}
 
                   {tab === "drafts" && (

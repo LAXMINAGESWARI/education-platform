@@ -1,6 +1,8 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
+import { updateTopicMaterialProgress } from "../api/materials";
+import { ApiError } from "../api/types";
 import {
   AttemptHistoryList,
   AttemptHistoryTrigger,
@@ -8,20 +10,101 @@ import {
   formatAttemptWhen,
 } from "../components/AttemptHistory";
 import { Crumbs } from "../components/Crumbs";
-import { MarkdownContent } from "../components/MarkdownContent";
+import { LessonSlideFrame } from "../components/LessonSlideFrame";
+import { PushButton } from "../components/PushButton";
+import { SlideProgress } from "../components/SlideProgress";
+import { slidesForLessonView } from "../lib/lessonSlides";
 import { latestRetakeLabel, passedBestLabel, quizActionLabel, trackedAttempts } from "../lib/quizAction";
 import { useTopicLesson } from "../lib/useTopicLesson";
+import { resumeSlideIndex } from "../lib/useSubtopicLesson";
+import { clearLearningDirectoryCache } from "./HomePage";
 
 export function TopicLessonPage() {
   const {
+    topicId,
     lesson,
+    setLesson,
     subjectName,
     topicTitle,
     quizSummary,
     error,
     subjectPath,
   } = useTopicLesson();
+  const [searchParams] = useSearchParams();
   const [showHistory, setShowHistory] = useState(false);
+  const [slideIndex, setSlideIndex] = useState(0);
+  const [progressError, setProgressError] = useState<string | null>(null);
+  const positioned = useRef(false);
+  const savedKey = useRef<string | null>(null);
+
+  const slides = lesson ? slidesForLessonView(lesson) : [];
+  const slide = slides[slideIndex];
+  const atEnd = slides.length > 0 && slideIndex >= slides.length - 1;
+
+  useEffect(() => {
+    positioned.current = false;
+    savedKey.current = null;
+    setSlideIndex(0);
+  }, [topicId]);
+
+  useEffect(() => {
+    if (!lesson || positioned.current) return;
+    const nextSlides = slidesForLessonView(lesson);
+    if (nextSlides.length === 0) return;
+    positioned.current = true;
+    const fromStart = searchParams.get("from") === "start";
+    setSlideIndex(fromStart ? 0 : resumeSlideIndex(lesson, nextSlides));
+  }, [lesson, searchParams]);
+
+  useEffect(() => {
+    if (!lesson) return;
+    const nextSlides = slidesForLessonView(lesson);
+    if (nextSlides.length === 0) return;
+    const unit = nextSlides[slideIndex]?.number ?? slideIndex + 1;
+    const onLast = slideIndex >= nextSlides.length - 1;
+    const status =
+      onLast || lesson.progress?.status === "completed" ? "completed" : "opened";
+    const key = `${topicId}:${status}:${unit}`;
+    if (savedKey.current === key) return;
+    if (
+      lesson.progress?.status === status &&
+      lesson.progress.last_unit_ordinal === unit
+    ) {
+      savedKey.current = key;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const progress = await updateTopicMaterialProgress(topicId, {
+          status,
+          last_unit_ordinal: unit,
+        });
+        if (cancelled) return;
+        savedKey.current = key;
+        if (status === "completed") clearLearningDirectoryCache();
+        setLesson((prev) =>
+          prev
+            ? {
+                ...prev,
+                progress,
+                quiz_unlocked:
+                  status === "completed"
+                    ? Boolean(prev.quiz_id) || prev.quiz_unlocked
+                    : prev.quiz_unlocked,
+              }
+            : prev,
+        );
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 403) return;
+        setProgressError(err instanceof ApiError ? err.message : "Could not save lesson progress.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [lesson, setLesson, slideIndex, topicId]);
 
   const quizUnlocked = Boolean(lesson?.quiz_unlocked && lesson.quiz_id);
   const quizId = lesson?.quiz_id ?? quizSummary?.id ?? null;
@@ -31,7 +114,6 @@ export function TopicLessonPage() {
   const latestWhen = latestAttempt ? formatAttemptWhen(latestAttempt) : null;
   const passedLabel = passedBestLabel(quizSummary);
   const retakeLabel = latestRetakeLabel(quizSummary);
-  const markdownStartsWithHeading = /^#\s+/m.test(lesson?.markdown.trim() ?? "");
 
   return (
     <>
@@ -54,29 +136,61 @@ export function TopicLessonPage() {
         </div>
       )}
 
-      {lesson && (
+      {lesson && slide && (
         <div className="lesson-view topic-lesson-page">
           <Crumbs
             parts={[
               { label: "Subjects", to: "/" },
               { label: subjectName, to: subjectPath },
-              { label: "Topic lesson" },
+              { label: topicTitle },
             ]}
           />
-          <h1 className="sr-only">Topic lesson</h1>
+          <h1 className="sr-only">{topicTitle}</h1>
 
           <div className="lesson-layout">
-            <section className="lesson-layout__main" aria-label="Topic lesson">
-              <article className="panel lesson-overview">
-                {!markdownStartsWithHeading && (
-                  <div className="lesson-overview__header">
-                    <h2>{lesson.title || topicTitle}</h2>
-                  </div>
-                )}
-                <div className="lesson-overview__scroll markdown">
-                  <MarkdownContent>{lesson.markdown}</MarkdownContent>
-                </div>
-              </article>
+            <section className="lesson-layout__main lesson-slides" aria-label={topicTitle}>
+              <LessonSlideFrame
+                title={slide.title}
+                content={slide.content}
+                ariaLabel={topicTitle}
+                footer={
+                  <>
+                    <div className="slide-nav__controls">
+                      <PushButton
+                        variant="outline"
+                        size="sm"
+                        disabled={slideIndex === 0}
+                        onClick={() => setSlideIndex((index) => Math.max(0, index - 1))}
+                      >
+                        Previous
+                      </PushButton>
+                      {atEnd ? (
+                        <span className="lesson-toolbar__hint">Topic quiz follows the slides.</span>
+                      ) : (
+                        <PushButton
+                          size="sm"
+                          onClick={() =>
+                            setSlideIndex((index) => Math.min(slides.length - 1, index + 1))
+                          }
+                        >
+                          Next slide
+                        </PushButton>
+                      )}
+                    </div>
+                    <SlideProgress
+                      sectionTitle={slide.sectionTitle}
+                      index={slideIndex}
+                      total={slides.length}
+                      complete={lesson.progress?.status === "completed"}
+                    />
+                  </>
+                }
+              />
+              {progressError && (
+                <p className="form__error" role="alert">
+                  {progressError}
+                </p>
+              )}
             </section>
 
             <aside className="lesson-layout__aside" aria-label="Topic quiz" id="quiz">
@@ -110,9 +224,7 @@ export function TopicLessonPage() {
                       </button>
                     )}
                     {!quizUnlocked && (
-                      <p className="lesson-toolbar__hint">
-                        Complete the topic lesson first.
-                      </p>
+                      <p className="lesson-toolbar__hint">Complete the topic lesson first.</p>
                     )}
                   </div>
                 </div>

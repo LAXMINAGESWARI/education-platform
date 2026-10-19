@@ -503,8 +503,8 @@ describe("TopicGenerationUpload", () => {
     expect(screen.queryByRole("tab", { name: "Lesson" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Quiz" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /Lesson/ })).toBeInTheDocument();
-    expect(screen.getByText("What is 1/2 + 1/2?")).toBeInTheDocument();
-    expect(screen.getByText("Two halves make a whole.")).toBeInTheDocument();
+    expect(screen.getAllByText("What is 1/2 + 1/2?").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Two halves make a whole.").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Publish to students" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject selected items" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save outline" })).not.toBeInTheDocument();

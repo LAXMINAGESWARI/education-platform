@@ -87,6 +87,23 @@ describe("normalizeMarkdownMath", () => {
     expect(normalized).toContain("2x - 3 &= 4 \\\\\n");
   });
 
+  it("collapses a multi-line display formula so the closer stays on the formula", () => {
+    const source = [
+      "$$\\text{Required area} = (l + 2w)(b + 2w) - lb",
+      "= 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
+      "",
+      "Next paragraph stays outside the formula.",
+    ].join("\n");
+    const normalized = normalizeMarkdownMath(source);
+    expect(normalized).toContain(
+      "$$\\text{Required area} = (l + 2w)(b + 2w) - lb = 2400 + 3200 + (2 \\times 1200) = 8000 \\, \\text{cm}^2.$$",
+    );
+    expect(normalized).toContain("Next paragraph stays outside the formula.");
+    const open = normalized.indexOf("$$");
+    const close = normalized.indexOf("$$", open + 2);
+    expect(normalized.slice(open, close)).not.toContain("Next paragraph");
+  });
+
   it("strips undecoded Docling formula comments", () => {
     expect(normalizeMarkdownMath("Solve <!-- formula-not-decoded --> next.")).toBe("Solve  next.");
   });

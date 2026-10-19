@@ -28,7 +28,7 @@ function readCollapsed(): boolean {
 }
 
 export function AdminShell() {
-  const { user, signOut, isDevMockSession } = useAuth();
+  const { user, signOut } = useAuth();
   const location = useLocation();
   // Read the saved preference on the first render, so a collapsed rail does not flash open.
   const [railCollapsed, setRailCollapsed] = useState(readCollapsed);
@@ -51,11 +51,6 @@ export function AdminShell() {
 
   return (
     <div className="app-frame">
-      <div className="demo-banner" role="status">
-        {isDevMockSession
-          ? "Demo mockup only · Admin fixture session · materials need a real JWT"
-          : "Demo mockup only · Admin · live published materials API"}
-      </div>
       <div className={`app ${railCollapsed ? "is-rail-collapsed" : ""}`}>
         <aside
           className={`rail ${railCollapsed ? "is-collapsed" : ""}`}

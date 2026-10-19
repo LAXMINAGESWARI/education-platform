@@ -48,7 +48,7 @@ describe("backdropChrome", () => {
       ctx,
       {
         progressPercent: 22,
-        progressLabel: "Subject completion · 22% · 0/2 units · overall quiz pending",
+        progressLabel: "Subject completion · 22% · 0/2 topics · overall quiz pending",
         statusLabel: "In progress",
         complete: false,
       },

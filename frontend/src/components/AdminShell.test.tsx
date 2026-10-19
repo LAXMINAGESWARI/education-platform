@@ -31,6 +31,9 @@ describe("AdminShell", () => {
     );
 
     expect(screen.getAllByRole("link", { name: "CurioEd" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Sign out" }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Demo mockup only/)).not.toBeInTheDocument();
+    expect(document.querySelector(".demo-banner")).not.toBeInTheDocument();
 
     const app = document.querySelector(".app");
     expect(app).not.toHaveClass("is-rail-collapsed");

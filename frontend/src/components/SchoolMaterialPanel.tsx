@@ -48,14 +48,24 @@ function QuizAttemptResult({ attempt }: { attempt: AttemptHistoryItem }) {
   return <span className="quiz-meta">{attempt.status.replaceAll("_", " ")}</span>;
 }
 
-function UnitQuizMeta({ quiz }: { quiz: QuizSummary | null }) {
+function UnitQuizMeta({
+  quiz,
+  topicLesson = false,
+}: {
+  quiz: QuizSummary | null;
+  topicLesson?: boolean;
+}) {
   if (!quiz?.available) return null;
 
   if (quiz.in_progress_attempt_id) {
     return <p className="subtopic-card__quiz-meta">Unfinished · start again</p>;
   }
   if (!quiz.unlocked) {
-    return <p className="subtopic-card__quiz-meta">Complete lesson to unlock</p>;
+    return (
+      <p className="subtopic-card__quiz-meta">
+        {topicLesson ? "Complete the topic lesson first." : "Complete lesson to unlock"}
+      </p>
+    );
   }
 
   const latest = trackedAttempts(quiz.recent_attempts)[0];
@@ -105,7 +115,7 @@ function TopicCard({
           {passedLabel ? (
             retake ? <p className="subtopic-card__quiz-meta">{retake}</p> : null
           ) : (
-            <UnitQuizMeta quiz={quiz} />
+            <UnitQuizMeta quiz={quiz} topicLesson={topic.has_topic_lesson} />
           )}
         </div>
         <span className="subtopic-card__chevron" aria-hidden="true">

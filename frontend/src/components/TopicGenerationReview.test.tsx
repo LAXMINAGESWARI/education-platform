@@ -308,7 +308,11 @@ describe("TopicGenerationReview", () => {
     );
 
     expect(screen.getByText("Section 1: Like fractions")).toBeInTheDocument();
-    expect(screen.getByText("Item 1: What is 1/2 + 1/2?")).toBeInTheDocument();
+    expect(
+      screen.getByText((_content, element) => {
+        return element?.textContent === "Item 1: What is 1/2 + 1/2?";
+      }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Accept current outline" })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Comment"), "Clarify the recap.");
     await user.click(screen.getByRole("button", { name: "Add request" }));
