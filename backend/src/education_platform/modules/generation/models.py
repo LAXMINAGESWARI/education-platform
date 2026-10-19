@@ -103,6 +103,8 @@ class ContentGenerationOutlineNode(UUIDTimestampMixin, Base):
         ForeignKey("subtopics.id"), nullable=True, index=True
     )
     proposed_outcomes: Mapped[list[Any]] = mapped_column(JsonDict)
+    # Original chunk-group labels. Display ``title`` is the cleaned concept name.
+    source_headings: Mapped[list[Any]] = mapped_column(JsonDict, default=list)
     sequence: Mapped[int] = mapped_column(Integer)
 
 
@@ -276,6 +278,7 @@ class GenerationOutlineRevisionNode(UUIDTimestampMixin, Base):
     )
     force_create: Mapped[bool] = mapped_column(Boolean, default=False)
     proposed_outcomes: Mapped[list[Any]] = mapped_column(JsonDict)
+    source_headings: Mapped[list[Any]] = mapped_column(JsonDict, default=list)
     sequence: Mapped[int] = mapped_column(Integer)
 
 

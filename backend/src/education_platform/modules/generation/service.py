@@ -59,7 +59,7 @@ from education_platform.modules.generation.models import (
     ReviewRoundClosure,
     ReviewRoundRow,
 )
-from education_platform.modules.generation.outline import largest_remainder
+from education_platform.modules.generation.outline import MIN_LEAF_QUESTIONS, allocate_quotas
 from education_platform.modules.generation.types import (
     IN_FLIGHT_PHASES,
     PATCH_OUTLINE_GONE,
@@ -145,6 +145,12 @@ async def _in_flight_run_id(session: AsyncSession, topic_id: UUID) -> UUID | Non
     return run_id
 
 
+def _source_headings_from_json(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+
+
 def _outcomes_from_json(raw: object) -> tuple[ProposedOutcome, ...]:
     if not isinstance(raw, list):
         return ()
@@ -171,6 +177,7 @@ def _node_from_row(row: ContentGenerationOutlineNode, quota: int | None) -> Outl
         accepted_subtopic_id=row.accepted_subtopic_id,
         proposed_outcomes=_outcomes_from_json(row.proposed_outcomes),
         sequence=row.sequence,
+        source_headings=_source_headings_from_json(row.source_headings),
     )
 
 
@@ -186,7 +193,11 @@ def _document_from_rows(
     if not any(row.quota is None for row in ordered):
         return document
     try:
-        previews = largest_remainder(document.normalized_weights(), target_item_count.value)
+        previews = allocate_quotas(
+            document.normalized_weights(),
+            target_item_count.value,
+            minimum=MIN_LEAF_QUESTIONS,
+        )
     except ValueError:
         return document
     previewed = tuple(
@@ -567,7 +578,11 @@ async def accept_outline(
     if not run.outline or not run.outline.nodes:
         raise GenerationError("Cannot accept an empty outline.", status_code=409)
 
-    quotas = largest_remainder(run.outline.normalized_weights(), run.target_item_count.value)
+    quotas = allocate_quotas(
+        run.outline.normalized_weights(),
+        run.target_item_count.value,
+        minimum=MIN_LEAF_QUESTIONS,
+    )
     existing = list(
         (
             await session.scalars(

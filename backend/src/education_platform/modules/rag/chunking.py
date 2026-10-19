@@ -28,6 +28,14 @@ EMBEDDING_TOKENIZER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 FORMULA_NOT_DECODED = "<!-- formula-not-decoded -->"
 DIAGRAM_PLACEHOLDER = "[Diagram]"
 _NUMBERED_HEADING = re.compile(r"^\s*\d+(?:\.\d+)+\.?\s+\S")
+# Activity boxes are all caps in this book. They must not become level-1
+# parents of the next numbered section (9.4.3 under TRY THESE).
+_BOX_HEADING = re.compile(
+    r"^(?:try\s+these|do\s+this|think[\s,]+discuss(?:[\s,]+and[\s,]+write)?)$",
+    re.IGNORECASE,
+)
+_TRAILING_BOX_PUNCT = re.compile(r"[\s:.;,!?]+$")
+_BOX_WHITESPACE = re.compile(r"\s+")
 
 __all__ = [
     "DIAGRAM_PLACEHOLDER",
@@ -179,6 +187,12 @@ def _is_section_header(item: Any) -> bool:
     return str(getattr(label, "value", label)).lower() == "section_header"
 
 
+def _is_box_heading(text: str) -> bool:
+    key = _BOX_WHITESPACE.sub(" ", text.strip())
+    key = _TRAILING_BOX_PUNCT.sub("", key).strip()
+    return _BOX_HEADING.match(key) is not None
+
+
 def assign_numbered_heading_levels(document: Any) -> None:
     """Rebuild heading depth from section numbers.
 
@@ -200,11 +214,15 @@ def assign_numbered_heading_levels(document: Any) -> None:
         if _NUMBERED_HEADING.match(text):
             current = text.split()[0].rstrip(".").count(".")
             item.level = max(1, current)
+        elif _is_box_heading(text):
+            # Stay under the open numbered section. Do not reset the stack,
+            # or the next 9.4.x heading is parented by the box.
+            item.level = current + 1 if current else 1
         elif text.isupper():
             current = 1
             item.level = 1
         else:
-            item.level = current + 1
+            item.level = current + 1 if current else 1
 
 
 def chunk_docling_document(document: Any) -> list[TextChunk]:

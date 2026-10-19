@@ -95,6 +95,7 @@ def snapshot_from_document(document: OutlineDocument) -> OutlineSnapshot:
                 ProposedOutcomeSnapshot(statement=item.statement) for item in node.proposed_outcomes
             ),
             sequence=node.sequence,
+            source_headings=node.source_headings,
         )
         for node in document.nodes
     )
@@ -119,6 +120,11 @@ def snapshot_from_node_rows(
             force_create=row.force_create,
             proposed_outcomes=_outcomes_from_json(row.proposed_outcomes),
             sequence=row.sequence,
+            source_headings=tuple(
+                item.strip()
+                for item in (row.source_headings or [])
+                if isinstance(item, str) and item.strip()
+            ),
         )
         for row in ordered
     )
@@ -287,6 +293,7 @@ def make_node_rows(
             matched_subtopic_id=node.matched_subtopic_id,
             force_create=node.force_create,
             proposed_outcomes=[item.statement for item in node.proposed_outcomes],
+            source_headings=list(node.source_headings),
             sequence=node.sequence,
         )
         for node in snapshot.nodes
@@ -438,6 +445,7 @@ def apply_snapshot_to_run_nodes(session: Session, run_id: UUID, snapshot: Outlin
                 force_create=node.force_create,
                 accepted_subtopic_id=None,
                 proposed_outcomes=[item.statement for item in node.proposed_outcomes],
+                source_headings=list(node.source_headings),
                 sequence=node.sequence,
             )
             session.add(row)
@@ -452,6 +460,7 @@ def apply_snapshot_to_run_nodes(session: Session, run_id: UUID, snapshot: Outlin
             row.matched_subtopic_id = node.matched_subtopic_id
             row.force_create = node.force_create
             row.proposed_outcomes = [item.statement for item in node.proposed_outcomes]
+            row.source_headings = list(node.source_headings)
             row.sequence = node.sequence
             row.quota = None
             row.accepted_subtopic_id = None
@@ -595,6 +604,7 @@ def document_from_snapshot(snapshot: OutlineSnapshot) -> OutlineDocument:
                     ProposedOutcome(statement=item.statement) for item in node.proposed_outcomes
                 ),
                 sequence=node.sequence,
+                source_headings=node.source_headings,
             )
             for node in snapshot.nodes
         ),
@@ -648,7 +658,7 @@ def leaf_revision(session: Session, run_id: UUID, stage: ReviewStage) -> Generat
 
 
 def _node_to_json(node: OutlineNodeSnapshot) -> dict[str, Any]:
-    return {
+    payload = {
         "node_key": str(node.node_key),
         "parent_node_key": None if node.parent_node_key is None else str(node.parent_node_key),
         "slug": node.slug,
@@ -664,6 +674,9 @@ def _node_to_json(node: OutlineNodeSnapshot) -> dict[str, Any]:
         "proposed_outcomes": [item.statement for item in node.proposed_outcomes],
         "sequence": node.sequence,
     }
+    if node.source_headings:
+        payload["source_headings"] = list(node.source_headings)
+    return payload
 
 
 def _node_from_json(item: object) -> OutlineNodeSnapshot:
@@ -690,7 +703,14 @@ def _node_from_json(item: object) -> OutlineNodeSnapshot:
             if str(statement).strip()
         ),
         sequence=int(item["sequence"]),
+        source_headings=_snapshot_source_headings(item.get("source_headings")),
     )
+
+
+def _snapshot_source_headings(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
 
 
 def content_snapshot_to_json(snapshot: ContentSnapshot) -> dict[str, Any]:
