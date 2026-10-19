@@ -137,8 +137,11 @@ describe("PolicyChatPage", () => {
           "aria-expanded",
           "false",
         );
+        expect(
+          screen.getByText("Attendance", { selector: ".policy-chat__conv-title" }),
+        ).not.toBeVisible();
       });
-      expect(screen.queryByText("Attendance", { selector: ".policy-chat__conv-title" })).not.toBeVisible();
+      expect(document.getElementById("policy-chat-conversations")).toHaveAttribute("hidden");
       expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     } finally {
       window.matchMedia = original;
@@ -166,7 +169,9 @@ describe("PolicyChatPage", () => {
       "false",
     );
     expect(document.querySelector(".policy-chat__layout.is-sidebar-collapsed")).not.toBeNull();
-    expect(screen.queryByText("Attendance", { selector: ".policy-chat__conv-title" })).not.toBeVisible();
+    expect(
+      screen.getByText("Attendance", { selector: ".policy-chat__conv-title" }),
+    ).not.toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Expand chats" }));
     expect(screen.getByRole("button", { name: "Collapse chats" })).toHaveAttribute(
