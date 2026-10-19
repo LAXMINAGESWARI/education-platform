@@ -26,14 +26,15 @@ function unescapeLatexBody(body: string): string {
 function formatDisplayMath(body: string): string {
   const inner = unescapeLatexBody(body.trim());
   if (!inner) return "";
-  // Alignments need their row breaks. Any other newline inside `$$...$$`
+  // Alignments need their row breaks. Any other newline inside the formula
   // leaves the closer off the opening line, and remark-math treats the rest
-  // of the lesson as one unclosed display block.
+  // of the lesson as one unclosed display block. The fences stay on their own
+  // lines so the formula renders as display math.
   if (/\\begin\{/.test(inner)) {
     return `\n$$\n${inner}\n$$\n`;
   }
   const collapsed = inner.replace(/\s*\n\s*/g, " ");
-  return `$$${collapsed}$$`;
+  return `\n$$\n${collapsed}\n$$\n`;
 }
 
 function tightenDollarMath(markdown: string): string {

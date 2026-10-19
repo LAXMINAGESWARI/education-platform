@@ -21,6 +21,7 @@ from education_platform.modules.assessments.models import QuizScope
 from education_platform.modules.assessments.queries import questions_for_quiz_version, released_quiz
 from education_platform.modules.assessments.schemas import QuizMaterial
 from education_platform.modules.authorization.scope import Scope
+from education_platform.modules.generation.recap import present_topic_recap
 from education_platform.modules.materials.markdown_parser import parse_slides
 from education_platform.modules.materials.models import (
     MaterialProgressStatus,
@@ -126,7 +127,7 @@ async def get_subtopic_lesson(
     quiz = await released_quiz(
         session, quiz_scope=QuizScope.SUBTOPIC_MASTERY, target_id=subtopic_id
     )
-    markdown = version.content_markdown
+    markdown = present_topic_recap(version.content_markdown)
     slides = [
         LessonSlide(number=slide.number, title=slide.title, content=slide.content)
         for slide in parse_slides(markdown)
@@ -138,6 +139,7 @@ async def get_subtopic_lesson(
         slides=slides,
         progress=_progress_out(progress),
         source_material_version_id=version.id,
+        published_at=version.published_at,
         quiz_unlocked=progress is not None and progress.status == MaterialProgressStatus.COMPLETED,
         quiz_id=quiz[0].id if quiz else None,
     )
@@ -158,7 +160,7 @@ async def get_topic_lesson(session: AsyncSession, scope: Scope, topic_id: UUID) 
         version.id,
     )
     quiz = await released_quiz(session, quiz_scope=QuizScope.TOPIC_MASTERY, target_id=topic_id)
-    markdown = version.content_markdown
+    markdown = present_topic_recap(version.content_markdown)
     slides = [
         LessonSlide(number=slide.number, title=slide.title, content=slide.content)
         for slide in parse_slides(markdown)
@@ -170,6 +172,7 @@ async def get_topic_lesson(session: AsyncSession, scope: Scope, topic_id: UUID) 
         slides=slides,
         progress=_progress_out(progress),
         source_material_version_id=version.id,
+        published_at=version.published_at,
         quiz_unlocked=(
             quiz is not None
             and progress is not None
