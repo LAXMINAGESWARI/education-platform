@@ -95,7 +95,7 @@ function topic(
   return {
     id,
     title,
-    unitLabel: `Unit ${ord}`,
+    unitLabel: `Topic ${ord}`,
     order: ord,
     status,
     subtopics,

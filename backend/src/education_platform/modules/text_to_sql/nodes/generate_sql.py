@@ -52,11 +52,13 @@ asks for.
 - Never reference `users`, `user_roles`, or `refresh_sessions`. Email addresses, \
 passwords, password hashes, and login sessions are not available. A student's name \
 is `student_profiles.full_name` or `student_360.full_name`.
-- A question about a quiz score for a named subtopic ("Fractions", "Decimals", and \
+- A question about a quiz score for a named concept ("Fractions", "Decimals", and \
 similar) is not `student_360.mastery_percent` — that column is the subject-level \
-average across every subtopic. Average `quiz_attempts.score_percent` joined through \
-`quiz_versions` to `common_mastery_quizzes` to `subtopics`, filter `subtopics.name`, \
-and when the question names a section also filter `sections.name` (for example `8A`).
+average. Those names are `topics.name`. Average `quiz_attempts.score_percent` joined \
+through `quiz_versions` to `common_mastery_quizzes` (`quiz_scope = 'topic_mastery'`) \
+to `topics`, filter `topics.name`, and when the question names a section also filter \
+`sections.name` (for example `8A`). `subtopics.name` is a finer tag such as \
+"Equivalent fractions", used only when the question names that tag.
 - Whole-day attendance rows store `attendance_records.grade_subject_offering_id` as \
 NULL. A date-range attendance question filters `attendance_records.on_date` and the \
 section. Do not require that offering id to be non-null.
@@ -185,10 +187,10 @@ grade_subject_offerings gso ON gso.id = sse.grade_subject_offering_id JOIN subje
 ON s.id = gso.subject_id`. Before returning SQL, inspect every JOIN and verify it is a \
 documented FK edge or part of a documented multi-hop path — a query that executes but \
 returns zero rows because of an unrelated-ID join is incorrect.
-- `topics` are broad, top-level groupings (e.g. "Mathematics Core"); `subtopics` are \
-the specific, nameable concepts underneath them (e.g. "Fractions", "Linear Equations"). \
-When a question names a specific concept to filter or count by, check `subtopics.name` \
-first — `topics.name` is very unlikely to match a specific concept name at all.
+- `topics.name` holds the concept a student studies (e.g. "Fractions"). `subtopics.name` \
+holds a finer question tag under that topic (e.g. "Equivalent fractions"). When a \
+question names Fractions, Decimals, or a similar concept, filter `topics.name` and \
+join the `topic_mastery` quiz. Filter `subtopics.name` only for those finer tags.
 - Return ONLY the SQL query, in a single ```sql fenced code block, with no other \
 commentary before or after it."""
 

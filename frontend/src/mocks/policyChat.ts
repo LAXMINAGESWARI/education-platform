@@ -56,12 +56,12 @@ const FIXTURE_REPLIES: FixtureReply[] = [
   {
     match: /assess|exam|quiz|grade|mark/i,
     content:
-      "Formative quizzes may be retaken once within the unit window. Summative exams require a documented makeup plan approved by the subject lead.",
+      "Formative quizzes may be retaken once within the topic window. Summative exams require a documented makeup plan approved by the subject lead.",
     citations: [
       {
         id: "cite-assess-1",
         label: "Policy handbook §5.1 — Assessment",
-        excerpt: "One formative retake is allowed before the unit mastery quiz closes.",
+        excerpt: "One formative retake is allowed before the topic mastery quiz closes.",
       },
       {
         id: "cite-assess-2",

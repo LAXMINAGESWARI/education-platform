@@ -24,6 +24,7 @@ from education_platform.modules.assessments.feedback_service import (
 from education_platform.modules.assessments.models import QuestionDifficulty
 from education_platform.modules.assessments.schemas import SubtopicAttemptScore
 
+TOPIC_ID = uuid4()
 SUBTOPIC_A = uuid4()
 SUBTOPIC_B = uuid4()
 ATTEMPT_1 = uuid4()
@@ -43,6 +44,7 @@ def _row(
     attempt_id: UUID = ATTEMPT_1,
     subtopic_id: UUID = SUBTOPIC_A,
     subtopic_name: str = "Subtopic A",
+    topic_id: UUID = TOPIC_ID,
     topic_name: str = "Topic",
     marks_awarded: str = "1",
     marks_available: str = "1",
@@ -56,6 +58,7 @@ def _row(
         attempt_id=attempt_id,
         subtopic_id=subtopic_id,
         subtopic_name=subtopic_name,
+        topic_id=topic_id,
         topic_name=topic_name,
         marks_awarded=Decimal(marks_awarded),
         marks_available=Decimal(marks_available),

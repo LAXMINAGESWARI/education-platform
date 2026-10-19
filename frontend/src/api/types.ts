@@ -135,6 +135,8 @@ export type SubjectNode = {
   grade_name: string;
   academic_period_name: string;
   progress_percent: number;
+  done?: number;
+  total?: number;
   topics: TopicNode[];
 };
 
@@ -166,6 +168,7 @@ export type GoalOut = {
 export type SubtopicFeedback = {
   subtopic_id: string;
   subtopic_name: string;
+  topic_id?: string;
   topic_name: string;
   percent: string | number;
   question_count: number;

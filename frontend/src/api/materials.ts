@@ -28,6 +28,16 @@ export async function getMaterialQuiz(topicId: string): Promise<QuizMaterial> {
   return apiRequest<QuizMaterial>(`/materials/${encodeURIComponent(topicId)}/quiz`);
 }
 
+export async function updateTopicMaterialProgress(
+  topicId: string,
+  payload: MaterialProgressUpdate,
+): Promise<MaterialProgress> {
+  return apiRequest<MaterialProgress>(
+    `/topics/${encodeURIComponent(topicId)}/material-progress`,
+    { method: "PUT", body: payload },
+  );
+}
+
 export async function updateMaterialProgress(
   subtopicId: string,
   payload: MaterialProgressUpdate,

@@ -88,6 +88,16 @@ async def get_subtopic_quiz(
     return await service.get_subtopic_quiz(session, scope, subtopic_id)
 
 
+@router.put("/topics/{topic_id}/material-progress", response_model=MaterialProgressOut)
+async def put_topic_material_progress(
+    topic_id: UUID,
+    payload: MaterialProgressUpdate,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> MaterialProgressOut:
+    return await service.update_topic_material_progress(session, scope, topic_id, payload)
+
+
 @router.put("/subtopics/{subtopic_id}/material-progress", response_model=MaterialProgressOut)
 async def put_subtopic_material_progress(
     subtopic_id: UUID,

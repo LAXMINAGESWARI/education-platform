@@ -49,21 +49,9 @@ from education_platform.modules.academics.models import (
 )
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
-    CommonMasteryQuiz,
-    Question,
-    QuestionAnswerKey,
-    QuestionOption,
-    QuestionType,
-    QuestionVersion,
-    QuestionVersionStatus,
     QuizAttempt,
     QuizAttemptStatus,
-    QuizItem,
     QuizRelease,
-    QuizResultReleaseMode,
-    QuizScope,
-    QuizVersion,
-    QuizVersionStatus,
 )
 from education_platform.modules.assistant.models import ChatConversation
 from education_platform.modules.at_risk.models import AtRiskFlag
@@ -85,14 +73,14 @@ from education_platform.modules.materials.models import (
     SourceMaterialVersion,
     StudentMaterialProgress,
 )
+from education_platform.modules.synthetic.curriculum import concepts_for, slugify
 from education_platform.modules.synthetic.lessons import (
     bind_quiz_to_lesson,
     complete_lesson,
-    ensure_open_quiz_window,
     publish_approved_lesson,
-    subtopic_lesson_markdown,
     topic_lesson_markdown,
 )
+from education_platform.modules.synthetic.quizzes import ensure_topic_mastery_quiz
 
 DEFAULT_PASSWORD = "demo1234"
 
@@ -169,15 +157,8 @@ SUBJECTS = [
     ("Social Studies", "SOC"),
 ]
 
-#: Per subject: the topics students are assessed on. The first maths topic is the one the
-#: planted section gap and the declining student both sit on.
-TOPICS: dict[str, list[str]] = {
-    "Mathematics": ["Fractions", "Decimals", "Ratios", "Percentages", "Algebra"],
-    "Science": ["Forces and Motion", "Light and Optics", "Cells", "Materials", "Energy"],
-    "English": ["Comprehension", "Persuasive Writing", "Grammar", "Poetry", "Vocabulary"],
-    "Arabic": ["Reading", "Grammar", "Poetry", "Composition", "Listening"],
-    "Social Studies": ["Trade Routes", "Geography", "Civics", "History", "Economics"],
-}
+#: Per subject: real topics (Fractions, Decimals, …). The first maths topic is the one the
+#: planted section gap and the declining student both sit on. Names live in curriculum.py.
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +285,29 @@ def _score_for(rng: random.Random, base: float, spread: float = 9.0) -> float:
     return max(5.0, min(100.0, rng.gauss(base, spread)))
 
 
+def _record_topic_answers(
+    session: Session,
+    attempt_id: UUID,
+    question_version_ids: list[UUID],
+    percent: float,
+) -> None:
+    """Write one answer per item so self-eval can group by diagnostic subtopic."""
+    if not question_version_ids:
+        return
+    correct_count = max(0, min(len(question_version_ids), round(percent / 20)))
+    for index, question_version_id in enumerate(question_version_ids):
+        correct = index < correct_count
+        session.add(
+            AttemptAnswer(
+                attempt_id=attempt_id,
+                question_version_id=question_version_id,
+                selected_option_label="A" if correct else "B",
+                is_correct=correct,
+                marks_awarded=Decimal("1.00") if correct else Decimal("0.00"),
+            )
+        )
+
+
 def _attendance_pattern(rng: random.Random, days: int, rate: float) -> list[bool]:
     """Exactly `rate` of `days` present, shuffled -- never sampled.
 
@@ -367,8 +371,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     # ---- academic structure -------------------------------------------------
     offerings: dict[tuple[str, str], GradeSubjectOffering] = {}
     sections: dict[str, list[Section]] = {}
-    topics: dict[tuple[str, str], Topic] = {}
-    subtopics: dict[tuple[str, str], list[Subtopic]] = {}
+    offering_topics: dict[tuple[str, str], list[tuple[Topic, list[Subtopic]]]] = {}
 
     for order, grade_name in enumerate(spec.grades, start=6):
         grade = session.scalar(
@@ -421,53 +424,63 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
             offerings[(grade_name, subject_name)] = offering
             result.offerings += 1
 
-            topic_names = TOPICS[subject_name][: spec.quizzes_per_subject]
-            existing_topic = session.scalar(
-                select(Topic).where(
-                    Topic.grade_subject_offering_id == offering.id, Topic.sequence == 1
+            concepts = concepts_for(subject_name, spec.quizzes_per_subject)
+            existing_topics = list(
+                session.scalars(
+                    select(Topic)
+                    .where(Topic.grade_subject_offering_id == offering.id)
+                    .order_by(Topic.sequence, Topic.slug)
                 )
             )
-            if existing_topic is not None:
-                topics[(grade_name, subject_name)] = existing_topic
-                subtopics[(grade_name, subject_name)] = list(
-                    session.scalars(
-                        select(Subtopic)
-                        .where(Subtopic.topic_id == existing_topic.id)
-                        .order_by(Subtopic.sequence)
+            if existing_topics:
+                loaded: list[tuple[Topic, list[Subtopic]]] = []
+                for topic in existing_topics:
+                    loaded.append(
+                        (
+                            topic,
+                            list(
+                                session.scalars(
+                                    select(Subtopic)
+                                    .where(Subtopic.topic_id == topic.id)
+                                    .order_by(Subtopic.sequence)
+                                )
+                            ),
+                        )
                     )
-                )
+                offering_topics[(grade_name, subject_name)] = loaded
                 continue
 
-            topic = Topic(
-                grade_subject_offering_id=offering.id,
-                name=f"{subject_name} Core",
-                slug=f"{subject.code.lower()}-core",
-                sequence=1,
-            )
-            session.add(topic)
-            session.flush()
-            topics[(grade_name, subject_name)] = topic
-
-            made: list[Subtopic] = []
-            for seq, topic_name in enumerate(topic_names, start=1):
-                subtopic = Subtopic(
-                    topic_id=topic.id,
+            made_topics: list[tuple[Topic, list[Subtopic]]] = []
+            for topic_seq, (topic_name, subtopic_names) in enumerate(concepts, start=1):
+                topic = Topic(
+                    grade_subject_offering_id=offering.id,
                     name=topic_name,
-                    slug=topic_name.lower().replace(" ", "-"),
-                    sequence=seq,
+                    slug=slugify(topic_name),
+                    sequence=topic_seq,
                 )
-                session.add(subtopic)
+                session.add(topic)
                 session.flush()
-                session.add(
-                    LearningOutcome(
-                        subtopic_id=subtopic.id,
-                        code=f"{subject.code}{seq}",
-                        statement=f"Understand and apply {topic_name.lower()}.",
-                        sequence=1,
+                made_subs: list[Subtopic] = []
+                for sub_seq, subtopic_name in enumerate(subtopic_names, start=1):
+                    subtopic = Subtopic(
+                        topic_id=topic.id,
+                        name=subtopic_name,
+                        slug=slugify(subtopic_name),
+                        sequence=sub_seq,
                     )
-                )
-                made.append(subtopic)
-            subtopics[(grade_name, subject_name)] = made
+                    session.add(subtopic)
+                    session.flush()
+                    session.add(
+                        LearningOutcome(
+                            subtopic_id=subtopic.id,
+                            code="LO1",
+                            statement=f"Explain {subtopic_name.lower()} in {topic_name.lower()}.",
+                            sequence=1,
+                        )
+                    )
+                    made_subs.append(subtopic)
+                made_topics.append((topic, made_subs))
+            offering_topics[(grade_name, subject_name)] = made_topics
 
     # ---- teachers -----------------------------------------------------------
     # Meera teaches across two grades AND two subjects on purpose: her scope is a set of
@@ -540,130 +553,41 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     quiz_window_start = datetime.combine(term_start, time.min, tzinfo=UTC)
     quiz_window_end = datetime.combine(term_end + timedelta(days=365), time(23, 59), tzinfo=UTC)
 
-    # ---- quizzes ------------------------------------------------------------
-    quiz_versions: dict[UUID, QuizVersion] = {}
-    for grade_name, subject_name in offerings:
-        for subtopic in subtopics[(grade_name, subject_name)]:
-            # Academic structure survives a wipe, so reuse an existing quiz rather than
-            # colliding with the one-quiz-per-subtopic constraint on regeneration.
-            quiz = session.scalar(
-                select(CommonMasteryQuiz).where(CommonMasteryQuiz.subtopic_id == subtopic.id)
-            )
-            if quiz is not None:
-                existing_version = session.scalar(
-                    select(QuizVersion).where(QuizVersion.quiz_id == quiz.id)
-                )
-                if existing_version is not None:
-                    quiz_versions[subtopic.id] = existing_version
-                    ensure_open_quiz_window(
-                        session,
-                        existing_version,
-                        starts_at=quiz_window_start,
-                        ends_at=quiz_window_end,
-                        released_by_user_id=admin.id,
-                    )
-                    continue
-            else:
-                quiz = CommonMasteryQuiz(
-                    quiz_scope=QuizScope.SUBTOPIC_MASTERY,
-                    subtopic_id=subtopic.id,
-                    title=f"{subtopic.name} mastery check",
-                )
-                session.add(quiz)
-                session.flush()
-            version = QuizVersion(
-                quiz_id=quiz.id,
-                version_number=1,
-                lifecycle_status=QuizVersionStatus.RELEASED,
-                max_attempts=3,
-                result_release_mode=QuizResultReleaseMode.IMMEDIATE,
-                pass_threshold_percent=Decimal("70.00"),
-                released_at=datetime.now(UTC),
-            )
-            session.add(version)
-            session.flush()
-
-            for item_seq in range(1, 6):
-                question = Question(subtopic_id=subtopic.id, code=f"{subtopic.slug}-{item_seq}")
-                session.add(question)
-                session.flush()
-                q_version = QuestionVersion(
-                    question_id=question.id,
-                    version_number=1,
-                    prompt=f"{subtopic.name} question {item_seq}",
-                    question_type=QuestionType.MULTIPLE_CHOICE,
-                    marks=Decimal("1.00"),
-                    lifecycle_status=QuestionVersionStatus.PUBLISHED,
-                )
-                session.add(q_version)
-                session.flush()
-                for label_index, label in enumerate("ABCD"):
-                    session.add(
-                        QuestionOption(
-                            question_version_id=q_version.id,
-                            label=label,
-                            text=f"Option {label}",
-                            sequence=label_index,
-                        )
-                    )
-                session.add(
-                    QuestionAnswerKey(question_version_id=q_version.id, correct_option_label="A")
-                )
-                session.add(
-                    QuizItem(
-                        quiz_version_id=version.id,
-                        question_version_id=q_version.id,
-                        sequence=item_seq,
-                    )
-                )
-            quiz_versions[subtopic.id] = version
-            ensure_open_quiz_window(
+    # ---- quizzes and the one topic lesson ----------------------------------
+    # Academic structure survives a wipe, so reuse an existing topic quiz.
+    quiz_versions: dict[UUID, UUID] = {}
+    quiz_question_versions: dict[UUID, list[UUID]] = {}
+    topic_lessons: dict[UUID, UUID] = {}
+    for key, pairs in offering_topics.items():
+        grade_name, subject_name = key
+        teacher = teachers[key]
+        for topic, topic_subtopics in pairs:
+            version, question_version_ids = ensure_topic_mastery_quiz(
                 session,
-                version,
+                topic,
+                topic_subtopics,
                 starts_at=quiz_window_start,
                 ends_at=quiz_window_end,
                 released_by_user_id=admin.id,
             )
-
-    # ---- lessons ------------------------------------------------------------
-    # Published after the teacher and the admin exist, so submitter and releaser
-    # are real users. Student endpoints read these rows; they do not read a flag.
-    subtopic_lessons: dict[UUID, UUID] = {}
-    topic_lessons: dict[tuple[str, str], UUID] = {}
-    for key, topic in topics.items():
-        grade_name, subject_name = key
-        teacher = teachers[key]
-        unit_names = tuple(subtopic.name for subtopic in subtopics[key])
-        topic_version = publish_approved_lesson(
-            session,
-            topic=topic,
-            title=topic.name,
-            markdown=topic_lesson_markdown(
-                seed=spec.seed,
-                grade_name=grade_name,
-                subject_name=subject_name,
-                title=topic.name,
-                units=unit_names,
-            ),
-            submitted_by_user_id=teacher.id,
-        )
-        topic_lessons[key] = topic_version.id
-        result.lessons += 1
-        for subtopic in subtopics[key]:
+            quiz_versions[topic.id] = version.id
+            quiz_question_versions[topic.id] = question_version_ids
+            idea_names = tuple(subtopic.name for subtopic in topic_subtopics)
             lesson_version = publish_approved_lesson(
                 session,
-                subtopic=subtopic,
-                title=subtopic.name,
-                markdown=subtopic_lesson_markdown(
+                topic=topic,
+                title=topic.name,
+                markdown=topic_lesson_markdown(
                     seed=spec.seed,
                     grade_name=grade_name,
                     subject_name=subject_name,
-                    title=subtopic.name,
+                    title=topic.name,
+                    subtopics=idea_names,
                 ),
                 submitted_by_user_id=teacher.id,
             )
-            subtopic_lessons[subtopic.id] = lesson_version.id
-            bind_quiz_to_lesson(session, quiz_versions[subtopic.id].id, lesson_version.id)
+            topic_lessons[topic.id] = lesson_version.id
+            bind_quiz_to_lesson(session, version.id, lesson_version.id)
             result.lessons += 1
     session.flush()
 
@@ -759,14 +683,15 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                     )
                     session.add(subject_enrollment)
                     session.flush()
-                    topic_completed = False
 
                     base = rng.uniform(58, 84)
                     if counter % COUNTER_EXAMPLE_EVERY == 0:
                         base = rng.uniform(72, 86)  # the counter-example students do fine
 
-                    for order, subtopic in enumerate(subtopics[(grade_name, subject_name)]):
-                        version = quiz_versions[subtopic.id]
+                    topic_pairs = offering_topics[(grade_name, subject_name)]
+                    for order, (topic, _topic_subtopics) in enumerate(topic_pairs):
+                        version_id = quiz_versions[topic.id]
+                        question_version_ids = quiz_question_versions[topic.id]
 
                         if is_planted and subject_name == "Mathematics":
                             # Planted: a clear, steady decline across the term.
@@ -774,20 +699,22 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                         elif (
                             subject_name == "Mathematics"
                             and grade_name == "Grade 8"
-                            and subtopic.name == "Fractions"
+                            and topic.name == "Fractions"
                         ):
                             # Planted: section A is genuinely weaker on Fractions than B.
                             percent = _score_for(rng, 58.0 if section_index == 0 else 71.0)
                         else:
                             percent = _score_for(rng, base)
 
-                        submitted = datetime.now(UTC) - timedelta(days=(5 - order) * 7)
+                        submitted = datetime.now(UTC) - timedelta(
+                            days=(len(topic_pairs) - order) * 7
+                        )
                         attempt = QuizAttempt(
                             student_id=profile.id,
                             student_subject_enrollment_id=subject_enrollment.id,
-                            quiz_version_id=version.id,
+                            quiz_version_id=version_id,
                             attempt_number=1,
-                            status=QuizAttemptStatus.SUBMITTED,
+                            status=QuizAttemptStatus.RELEASED,
                             started_at=submitted - timedelta(minutes=20),
                             submitted_at=submitted,
                             scored_at=submitted,
@@ -797,21 +724,15 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
                             passed=percent >= 70,
                         )
                         session.add(attempt)
+                        session.flush()
+                        _record_topic_answers(session, attempt.id, question_version_ids, percent)
                         result.attempts += 1
                         complete_lesson(
                             session,
                             enrollment_id=subject_enrollment.id,
-                            version_id=subtopic_lessons[subtopic.id],
+                            version_id=topic_lessons[topic.id],
                             completed_at=submitted - timedelta(minutes=30),
                         )
-                        if not topic_completed:
-                            complete_lesson(
-                                session,
-                                enrollment_id=subject_enrollment.id,
-                                version_id=topic_lessons[(grade_name, subject_name)],
-                                completed_at=submitted - timedelta(hours=1),
-                            )
-                            topic_completed = True
 
                 if counter % 40 == 0:
                     session.flush()
@@ -819,8 +740,7 @@ def generate_school(session: Session, spec: SchoolSpec | None = None) -> Generat
     session.flush()
 
     result.planted["section_gap"] = (
-        "Grade 8 section A averages ~13 points below B on the Fractions quiz "
-        "(~4 points once diluted across all five maths subtopics)"
+        "Grade 8 section A averages ~13 points below B on the Fractions topic quiz"
     )
     result.planted["attendance_counter_examples"] = (
         "every 17th student has ~70% attendance but strong marks, so attendance alone "

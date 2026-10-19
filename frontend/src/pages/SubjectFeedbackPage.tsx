@@ -287,7 +287,11 @@ function NextStepCallout({
         revisit <strong style={{ color: "var(--ink)" }}>{target.s.subtopic_name}</strong>. {gapText}
       </span>
       <Link
-        to={`/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`}
+        to={
+          target.s.topic_id
+            ? `/subjects/${subjectId}/topics/${target.s.topic_id}/lesson`
+            : `/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`
+        }
         style={{ color: "#1e40af", fontWeight: 600, textDecoration: "underline" }}
       >
         Review lesson
@@ -708,7 +712,11 @@ function SubtopicCard({
         <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" }}>
           {remediation.material_title && (
             <Link
-              to={`/subjects/${subjectId}/subtopics/${subtopic.subtopic_id}/lesson`}
+              to={
+                subtopic.topic_id
+                  ? `/subjects/${subjectId}/topics/${subtopic.topic_id}/lesson`
+                  : `/subjects/${subjectId}/subtopics/${subtopic.subtopic_id}/lesson`
+              }
               className="btn btn--sm"
             >
               Review lesson: {remediation.material_title}
@@ -716,7 +724,7 @@ function SubtopicCard({
           )}
           {remediation.retake_quiz_id && (
             <Link to={`/quizzes/${remediation.retake_quiz_id}`} className="btn btn--sm">
-              Retake this subtopic
+              Retake the topic quiz
             </Link>
           )}
         </div>

@@ -334,7 +334,7 @@ export function AdminMaterialsTopicsPage() {
       });
       await reload();
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "Could not remove the unit.");
+      setActionError(err instanceof ApiError ? err.message : "Could not remove the topic.");
     } finally {
       setActionTopicId(null);
     }
@@ -382,7 +382,7 @@ export function AdminMaterialsTopicsPage() {
             {grade?.name ?? "…"} · {subject?.name ?? "…"}
           </p>
           <h1>Topics</h1>
-          <p>Open a unit to review the published lesson and quiz, or upload a PDF to add a unit.</p>
+          <p>Open a topic to review the published lesson and quiz, or upload a PDF to add a topic.</p>
         </div>
         <div className="page-head__actions">
           <button
@@ -476,11 +476,11 @@ export function AdminMaterialsTopicsPage() {
           ))}
           <section className="school-section school-section--units" aria-labelledby="units-heading">
             <header className="school-section__head">
-              <h2 id="units-heading">Units</h2>
-              <p>Review each unit lesson and quiz.</p>
+              <h2 id="units-heading">Topics</h2>
+              <p>Review each topic lesson and quiz.</p>
             </header>
             {unitCards.length === 0 ? (
-              <p className="muted">No units published for this subject yet.</p>
+              <p className="muted">No topics published for this subject yet.</p>
             ) : (
               <ul className="list">
                 {unitCards.map((card, index) => (

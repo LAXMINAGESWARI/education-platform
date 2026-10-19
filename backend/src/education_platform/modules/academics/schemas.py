@@ -92,6 +92,8 @@ class SubjectNodeOut(BaseModel):
     grade_name: str
     academic_period_name: str
     progress_percent: int
+    done: int = 0
+    total: int = 0
     topics: list[TopicNodeOut]
 
 

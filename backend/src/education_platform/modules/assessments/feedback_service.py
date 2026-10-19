@@ -67,6 +67,7 @@ class AnswerOutcomeRow:
     attempt_id: UUID
     subtopic_id: UUID
     subtopic_name: str
+    topic_id: UUID
     topic_name: str
     marks_awarded: Decimal
     marks_available: Decimal
@@ -81,6 +82,7 @@ class AnswerOutcomeRow:
 class SubtopicPerformance:
     subtopic_id: UUID
     subtopic_name: str
+    topic_id: UUID
     topic_name: str
     percent: Decimal
     question_count: int
@@ -104,6 +106,7 @@ async def answer_rows_for_attempts(
                 AttemptAnswer.attempt_id,
                 Subtopic.id,
                 Subtopic.name,
+                Topic.id,
                 Topic.name,
                 AttemptAnswer.marks_awarded,
                 QuestionVersion.marks,
@@ -126,6 +129,7 @@ async def answer_rows_for_attempts(
             attempt_id=attempt_id,
             subtopic_id=subtopic_id,
             subtopic_name=subtopic_name,
+            topic_id=topic_id,
             topic_name=topic_name,
             marks_awarded=marks_awarded or Decimal("0"),
             marks_available=marks_available,
@@ -139,6 +143,7 @@ async def answer_rows_for_attempts(
             attempt_id,
             subtopic_id,
             subtopic_name,
+            topic_id,
             topic_name,
             marks_awarded,
             marks_available,
@@ -176,6 +181,7 @@ def aggregate_by_subtopic(rows: list[AnswerOutcomeRow]) -> dict[UUID, SubtopicPe
         result[subtopic_id] = SubtopicPerformance(
             subtopic_id=subtopic_id,
             subtopic_name=first.subtopic_name,
+            topic_id=first.topic_id,
             topic_name=first.topic_name,
             percent=percent,
             question_count=len(subtopic_rows),
@@ -773,6 +779,7 @@ async def get_subject_feedback(
             SubtopicFeedback(
                 subtopic_id=perf.subtopic_id,
                 subtopic_name=perf.subtopic_name,
+                topic_id=perf.topic_id,
                 topic_name=perf.topic_name,
                 percent=perf.percent,
                 question_count=perf.question_count,
