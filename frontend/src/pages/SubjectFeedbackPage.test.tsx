@@ -11,9 +11,14 @@ vi.mock("../api/feedback", () => ({
   getFeedbackOverview: vi.fn(),
   getFeedbackSubject: vi.fn(),
   getFeedbackTopic: vi.fn(),
+  getFeedbackHighlights: vi.fn(),
   getSubjectFeedback: vi.fn(),
   setSubtopicGoal: vi.fn(),
   deleteSubtopicGoal: vi.fn(),
+}));
+
+vi.mock("../api/materials", () => ({
+  fetchLearningDirectory: vi.fn(),
 }));
 
 vi.mock("../api/selfEvaluation", () => ({
@@ -21,8 +26,21 @@ vi.mock("../api/selfEvaluation", () => ({
   recordSelfEvaluation: vi.fn(),
 }));
 
-import { getFeedbackOverview, getFeedbackSubject, getFeedbackTopic } from "../api/feedback";
-import { getSelfEvaluation } from "../api/selfEvaluation";
+vi.mock("../api/engagement", () => ({
+  getSubjectEngagementRates: vi.fn(),
+}));
+
+import {
+  deleteSubtopicGoal,
+  getFeedbackHighlights,
+  getFeedbackOverview,
+  getFeedbackSubject,
+  getFeedbackTopic,
+  setSubtopicGoal,
+} from "../api/feedback";
+import { getSubjectEngagementRates } from "../api/engagement";
+import { fetchLearningDirectory } from "../api/materials";
+import { getSelfEvaluation, recordSelfEvaluation } from "../api/selfEvaluation";
 
 const overview = {
   score_percent: "75",
@@ -45,6 +63,10 @@ const overview = {
         topic_name: "Algebra",
         best_score_percent: "40",
       },
+      concepts_mastered: 2,
+      concepts_attempted: 4,
+      focus: { concept_name: "Algebra", topic_id: "algebra", gap_percent: 30 },
+      achievement: null,
     },
     {
       subject_id: "sci-1",
@@ -56,6 +78,10 @@ const overview = {
       trend_delta: null,
       strongest_topic: null,
       weakest_topic: null,
+      concepts_mastered: 0,
+      concepts_attempted: 0,
+      focus: null,
+      achievement: null,
     },
   ],
 };
@@ -71,6 +97,10 @@ const subject = {
   topics_needing_attention: ["Algebra"],
   summary: "You're doing well in Mensuration.",
   summary_status: "fallback" as const,
+  concepts_mastered: 1,
+  concepts_attempted: 2,
+  focus: { concept_name: "Area of a polygon", topic_id: "mensuration", gap_percent: 45 },
+  achievement: null,
   topics: [
     {
       topic_id: "mensuration",
@@ -115,20 +145,26 @@ const topic = {
   quiz_id: "quiz-1",
   has_lesson: true,
   summary: "Strong on Cuboid.",
+  concepts_mastered: 1,
+  concepts_attempted: 2,
   subtopics: [
     {
+      subtopic_id: "cuboid-1",
       name: "Cuboid",
       correct_count: 3,
       answered_count: 4,
       percent: "75",
       band: "strong" as const,
+      goal: null,
     },
     {
+      subtopic_id: "polygon-1",
       name: "Area of a polygon",
       correct_count: 1,
       answered_count: 4,
       percent: "25",
       band: "needs_work" as const,
+      goal: null,
     },
   ],
 };
@@ -142,6 +178,15 @@ describe("feedback hierarchy", () => {
     vi.mocked(getFeedbackOverview).mockResolvedValue(overview);
     vi.mocked(getFeedbackSubject).mockResolvedValue(subject);
     vi.mocked(getFeedbackTopic).mockResolvedValue(topic);
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({ subjects: [] });
+    vi.mocked(getSubjectEngagementRates).mockResolvedValue([]);
+    vi.mocked(setSubtopicGoal).mockReset();
+    vi.mocked(deleteSubtopicGoal).mockReset();
+    vi.mocked(recordSelfEvaluation).mockResolvedValue({
+      subject_id: "math-1",
+      confidence: "confident",
+    });
     vi.mocked(getSelfEvaluation).mockResolvedValue({
       subject_id: "math-1",
       confidence: null,
@@ -165,6 +210,8 @@ describe("feedback hierarchy", () => {
     expect(science).not.toHaveTextContent("0%");
     expect(science).not.toHaveTextContent("declining");
     expect(screen.queryByText(/· -/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("View feedback").length).toBeGreaterThan(0);
+    expect(screen.getByText(/You're just 30% from your goal on Algebra/)).toBeInTheDocument();
   });
 
   it("lists topics in order and leaves an unattempted topic blank", async () => {
@@ -227,5 +274,74 @@ describe("feedback hierarchy", () => {
       "/quizzes/quiz-1",
     );
     expect(getFeedbackTopic).toHaveBeenCalledWith("mensuration");
+    expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
+    expect(screen.getByText("1 of 2 concepts mastered")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
+  });
+
+  it("sets and removes a concept goal on the topic page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(setSubtopicGoal).mockResolvedValue({
+      subtopic_id: "cuboid-1",
+      subtopic_name: "Cuboid",
+      target_percent: "80",
+      due_at: "2026-12-01T23:59:59.000Z",
+      current_percent: "75",
+      status: "on_track",
+    });
+    vi.mocked(deleteSubtopicGoal).mockResolvedValue(undefined);
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
+        <Routes>
+          <Route
+            path="/subjects/:subjectId/feedback/topics/:topicId"
+            element={<TopicFeedbackPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const setButtons = await screen.findAllByRole("button", { name: "Set a goal" });
+    await user.click(setButtons[0]);
+    await user.clear(screen.getByLabelText("Target percent for Cuboid"));
+    await user.type(screen.getByLabelText("Target percent for Cuboid"), "80");
+    await user.type(screen.getByLabelText("Due date for Cuboid"), "2026-12-01");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("On track")).toBeInTheDocument();
+    expect(screen.getByText(/Goal: 80% by/)).toBeInTheDocument();
+    expect(setSubtopicGoal).toHaveBeenCalledWith("cuboid-1", {
+      target_percent: 80,
+      due_at: "2026-12-01T23:59:59.000Z",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove goal" }));
+    expect(await screen.findAllByRole("button", { name: "Set a goal" })).toHaveLength(2);
+    expect(deleteSubtopicGoal).toHaveBeenCalledWith("cuboid-1");
+  });
+
+  it("shows the engagement badge and the confidence note on the subject page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getSubjectEngagementRates).mockResolvedValue([
+      { subtopic_id: "cuboid-1", engaged_slides: 1, total_slides: 2, engagement_rate: 0.5 },
+    ]);
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/50% engaged · Skimmed/)).toBeInTheDocument();
+    expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
+    expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
+    expect(screen.getByText(/You're just 45% from your goal on Area of a polygon/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View report card" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confident" }));
+    expect(
+      await screen.findByText("Confident and scoring high — you really do know this. Nice."),
+    ).toBeInTheDocument();
+    expect(recordSelfEvaluation).toHaveBeenCalledWith("math-1", "confident");
   });
 });

@@ -218,6 +218,14 @@ class FeedbackTopicScore(BaseModel):
     has_lesson: bool
 
 
+class FeedbackFocus(BaseModel):
+    """How far the weakest concept is from the student's goal, or from a pass."""
+
+    concept_name: str
+    topic_id: UUID
+    gap_percent: int
+
+
 class FeedbackSubjectCard(BaseModel):
     subject_id: UUID
     subject_name: str
@@ -228,6 +236,10 @@ class FeedbackSubjectCard(BaseModel):
     trend_delta: Decimal | None
     strongest_topic: FeedbackTopicRef | None
     weakest_topic: FeedbackTopicRef | None
+    concepts_mastered: int = 0
+    concepts_attempted: int = 0
+    focus: FeedbackFocus | None = None
+    achievement: Literal["mastery", "advanced", "proficient", "on_track"] | None = None
 
 
 class FeedbackOverview(BaseModel):
@@ -249,14 +261,20 @@ class FeedbackSubjectDetail(BaseModel):
     summary: str
     summary_status: Literal["ready", "fallback"]
     topics: list[FeedbackTopicScore]
+    concepts_mastered: int = 0
+    concepts_attempted: int = 0
+    focus: FeedbackFocus | None = None
+    achievement: Literal["mastery", "advanced", "proficient", "on_track"] | None = None
 
 
 class FeedbackSubtopicStrength(BaseModel):
+    subtopic_id: UUID
     name: str
     correct_count: int
     answered_count: int
     percent: Decimal
     band: Literal["strong", "okay", "needs_work"]
+    goal: GoalOut | None = None
 
 
 class FeedbackTopicDetail(BaseModel):
@@ -274,3 +292,5 @@ class FeedbackTopicDetail(BaseModel):
     has_lesson: bool
     summary: str
     subtopics: list[FeedbackSubtopicStrength]
+    concepts_mastered: int = 0
+    concepts_attempted: int = 0

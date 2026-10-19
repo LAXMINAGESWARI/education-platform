@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getFeedbackTopic } from "../api/feedback";
-import type { FeedbackTopicDetail } from "../api/types";
+import type { FeedbackTopicDetail, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { badgeLabel, bandLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { GoalSection, Milestone } from "../components/FeedbackExtras";
+import { attemptBadge, bandLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
 
 export function TopicFeedbackPage() {
   const { subjectId = "", topicId = "" } = useParams();
@@ -43,6 +44,19 @@ export function TopicFeedbackPage() {
     );
   }
 
+  function changeGoal(subtopicId: string, goal: GoalOut | null) {
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            subtopics: current.subtopics.map((row) =>
+              row.subtopic_id === subtopicId ? { ...row, goal } : row,
+            ),
+          }
+        : current,
+    );
+  }
+
   const trend = formatTrend(detail.trend, detail.trend_delta);
 
   return (
@@ -59,7 +73,7 @@ export function TopicFeedbackPage() {
         <h1>{detail.topic_name}</h1>
         <p>
           <span className={`badge ${detail.badge === "passed" ? "badge--ok" : "badge--info"}`}>
-            {badgeLabel(detail.badge)}
+            {attemptBadge(detail.badge, detail.attempt_count, detail.best_score_percent)}
           </span>
         </p>
       </header>
@@ -73,6 +87,7 @@ export function TopicFeedbackPage() {
             : `Best score · latest ${formatScore(detail.latest_score_percent)}`}
         </p>
         {trend && <p className="feedback-card__trend">{trend}</p>}
+        <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
         <div className="feedback-summary__text">
           <p>{detail.summary}</p>
         </div>
@@ -98,12 +113,13 @@ export function TopicFeedbackPage() {
       ) : (
         <ul className="feedback-concepts">
           {detail.subtopics.map((row) => (
-            <li key={row.name} className={`feedback-concept feedback-concept--${row.band}`}>
+            <li key={row.subtopic_id} className={`feedback-concept feedback-concept--${row.band}`}>
               <span className="feedback-concept__name">{row.name}</span>
               <span className="feedback-concept__meta">
                 {row.correct_count} of {row.answered_count} correct
               </span>
               <span className="badge">{bandLabel(row.band)}</span>
+              <GoalSection concept={row} onGoalChange={changeGoal} />
             </li>
           ))}
         </ul>
