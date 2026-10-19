@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { getFeedbackOverview } from "../api/feedback";
-import type { FeedbackOverview, FeedbackSubjectCard } from "../api/types";
+import { getFeedbackHighlights, getFeedbackOverview } from "../api/feedback";
+import { fetchLearningDirectory } from "../api/materials";
+import type { FeedbackOverview, FeedbackSubjectCard, ReviewNudgeOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
+import { AchievementBanner, FocusLine } from "../components/FeedbackExtras";
 import { formatScore, formatTrend } from "../lib/feedbackHierarchy";
 
 function SubjectCard({ subject }: { subject: FeedbackSubjectCard }) {
@@ -20,6 +22,9 @@ function SubjectCard({ subject }: { subject: FeedbackSubjectCard }) {
           : `${subject.quizzes_taken} topic ${subject.quizzes_taken === 1 ? "quiz" : "quizzes"} taken`}
       </p>
       {trend && <p className="feedback-card__trend">{trend}</p>}
+      <FocusLine focus={subject.focus} />
+      <AchievementBanner tier={subject.achievement} />
+      <span className="badge badge--info">View feedback</span>
       {subject.strongest_topic && (
         <p className="progress-label">
           Strongest topic: {subject.strongest_topic.topic_name} (
@@ -38,6 +43,8 @@ function SubjectCard({ subject }: { subject: FeedbackSubjectCard }) {
 
 export function FeedbackSubjectPickerPage() {
   const [overview, setOverview] = useState<FeedbackOverview | null>(null);
+  const [dueReviews, setDueReviews] = useState<ReviewNudgeOut[]>([]);
+  const [subjectBySubtopic, setSubjectBySubtopic] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,6 +57,23 @@ export function FeedbackSubjectPickerPage() {
         if (!cancelled) {
           setError(err instanceof ApiError ? err.message : "Could not load feedback.");
         }
+      });
+    void Promise.all([getFeedbackHighlights(), fetchLearningDirectory()])
+      .then(([highlights, directory]) => {
+        if (cancelled) return;
+        const map = new Map<string, string>();
+        for (const subject of directory.subjects) {
+          for (const topic of subject.topics) {
+            for (const subtopic of topic.subtopics) {
+              map.set(subtopic.id, subject.id);
+            }
+          }
+        }
+        setSubjectBySubtopic(map);
+        setDueReviews(highlights.due_reviews);
+      })
+      .catch(() => {
+        if (!cancelled) setDueReviews([]);
       });
     return () => {
       cancelled = true;
@@ -74,6 +98,30 @@ export function FeedbackSubjectPickerPage() {
         <p className="muted" role="status">
           Loading feedback…
         </p>
+      )}
+
+      {dueReviews.length > 0 && (
+        <section className="feedback-due" aria-label="Due for review">
+          <h2 className="section-title">Due for review</h2>
+          <ul className="feedback-concepts">
+            {dueReviews.map((nudge) => {
+              const subjectId = subjectBySubtopic.get(nudge.subtopic_id);
+              return (
+                <li key={nudge.subtopic_id} className="feedback-concept">
+                  <span className="feedback-concept__name">{nudge.subtopic_name}</span>
+                  <span className="feedback-concept__meta">
+                    Last attempted {nudge.days_since_last_attempt} days ago
+                  </span>
+                  {subjectId && (
+                    <Link to={`/subjects/${subjectId}/feedback`} className="btn btn--sm">
+                      Review
+                    </Link>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
 
       {overview && (

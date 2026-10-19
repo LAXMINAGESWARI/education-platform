@@ -245,6 +245,14 @@ export type FeedbackTopicScore = {
   has_lesson: boolean;
 };
 
+export type FeedbackAchievement = "mastery" | "advanced" | "proficient" | "on_track";
+
+export type FeedbackFocus = {
+  concept_name: string;
+  topic_id: string;
+  gap_percent: number;
+};
+
 export type FeedbackSubjectCard = {
   subject_id: string;
   subject_name: string;
@@ -255,6 +263,10 @@ export type FeedbackSubjectCard = {
   trend_delta: string | number | null;
   strongest_topic: FeedbackTopicRef | null;
   weakest_topic: FeedbackTopicRef | null;
+  concepts_mastered: number;
+  concepts_attempted: number;
+  focus: FeedbackFocus | null;
+  achievement: FeedbackAchievement | null;
 };
 
 export type FeedbackOverview = {
@@ -274,14 +286,20 @@ export type FeedbackSubjectDetail = {
   summary: string;
   summary_status: "ready" | "fallback";
   topics: FeedbackTopicScore[];
+  concepts_mastered: number;
+  concepts_attempted: number;
+  focus: FeedbackFocus | null;
+  achievement: FeedbackAchievement | null;
 };
 
 export type FeedbackSubtopicStrength = {
+  subtopic_id: string;
   name: string;
   correct_count: number;
   answered_count: number;
   percent: string | number;
   band: FeedbackBand;
+  goal: GoalOut | null;
 };
 
 export type FeedbackTopicDetail = {
@@ -299,6 +317,8 @@ export type FeedbackTopicDetail = {
   has_lesson: boolean;
   summary: string;
   subtopics: FeedbackSubtopicStrength[];
+  concepts_mastered: number;
+  concepts_attempted: number;
 };
 
 export type SubjectFeedbackDashboard = {

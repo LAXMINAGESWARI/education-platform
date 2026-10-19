@@ -11,8 +11,11 @@ from sqlalchemy.orm import Session
 from education_platform.modules.academics.models import Subtopic, Topic
 from education_platform.modules.assessments.feedback_hierarchy import (
     ScoredAttempt,
+    achievement_tier,
     feedback_concept_label,
+    focus_gap,
     group_subtopic_strengths,
+    milestone_counts,
     rollup_subject,
     rollup_topic,
 )
@@ -27,6 +30,7 @@ from education_platform.modules.assessments.models import (
     QuizScope,
     QuizVersion,
 )
+from education_platform.modules.assessments.schemas import FeedbackSubtopicStrength
 from education_platform.modules.auth.models import StudentProfile, User
 
 STUDENT_EMAIL = "student@example.com"
@@ -119,13 +123,14 @@ def test_filler_headings_fold_into_the_topic_and_numbers_are_stripped() -> None:
     assert feedback_concept_label("WHAT HAVE WE DISCUSSED?") is None
     assert feedback_concept_label("TRY THESE") is None
 
+    cuboid = UUID(int=11)
     rows = group_subtopic_strengths(
         [
-            ("9.4.1 Cuboid", 1, 1, 1),
-            ("9.5.1 Cuboid", 2, 2, 3),
-            ("EXERCISE 9.3", 3, 1, 2),
-            ("Ridhima's method", 4, 0, 4),
-            ("9.2 Area of a Polygon", 5, 1, 4),
+            ("9.4.1 Cuboid", 1, 1, 1, cuboid),
+            ("9.5.1 Cuboid", 2, 2, 3, UUID(int=12)),
+            ("EXERCISE 9.3", 3, 1, 2, UUID(int=13)),
+            ("Ridhima's method", 4, 0, 4, UUID(int=14)),
+            ("9.2 Area of a Polygon", 5, 1, 4, UUID(int=15)),
         ]
     )
     by_name = {row.name: row for row in rows}
@@ -133,7 +138,33 @@ def test_filler_headings_fold_into_the_topic_and_numbers_are_stripped() -> None:
     assert by_name["Cuboid"].correct_count == 3
     assert by_name["Cuboid"].answered_count == 4
     assert by_name["Cuboid"].band == "strong"
+    assert by_name["Cuboid"].subtopic_id == cuboid
     assert by_name["Area of a polygon"].band == "needs_work"
+
+
+def test_milestone_focus_and_achievement_use_concept_bands() -> None:
+    strong = FeedbackSubtopicStrength(
+        subtopic_id=UUID(int=1),
+        name="Cuboid",
+        correct_count=3,
+        answered_count=4,
+        percent=Decimal("75"),
+        band="strong",
+    )
+    weak = FeedbackSubtopicStrength(
+        subtopic_id=UUID(int=2),
+        name="Algebra",
+        correct_count=1,
+        answered_count=4,
+        percent=Decimal("25"),
+        band="needs_work",
+    )
+    assert milestone_counts([strong, weak]) == (1, 2)
+    assert achievement_tier(Decimal("80"), [strong, weak]) is None
+    assert achievement_tier(Decimal("90"), [strong]) == "advanced"
+    gap = focus_gap([("Algebra", Decimal("25"), UUID(int=9), Decimal("80"))])
+    assert gap == ("Algebra", UUID(int=9), 55)
+    assert focus_gap([("Cuboid", Decimal("95"), UUID(int=9), None)]) is None
 
 
 def _student(seeded_db: Session) -> StudentProfile:

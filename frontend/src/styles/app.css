@@ -6235,6 +6235,103 @@ a.btn:disabled:hover {
 .feedback-view .feedback-concept__name,
 .feedback-view .feedback-concept__meta,
 .feedback-view .feedback-self-check,
+.feedback-view .feedback-milestone,
+.feedback-view .feedback-focus,
+.feedback-view .feedback-achievement,
+.feedback-view .feedback-engagement,
+.feedback-view .feedback-goal,
 .feedback-view .btn {
+  font-family: var(--font-body);
+}
+
+.feedback-milestone,
+.feedback-focus,
+.feedback-engagement,
+.feedback-self-check__note {
+  margin: 0.35rem 0 0;
+  font-family: var(--font-body);
+}
+
+.feedback-achievement {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--success-border);
+  background: var(--success-bg);
+}
+
+.feedback-achievement__label {
+  margin: 0;
+  font-weight: 700;
+}
+
+.feedback-achievement p {
+  margin: 0;
+}
+
+.feedback-goal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+  width: 100%;
+  margin-top: 0.35rem;
+  font-family: var(--font-body);
+}
+
+.feedback-goal__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+}
+
+.feedback-goal__form input {
+  margin-left: 0.35rem;
+  font-family: var(--font-body);
+}
+
+.feedback-due {
+  margin-bottom: 1.25rem;
+}
+
+.feedback-report {
+  margin-top: 1.5rem;
+}
+
+.feedback-report__sheet {
+  margin-top: 0.8rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-family: var(--font-body);
+}
+
+.feedback-report__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.feedback-report__head h2 {
+  margin: 0;
+}
+
+.feedback-report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-body);
+}
+
+.feedback-report th,
+.feedback-report td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
   font-family: var(--font-body);
 }

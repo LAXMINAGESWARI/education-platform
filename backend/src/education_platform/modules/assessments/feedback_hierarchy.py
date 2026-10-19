@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -51,6 +51,7 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
+from education_platform.modules.assessments.goals_service import goal_out, goals_for_subtopics
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
     CommonMasteryQuiz,
@@ -60,9 +61,11 @@ from education_platform.modules.assessments.models import (
     QuizAttemptStatus,
     QuizScope,
     QuizVersion,
+    StudentSubtopicGoal,
     SubjectFeedbackSummary,
 )
 from education_platform.modules.assessments.schemas import (
+    FeedbackFocus,
     FeedbackOverview,
     FeedbackSubjectCard,
     FeedbackSubjectDetail,
@@ -88,6 +91,7 @@ _CENT = Decimal("0.01")
 TrendName = Literal["improving", "flat", "declining"]
 BadgeName = Literal["not_attempted", "keep_going", "passed"]
 BandName = Literal["strong", "okay", "needs_work"]
+AchievementName = Literal["mastery", "advanced", "proficient", "on_track"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,28 +217,35 @@ def subtopic_band(correct: int, answered: int) -> BandName:
 
 
 def group_subtopic_strengths(
-    rows: list[tuple[str, int, int, int]],
+    rows: list[tuple[str, int, int, int, UUID]],
 ) -> list[FeedbackSubtopicStrength]:
     """Merge filler headings away and combine rows that clean to the same name.
 
-    Each row is (raw name, sequence, correct, answered).
+    Each row is (raw name, sequence, correct, answered, subtopic id). The id
+    kept for a merged name is the earliest section, so a goal still has one
+    concept to attach to.
     """
     buckets: dict[str, list[int]] = {}
     order: dict[str, int] = {}
-    for name, sequence, correct, answered in rows:
+    identity: dict[str, UUID] = {}
+    for name, sequence, correct, answered, subtopic_id in rows:
         label = feedback_concept_label(name)
         if label is None or answered <= 0:
             continue
         bucket = buckets.setdefault(label, [0, 0])
         bucket[0] += correct
         bucket[1] += answered
-        order[label] = min(sequence, order.get(label, sequence))
+        previous = order.get(label)
+        if previous is None or sequence < previous:
+            order[label] = sequence
+            identity[label] = subtopic_id
     strengths: list[FeedbackSubtopicStrength] = []
     for label, _sequence in sorted(order.items(), key=lambda item: (item[1], item[0])):
         correct, answered = buckets[label]
         percent = ((Decimal(correct) / Decimal(answered)) * Decimal("100")).quantize(_CENT)
         strengths.append(
             FeedbackSubtopicStrength(
+                subtopic_id=identity[label],
                 name=label,
                 correct_count=correct,
                 answered_count=answered,
@@ -243,6 +254,51 @@ def group_subtopic_strengths(
             )
         )
     return strengths
+
+
+def milestone_counts(strengths: list[FeedbackSubtopicStrength]) -> tuple[int, int]:
+    """Concepts mastered (strong) out of concepts the student has answered."""
+    attempted = [row for row in strengths if row.answered_count > 0]
+    mastered = sum(1 for row in attempted if row.band == "strong")
+    return mastered, len(attempted)
+
+
+def focus_gap(
+    concepts: list[tuple[str, Decimal, UUID, Decimal | None]],
+) -> tuple[str, UUID, int] | None:
+    """Lowest concept still under 90, and how far it is from its goal.
+
+    ``concepts`` items are (name, percent, topic id, goal target or None).
+    With no goal, the pass mark is the target. A concept already at that
+    target has no gap.
+    """
+    if not concepts:
+        return None
+    name, percent, topic_id, target = min(concepts, key=lambda item: (item[1], item[0]))
+    if percent >= Decimal("90"):
+        return None
+    goal = PASS_PERCENT if target is None else target
+    gap = int((goal - percent).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if gap <= 0:
+        return None
+    return name, topic_id, gap
+
+
+def achievement_tier(
+    score: Decimal | None, strengths: list[FeedbackSubtopicStrength]
+) -> AchievementName | None:
+    """Celebrate only when every answered concept is strong."""
+    attempted = [row for row in strengths if row.answered_count > 0]
+    if not attempted or any(row.band != "strong" for row in attempted):
+        return None
+    value = Decimal("0") if score is None else score
+    if value >= Decimal("100"):
+        return "mastery"
+    if value >= Decimal("90"):
+        return "advanced"
+    if value >= Decimal("80"):
+        return "proficient"
+    return "on_track"
 
 
 def topic_summary(topic_name: str, strengths: list[FeedbackSubtopicStrength]) -> str:
@@ -481,9 +537,15 @@ def _subject_topics(offering: _OfferingSubject, topics: list[_TopicRow]) -> list
 
 
 def _card(
-    offering: _OfferingSubject, topics: list[_TopicRow], rollups: dict[UUID, TopicRollup]
+    offering: _OfferingSubject,
+    topics: list[_TopicRow],
+    rollups: dict[UUID, TopicRollup],
+    strengths: list[FeedbackSubtopicStrength],
+    focus: FeedbackFocus | None,
+    achievement: AchievementName | None,
 ) -> FeedbackSubjectCard:
     subject = rollup_subject([(topic.id, topic.name, rollups[topic.id]) for topic in topics])
+    mastered, attempted = milestone_counts(strengths)
     return FeedbackSubjectCard(
         subject_id=offering.subject_id,
         subject_name=offering.subject_name,
@@ -494,12 +556,60 @@ def _card(
         trend_delta=subject.trend_delta,
         strongest_topic=_ref(subject.strongest),
         weakest_topic=_ref(subject.weakest),
+        concepts_mastered=mastered,
+        concepts_attempted=attempted,
+        focus=focus,
+        achievement=achievement,
     )
 
 
+def _subject_concepts(
+    topics: list[_TopicRow],
+    by_topic: dict[UUID, list[FeedbackSubtopicStrength]],
+) -> list[tuple[FeedbackSubtopicStrength, UUID]]:
+    paired: list[tuple[FeedbackSubtopicStrength, UUID]] = []
+    for topic in topics:
+        paired.extend((row, topic.id) for row in by_topic.get(topic.id, []))
+    return paired
+
+
+def _focus_model(
+    paired: list[tuple[FeedbackSubtopicStrength, UUID]],
+    targets: dict[UUID, Decimal],
+) -> FeedbackFocus | None:
+    gap = focus_gap(
+        [
+            (row.name, row.percent, topic_id, targets.get(row.subtopic_id))
+            for row, topic_id in paired
+        ]
+    )
+    if gap is None:
+        return None
+    name, topic_id, points = gap
+    return FeedbackFocus(concept_name=name, topic_id=topic_id, gap_percent=points)
+
+
 async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
-    _student_id, offerings, topics, rollups, _quiz_ids, _lessons = await _bundle(session, scope)
-    cards = [_card(offering, _subject_topics(offering, topics), rollups) for offering in offerings]
+    student_id, offerings, topics, rollups, _quiz_ids, _lessons = await _bundle(session, scope)
+    by_topic, targets = await _concept_context(session, student_id, [topic.id for topic in topics])
+    cards: list[FeedbackSubjectCard] = []
+    for offering in offerings:
+        subject_topics = _subject_topics(offering, topics)
+        paired = _subject_concepts(subject_topics, by_topic)
+        strengths = [row for row, _topic_id in paired]
+        subject = rollup_subject(
+            [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
+        )
+        cards.append(
+            _card(
+                offering,
+                subject_topics,
+                rollups,
+                strengths,
+                _focus_model(paired, targets),
+                achievement_tier(subject.score_percent, strengths),
+            )
+        )
     return FeedbackOverview(
         score_percent=_mean(
             [card.score_percent for card in cards if card.score_percent is not None]
@@ -521,12 +631,18 @@ async def get_subject(
     subject = rollup_subject(
         [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
     )
+    by_topic, targets = await _concept_context(
+        session, student_id, [topic.id for topic in subject_topics]
+    )
+    paired = _subject_concepts(subject_topics, by_topic)
+    strengths = [row for row, _topic_id in paired]
     stored = await _stored_summaries(session, student_id, [subject_id])
     summary = stored.get(subject_id)
     status: Literal["ready", "fallback"] = "ready" if summary else "fallback"
     if not summary:
         strongest_name = subject.strongest[1] if subject.strongest else None
         summary = subject_template(offering.subject_name, strongest_name, subject.needing_attention)
+    mastered, attempted = milestone_counts(strengths)
     return FeedbackSubjectDetail(
         subject_id=offering.subject_id,
         subject_name=offering.subject_name,
@@ -542,15 +658,50 @@ async def get_subject(
             _topic_score(topic, rollups[topic.id], quiz_ids.get(topic.id), topic.id in lessons)
             for topic in subject_topics
         ],
+        concepts_mastered=mastered,
+        concepts_attempted=attempted,
+        focus=_focus_model(paired, targets),
+        achievement=achievement_tier(subject.score_percent, strengths),
     )
 
 
-async def _subtopic_rows(
-    session: AsyncSession, student_id: UUID, topic_id: UUID
-) -> list[tuple[str, int, int, int]]:
+async def _concept_context(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> tuple[dict[UUID, list[FeedbackSubtopicStrength]], dict[UUID, Decimal]]:
+    """Grouped concept rows per topic, plus goal targets, in two queries."""
+    by_topic = await _concept_counts(session, student_id, topic_ids)
+    strengths = {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_topic.items()}
+    subtopic_ids = [row.subtopic_id for rows in strengths.values() for row in rows]
+    goals = await goals_for_subtopics(session, student_id, subtopic_ids)
+    targets = {subtopic_id: goal.target_percent for subtopic_id, goal in goals.items()}
+    attached = {topic_id: _with_goals(rows, goals) for topic_id, rows in strengths.items()}
+    return attached, targets
+
+
+def _with_goals(
+    strengths: list[FeedbackSubtopicStrength],
+    goals: dict[UUID, StudentSubtopicGoal],
+) -> list[FeedbackSubtopicStrength]:
+    attached: list[FeedbackSubtopicStrength] = []
+    for row in strengths:
+        goal = goals.get(row.subtopic_id)
+        if goal is None:
+            attached.append(row)
+            continue
+        attached.append(row.model_copy(update={"goal": goal_out(goal, row.name, row.percent)}))
+    return attached
+
+
+async def _concept_counts(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, list[tuple[str, int, int, int, UUID]]]:
+    if not topic_ids:
+        return {}
     rows = (
         await session.execute(
             select(
+                Subtopic.topic_id,
+                Subtopic.id,
                 Subtopic.name,
                 Subtopic.sequence,
                 AttemptAnswer.is_correct,
@@ -562,8 +713,8 @@ async def _subtopic_rows(
             .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
             .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
             .where(
-                Subtopic.topic_id == topic_id,
-                CommonMasteryQuiz.topic_id == topic_id,
+                Subtopic.topic_id.in_(topic_ids),
+                CommonMasteryQuiz.topic_id == Subtopic.topic_id,
                 CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
                 QuizAttempt.student_id == student_id,
                 QuizAttempt.status != QuizAttemptStatus.ABANDONED,
@@ -572,16 +723,16 @@ async def _subtopic_rows(
             )
         )
     ).all()
-    counts: dict[tuple[str, int], list[int]] = {}
-    for name, sequence, correct in rows:
-        bucket = counts.setdefault((name, int(sequence)), [0, 0])
+    counts: dict[tuple[UUID, UUID, str, int], list[int]] = {}
+    for topic_id, subtopic_id, name, sequence, correct in rows:
+        bucket = counts.setdefault((topic_id, subtopic_id, name, int(sequence)), [0, 0])
         bucket[1] += 1
         if correct:
             bucket[0] += 1
-    return [
-        (name, sequence, correct, answered)
-        for (name, sequence), (correct, answered) in counts.items()
-    ]
+    grouped: dict[UUID, list[tuple[str, int, int, int, UUID]]] = defaultdict(list)
+    for (topic_id, subtopic_id, name, sequence), (correct, answered) in counts.items():
+        grouped[topic_id].append((name, sequence, correct, answered, subtopic_id))
+    return grouped
 
 
 async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> FeedbackTopicDetail:
@@ -591,7 +742,9 @@ async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> Feed
         raise DomainError("Topic not found", status_code=404)
     offering = next(row for row in offerings if row.offering_id == topic.offering_id)
     rollup = rollups[topic.id]
-    strengths = group_subtopic_strengths(await _subtopic_rows(session, student_id, topic_id))
+    by_topic, _targets = await _concept_context(session, student_id, [topic.id])
+    strengths = by_topic.get(topic.id, [])
+    mastered, attempted = milestone_counts(strengths)
     return FeedbackTopicDetail(
         subject_id=offering.subject_id,
         subject_name=offering.subject_name,
@@ -607,4 +760,6 @@ async def get_topic(session: AsyncSession, scope: Scope, topic_id: UUID) -> Feed
         has_lesson=topic.id in lessons,
         summary=topic_summary(topic.name, strengths),
         subtopics=strengths,
+        concepts_mastered=mastered,
+        concepts_attempted=attempted,
     )

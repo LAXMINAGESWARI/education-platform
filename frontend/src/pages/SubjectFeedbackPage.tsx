@@ -1,12 +1,25 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { getSubjectEngagementRates, type EngagementRate } from "../api/engagement";
 import { getFeedbackSubject } from "../api/feedback";
 import { getSelfEvaluation, recordSelfEvaluation, type ConfidenceLevel } from "../api/selfEvaluation";
 import type { FeedbackSubjectDetail, FeedbackTopicScore } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { badgeLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import {
+  AchievementBanner,
+  FocusLine,
+  Milestone,
+  SubjectEngagement,
+} from "../components/FeedbackExtras";
+import {
+  attemptBadge,
+  calibrationMessage,
+  formatScore,
+  formatTrend,
+  scoreNumber,
+} from "../lib/feedbackHierarchy";
 
 function TopicCard({ subjectId, topic }: { subjectId: string; topic: FeedbackTopicScore }) {
   const trend = formatTrend(topic.trend, topic.trend_delta);
@@ -19,7 +32,7 @@ function TopicCard({ subjectId, topic }: { subjectId: string; topic: FeedbackTop
       <div className="meta-row">
         <h2>{topic.topic_name}</h2>
         <span className={`badge ${topic.badge === "passed" ? "badge--ok" : "badge--info"}`}>
-          {badgeLabel(topic.badge)}
+          {attemptBadge(topic.badge, topic.attempt_count, topic.best_score_percent)}
         </span>
       </div>
       <p className="feedback-card__score">{formatScore(topic.best_score_percent)}</p>
@@ -35,10 +48,12 @@ function TopicCard({ subjectId, topic }: { subjectId: string; topic: FeedbackTop
 function SelfCheck({
   subjectId,
   subjectName,
+  score,
   initial,
 }: {
   subjectId: string;
   subjectName: string;
+  score: number | null;
   initial: ConfidenceLevel | null;
 }) {
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(initial);
@@ -74,6 +89,7 @@ function SelfCheck({
           </button>
         ))}
       </div>
+      {confidence && <p className="feedback-self-check__note">{calibrationMessage(confidence, score)}</p>}
     </section>
   );
 }
@@ -82,6 +98,8 @@ export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
   const [detail, setDetail] = useState<FeedbackSubjectDetail | null>(null);
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
+  const [engagement, setEngagement] = useState<EngagementRate[]>([]);
+  const [showReport, setShowReport] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -97,6 +115,9 @@ export function SubjectFeedbackPage() {
       });
     void getSelfEvaluation(subjectId).then((row) => {
       if (!cancelled) setConfidence(row?.confidence ?? null);
+    });
+    void getSubjectEngagementRates(subjectId).then((rates) => {
+      if (!cancelled) setEngagement(rates);
     });
     return () => {
       cancelled = true;
@@ -144,6 +165,10 @@ export function SubjectFeedbackPage() {
             Needs attention: {detail.topics_needing_attention.join(", ")}
           </p>
         )}
+        <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
+        <SubjectEngagement rates={engagement} />
+        <FocusLine focus={detail.focus} />
+        <AchievementBanner tier={detail.achievement} />
         <div className="feedback-summary__text">
           <p>{detail.summary}</p>
         </div>
@@ -155,7 +180,49 @@ export function SubjectFeedbackPage() {
         ))}
       </div>
 
-      <SelfCheck subjectId={subjectId} subjectName={detail.subject_name} initial={confidence} />
+      <SelfCheck
+        subjectId={subjectId}
+        subjectName={detail.subject_name}
+        score={scoreNumber(detail.score_percent)}
+        initial={confidence}
+      />
+
+      <div className="feedback-report">
+        <button type="button" className="btn btn--sm" onClick={() => setShowReport((open) => !open)}>
+          {showReport ? "Hide report card" : "View report card"}
+        </button>
+        {showReport && (
+          <div className="feedback-report__sheet">
+            <div className="feedback-report__head">
+              <h2>Report card</h2>
+              <button type="button" className="btn btn--sm" onClick={() => window.print()}>
+                Download / Print
+              </button>
+            </div>
+            <p className="progress-label">{detail.subject_name}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Topic</th>
+                  <th>Best</th>
+                  <th>Attempts</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.topics.map((topic) => (
+                  <tr key={topic.topic_id}>
+                    <td>{topic.topic_name}</td>
+                    <td>{formatScore(topic.best_score_percent)}</td>
+                    <td>{topic.attempt_count}</td>
+                    <td>{attemptBadge(topic.badge, topic.attempt_count, topic.best_score_percent)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
