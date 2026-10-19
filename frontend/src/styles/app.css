@@ -193,7 +193,8 @@ a.btn--matte:hover:not(:disabled) {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 1.5rem;
+  padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
 }
 
 .login__card {
@@ -574,6 +575,7 @@ button:hover:not(:disabled),
   flex-direction: column;
   overflow-x: clip;
   overflow-y: auto;
+  padding-bottom: env(safe-area-inset-bottom);
   padding-left: calc(var(--rail-width) + 1.5rem);
   transition: padding-left 180ms ease;
 }
@@ -599,8 +601,8 @@ button:hover:not(:disabled),
 
 .profile-dock {
   position: fixed;
-  top: 0.85rem;
-  right: 0.85rem;
+  top: max(0.85rem, env(safe-area-inset-top));
+  right: max(0.85rem, env(safe-area-inset-right));
   z-index: 40;
 }
 
@@ -673,9 +675,9 @@ button:hover:not(:disabled),
 .rail {
   position: fixed;
   z-index: 20;
-  top: calc(var(--demo-banner-height) + var(--rail-inset));
-  bottom: var(--rail-inset);
-  left: var(--rail-inset);
+  top: calc(var(--demo-banner-height) + var(--rail-inset) + env(safe-area-inset-top));
+  bottom: calc(var(--rail-inset) + env(safe-area-inset-bottom));
+  left: calc(var(--rail-inset) + env(safe-area-inset-left));
   width: var(--rail-width);
   background: var(--glass);
   border: 1px solid var(--glass-border);
@@ -2708,7 +2710,7 @@ a.list-item__title:hover {
   }
 
   .main {
-    padding: 1.1rem 1rem 2.5rem;
+    padding: 1.1rem 1rem calc(2.5rem + env(safe-area-inset-bottom));
   }
 
   .main:has(.topic-view) {
@@ -5606,6 +5608,51 @@ body {
   .nav-drawer {
     transition: none;
   }
+}
+
+.pwa-toasts {
+  position: fixed;
+  z-index: 70;
+  top: max(0.75rem, env(safe-area-inset-top));
+  left: max(0.75rem, env(safe-area-inset-left));
+  right: max(0.75rem, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+/* The phone bar is in the DOM on desktop too, hidden with display. Clear it whenever it exists. */
+body:has(.topbar) .pwa-toasts {
+  top: calc(4.25rem + env(safe-area-inset-top));
+}
+
+.pwa-toast {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  width: min(24rem, 100%);
+  padding: 0.65rem 0.7rem 0.65rem 0.9rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+}
+
+.pwa-toast p {
+  flex: 1 1 12rem;
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.pwa-toast .btn {
+  min-height: 2.75rem;
 }
 
 @media (max-width: 860px) {

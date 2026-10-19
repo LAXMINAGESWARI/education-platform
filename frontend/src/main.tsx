@@ -6,12 +6,15 @@ import { BrowserRouter } from "react-router-dom";
 import { AmbientBackdrop } from "./components/AmbientBackdrop";
 import { App } from "./App";
 import { AuthProvider } from "./auth/AuthContext";
+import { PwaPrompts } from "./components/PwaPrompts";
 import { installHapticFeedback } from "./lib/haptics";
+import { ensureInstallPromptListener } from "./pwa/installPrompt";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "katex/dist/katex.min.css";
 
 installHapticFeedback();
+ensureInstallPromptListener();
 
 const root = document.getElementById("root");
 if (!root) {
@@ -24,6 +27,7 @@ createRoot(root).render(
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AmbientBackdrop />
         <AuthProvider>
+          <PwaPrompts />
           <App />
         </AuthProvider>
       </BrowserRouter>

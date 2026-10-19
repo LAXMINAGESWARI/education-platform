@@ -31,6 +31,7 @@ frontend/e2e/artifacts/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
+frontend/.pwa-chrome-profile/
 
 # Python
 __pycache__/

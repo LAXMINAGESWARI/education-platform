@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#3f6f5a" />
+    <title>CurioEd is offline</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        background: #f4f6f3;
+        color: #1c2a22;
+        font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+        padding: max(1.5rem, env(safe-area-inset-top)) max(1.25rem, env(safe-area-inset-right))
+          max(1.5rem, env(safe-area-inset-bottom)) max(1.25rem, env(safe-area-inset-left));
+      }
+      main {
+        width: min(100%, 26rem);
+      }
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 3.25rem;
+        height: 3.25rem;
+        margin: 0 0 1rem;
+        border-radius: 0.9rem;
+        background: #3f6f5a;
+        color: #f4f6f3;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+      }
+      h1 {
+        margin: 0 0 0.4rem;
+        font-size: 1.7rem;
+        letter-spacing: -0.03em;
+      }
+      p {
+        margin: 0 0 1.25rem;
+        color: #5d6f64;
+        line-height: 1.5;
+      }
+      a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 2.75rem;
+        padding: 0.55rem 1rem;
+        border-radius: 0.55rem;
+        background: #3f6f5a;
+        color: #ffffff;
+        font-weight: 650;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">CE</div>
+      <h1>You're offline</h1>
+      <p>CurioEd needs a connection to load lessons and quizzes. Reconnect, then try again.</p>
+      <a href="/">Try again</a>
+    </main>
+  </body>
+</html>
