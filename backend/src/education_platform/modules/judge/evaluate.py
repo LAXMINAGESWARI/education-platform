@@ -70,9 +70,7 @@ class Evaluation:
 def open_judge(settings: Settings | None = None) -> Judge | None:
     """Live client when this mode should call Jev. Missing credentials skip the call."""
     cfg = settings or get_settings()
-    if judge_mode(cfg) == "off":
-        return None
-    if not cfg.jev_base_url.strip() and not cfg.openrouter_configured:
+    if judge_mode(cfg) == "off" or not cfg.openrouter_configured:
         return None
     return HttpJudge(cfg)
 

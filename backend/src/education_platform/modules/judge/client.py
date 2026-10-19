@@ -1,25 +1,20 @@
-"""HTTP adapter for Jev on OpenRouter, and for a local OpenJev server.
+"""HTTP adapter for Jev on OpenRouter.
 
 OpenRouter calls a decisions model with:
 
 ``POST https://openrouter.ai/api/alpha/decisions``
 
-Authorization is ``Bearer <OPENROUTER_API_KEY>``. The JSON body is ``model``,
-``state`` (string, object, or array), and ``questions`` keyed by caller ids.
-Each question is ``noul``, ``choice``, or ``score``. The response is ``id``,
-``model``, ``provider``, ``answers``, and ``usage`` (``input_tokens``,
-``output_tokens``, ``cost``). That shape is the OpenAPI operation
-"Submit a Decisions request"
-(https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request)
-and the condensed reference
-https://github.com/OpenRouterTeam/skills/blob/main/skills/openrouter-decisions/references/decisions-api.md.
+Authorization is ``Bearer <OPENROUTER_API_KEY>``, the same key and attribution
+headers as ``education_platform.core.llm``. The JSON body is ``model``
+(``JEV_MODEL``, default ``typesafe/jev-1.14``), ``state`` (string, object, or
+array), and ``questions`` keyed by caller ids. Each question is ``noul``,
+``choice``, or ``score``. The response is ``id``, ``model``, ``provider``,
+``answers``, and ``usage`` (``input_tokens``, ``output_tokens``, ``cost``).
+That shape is the OpenAPI operation "Submit a Decisions request"
+(https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request).
 
-The same body is what TypeSafe documents for ``POST /v1/systemone``
-(https://docs.typesafe.ai/api) and what OpenJev serves at
-``{base}/v1/systemone``. Set ``JEV_BASE_URL`` to a server root such as
-``http://127.0.0.1:8080`` and this client posts there. Leave it empty to use
-the OpenRouter decisions route. The chat base ``OPENROUTER_BASE_URL``
-(``/api/v1``) is a different API and is not prefixed onto this path.
+The chat base ``OPENROUTER_BASE_URL`` (``/api/v1``) is a different API and is
+not prefixed onto this path.
 """
 
 from __future__ import annotations
@@ -30,6 +25,7 @@ from collections.abc import Callable, Mapping
 import httpx
 
 from education_platform.core.config import Settings, get_settings
+from education_platform.core.llm import _OPENROUTER_HEADERS
 from education_platform.modules.judge.errors import (
     JudgeError,
     JudgePaymentRequired,
@@ -48,21 +44,10 @@ from education_platform.modules.judge.types import (
 OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 INPUT_USD_PER_MILLION = 0.042
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 529})
-_HEADERS = {
-    "HTTP-Referer": "https://github.com/aushakanuj/education-platform",
-    "X-Title": "CurioEd Jev Judge",
-}
 
 
 def _default_sleep(seconds: float) -> None:
     time.sleep(seconds)
-
-
-def decisions_endpoint(settings: Settings) -> str:
-    base = settings.jev_base_url.strip().rstrip("/")
-    if base:
-        return f"{base}/v1/systemone"
-    return OPENROUTER_DECISIONS_URL
 
 
 def estimate_cost_usd(input_tokens: int) -> float:
@@ -90,21 +75,19 @@ class HttpJudge:
 
     def decide(self, request: DecisionRequest) -> DecisionResult:
         settings = self._settings
-        url = decisions_endpoint(settings)
-        api_key = (settings.openrouter_api_key or "").strip()
-        if not settings.jev_base_url.strip() and not api_key:
+        if not settings.openrouter_configured:
             raise JudgeError(
-                "OPENROUTER_API_KEY is not configured. Jev cannot score this artifact."
+                "OPENROUTER_API_KEY is not configured. Set it in backend/.env to score with Jev."
             )
+        api_key = (settings.openrouter_api_key or "").strip()
         payload = request.to_api(model=settings.jev_model)
-        headers = dict(_HEADERS)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers = dict(_OPENROUTER_HEADERS)
+        headers["Authorization"] = f"Bearer {api_key}"
         owns_client = self._client is None
         client = self._client or httpx.Client(timeout=settings.jev_timeout_seconds)
         attempts = max(0, settings.jev_max_retries) + 1
         try:
-            return self._send(client, url, payload, headers, attempts)
+            return self._send(client, OPENROUTER_DECISIONS_URL, payload, headers, attempts)
         finally:
             if owns_client:
                 client.close()

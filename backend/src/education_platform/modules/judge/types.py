@@ -1,9 +1,8 @@
-"""Request and response types shared by OpenRouter and OpenJev.
+"""Request and response types for OpenRouter's decisions API.
 
-Both servers take ``model``, ``state``, and a map of typed ``questions``, and
-return ``answers`` plus ``usage``. OpenRouter also returns ``id``, ``provider``,
-and ``usage.cost``. Those fields are optional so a local ``/v1/systemone``
-response still parses.
+The body is ``model``, ``state``, and a map of typed ``questions``. The
+response is ``answers`` plus ``usage`` (``input_tokens``, ``output_tokens``,
+``cost``). ``id`` and ``provider`` are included when OpenRouter returns them.
 """
 
 from __future__ import annotations

@@ -66,7 +66,6 @@ class Settings(BaseSettings):
     # augment also drops items Jev rejects. replace lets Jev override a
     # blind-solve drop, except keyed-answer checks on computational items.
     jev_model: str = "typesafe/jev-1.14"
-    jev_base_url: str = ""
     jev_timeout_seconds: float = 30.0
     jev_max_retries: int = 2
     jev_mode: str = "shadow"

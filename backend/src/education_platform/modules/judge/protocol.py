@@ -1,4 +1,4 @@
-"""Provider-agnostic decisions call."""
+"""One-method call surface so tests can pass a fake OpenRouter client."""
 
 from __future__ import annotations
 
