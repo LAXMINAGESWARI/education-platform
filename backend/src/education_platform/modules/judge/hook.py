@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from education_platform.modules.generation.item_gate import GatedItem
+from education_platform.modules.generation.item_gate import GatedItem, JudgeAttempt
+from education_platform.modules.generation.items import GeneratedItem
 from education_platform.modules.judge.checks import ItemTarget, LessonTarget
 from education_platform.modules.judge.evaluate import (
     Evaluation,
@@ -17,10 +19,55 @@ from education_platform.modules.judge.evaluate import (
     evaluation_from_error,
     store_evaluation,
 )
-from education_platform.modules.judge.policy import judge_mode
+from education_platform.modules.judge.policy import (
+    DECISION_ERROR,
+    DECISION_REJECT,
+    DECISION_REVIEW,
+    judge_mode,
+)
 from education_platform.modules.judge.protocol import Judge
 
 logger = logging.getLogger(__name__)
+
+
+class ItemJudgeTracker:
+    """Calls Jev on each gate attempt and keeps the latest evaluation.
+
+    Enforce returns a reject so the writer retries. Shadow returns accept so
+    the gate result is unchanged. An error or a raised failure returns None
+    after logging, which the gate treats as no extra failure.
+    """
+
+    def __init__(
+        self,
+        judge: Judge,
+        target_for: Callable[[GeneratedItem], ItemTarget],
+        *,
+        enforce: bool,
+    ) -> None:
+        self.evaluation: Evaluation | None = None
+        self._judge = judge
+        self._target_for = target_for
+        self._enforce = enforce
+
+    def __call__(self, item: GeneratedItem) -> JudgeAttempt | None:
+        try:
+            evaluation = evaluate_item(self._target_for(item), self._judge)
+        except Exception:
+            logger.warning("Jev item judge failed open", exc_info=True)
+            return None
+        self.evaluation = evaluation
+        if evaluation.decision == DECISION_ERROR:
+            logger.warning("Jev item judge unavailable: %s", evaluation.error)
+            return JudgeAttempt(decision="error")
+        if not self._enforce:
+            return JudgeAttempt(decision="accept")
+        if evaluation.decision == DECISION_REJECT or evaluation.gate_decision == DECISION_REJECT:
+            reasons = evaluation.gate_reasons or evaluation.reasons
+            return JudgeAttempt(decision="reject", reasons=reasons)
+        if evaluation.decision == DECISION_REVIEW or evaluation.gate_decision == DECISION_REVIEW:
+            return JudgeAttempt(decision="needs_review", needs_review=True)
+        return JudgeAttempt(decision="accept")
 
 
 def fold_item(

@@ -168,6 +168,7 @@ class LessonDetail:
     markdown: str | None
     published_lesson_version_id: UUID | None
     judge: tuple[JudgeReadout, ...] = ()
+    needs_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +260,10 @@ async def get_step_detail(
                 published_lesson_version_id=facts.row.published_lesson_version_id,
                 judge=tuple(
                     item for item in readouts if item.subject_kind in {"lesson", "lesson_section"}
+                ),
+                needs_review=any(
+                    item.subject_kind == "lesson" and item.decision == "needs_review"
+                    for item in readouts
                 ),
             ),
         )

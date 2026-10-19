@@ -26,9 +26,6 @@ GRADE_LEVELS = (
     "above the stated grade",
 )
 DIFFICULTIES = ("easy", "medium", "hard")
-# Keyed-answer checks on arithmetic items stay with the solver. A probability
-# that "the key looks right" is a weaker signal than working the problem.
-SOLVER_OWNED_CHECKS = frozenset({"keyed_correct", "exactly_one"})
 _MAX_CLAIMS = 8
 _MAX_OUTCOMES = 6
 _PER_CHUNK_CHARS = 4_000

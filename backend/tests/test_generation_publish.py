@@ -32,6 +32,7 @@ from education_platform.modules.generation.lesson import LessonSectionRequest, s
 from education_platform.modules.generation.models import ContentGenerationRun, GenerationJob
 from education_platform.modules.generation.types import GenerationJobKind, RunPhase
 from education_platform.modules.generation.worker import process_generation_job_sync
+from education_platform.modules.judge.models import JudgeEvaluation
 from education_platform.modules.materials.models import (
     SourceMaterial,
     SourceMaterialVersion,
@@ -367,4 +368,59 @@ def test_reject_items_returns_to_generating(
         ).all()
     )
     assert kept_ids <= after_ids
+    get_settings.cache_clear()
+
+
+def test_jev_hold_blocks_publish_until_qa_accept(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = _reach_qa_review(
+        client, admin_headers, seeded_topic_id, seeded_db, monkeypatch, tmp_path
+    )
+    seeded_db.add(
+        JudgeEvaluation(
+            run_id=run_id,
+            subject_kind="lesson",
+            subject_key=run_id,
+            label="Lesson needs review",
+            mode="enforce",
+            decision="needs_review",
+            reasons=["A section stayed ungrounded after one rewrite."],
+            checks=[],
+        )
+    )
+    seeded_db.commit()
+    blocked = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/publish",
+        headers=admin_headers,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "needs review" in blocked.text.lower()
+
+    workspace = client.get(
+        f"/api/v1/teaching/generation-runs/{run_id}/review",
+        headers=admin_headers,
+    )
+    assert workspace.status_code == 200, workspace.text
+    body = workspace.json()
+    open_round = body["open_round"]
+    active = body["active_revision"]
+    assert isinstance(open_round, dict)
+    assert isinstance(active, dict)
+    accepted = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/review-rounds/{open_round['id']}/close",
+        headers=admin_headers,
+        json={"revision_id": active["id"], "action": "accept_current"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    published = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/publish",
+        headers=admin_headers,
+    )
+    assert published.status_code == 200, published.text
     get_settings.cache_clear()

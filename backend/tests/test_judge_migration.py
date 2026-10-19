@@ -46,6 +46,10 @@ def test_check_constraint_rejects_an_unknown_decision(clean_db: str) -> None:
     engine = create_engine(sync_url)
     with engine.begin() as conn:
         conn.execute(text(_INSERT), {"subject_kind": "quiz_item", "decision": "accept"})
+        conn.execute(
+            text(_INSERT.replace("'shadow'", "'enforce'")),
+            {"subject_kind": "lesson", "decision": "needs_review"},
+        )
     with engine.begin() as conn, pytest.raises(IntegrityError):
         conn.execute(text(_INSERT), {"subject_kind": "quiz_item", "decision": "nope"})
     engine.dispose()

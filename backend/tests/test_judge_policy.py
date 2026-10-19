@@ -67,7 +67,7 @@ def test_noul_thresholds() -> None:
     assert high.checks[0].probabilities["true"] == 0.91
 
 
-def test_computational_key_does_not_drive_the_gate() -> None:
+def test_computational_key_still_rejects_the_item() -> None:
     assert looks_computational("What is 3 * 4?", "3 * 4 = 12", ["12"])
     plan = item_plan(
         ItemTarget(
@@ -94,11 +94,11 @@ def test_computational_key_does_not_drive_the_gate() -> None:
         ),
         "explanation_supports": NoulAnswer(0.95),
     }
-    outcome = apply_policy(plan, answers, computational=True, thresholds=_LIMITS)
+    outcome = apply_policy(plan, answers, thresholds=_LIMITS)
     assert outcome.decision == DECISION_REJECT
-    assert outcome.gate_decision == DECISION_ACCEPT
+    assert outcome.gate_decision == DECISION_REJECT
     keyed = next(check for check in outcome.checks if check.check_id == "keyed_correct")
-    assert keyed.drives_gate is False
+    assert keyed.drives_gate is True
 
 
 def test_coverage_and_difficulty_rules() -> None:
