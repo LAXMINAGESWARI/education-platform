@@ -121,6 +121,10 @@ export function App() {
           path="subjects/:subjectId/topics/:topicId/lesson"
           element={<TopicLessonPage />}
         />
+        <Route
+          path="subjects/:subjectId/topics/:topicId/history"
+          element={<QuizHistoryPage />}
+        />
         <Route path="subjects/:subjectId/topics/:topicId" element={<TopicPageRedirect />} />
         <Route
           path="subjects/:subjectId/subtopics/:subtopicId/lesson/slides"

@@ -6,8 +6,10 @@ import type { FeedbackTopicDetail, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { GoalSection, Milestone } from "../components/FeedbackExtras";
+import { PastAttempts } from "../components/PastAttempts";
 import { ScoreMetrics } from "../components/ScoreMetrics";
 import { attemptBadge, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { topicHistoryPath } from "../lib/subjectMaterial";
 
 export function TopicFeedbackPage() {
   const { subjectId = "", topicId = "" } = useParams();
@@ -105,6 +107,10 @@ export function TopicFeedbackPage() {
       </section>
 
       <ScoreMetrics detail={detail} />
+      <PastAttempts
+        quizId={detail.quiz_id}
+        historyPath={topicHistoryPath(subjectId, topicId)}
+      />
     </div>
   );
 }

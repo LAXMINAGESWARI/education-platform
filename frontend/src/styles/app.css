@@ -6192,30 +6192,16 @@ a.btn:disabled:hover {
   font-size: 1rem;
 }
 
-.feedback-chart {
-  margin: 0.2rem 0 0.8rem;
+.feedback-history {
+  margin-top: 1.5rem;
 }
 
-.feedback-chart figcaption {
-  margin-bottom: 0.25rem;
-  color: var(--ink-muted);
-  font-size: 0.82rem;
+.feedback-history .quiz-chart {
+  margin: 0.4rem 0 1rem;
 }
 
-.feedback-chart svg {
-  width: 100%;
-  max-width: 22rem;
-  height: auto;
-}
-
-.feedback-chart rect {
-  fill: var(--accent);
-}
-
-.feedback-chart text {
-  fill: var(--ink-muted);
-  font-size: 11px;
-  font-family: var(--font-body);
+.feedback-history .btn {
+  margin-top: 0.85rem;
 }
 
 .feedback-difficulty ul {
@@ -6335,7 +6321,10 @@ a.btn:disabled:hover {
 .feedback-view .feedback-goal,
 .feedback-view .feedback-metrics,
 .feedback-view .feedback-metrics__subhead,
-.feedback-view .feedback-chart,
+.feedback-view .feedback-history,
+.feedback-view .quiz-chart,
+.feedback-view .history,
+.feedback-view .history-empty,
 .feedback-view .feedback-difficulty,
 .feedback-view .feedback-bar,
 .feedback-view .btn {

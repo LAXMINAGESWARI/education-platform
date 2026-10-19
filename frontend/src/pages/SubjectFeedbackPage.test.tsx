@@ -30,6 +30,11 @@ vi.mock("../api/engagement", () => ({
   getSubjectEngagementRates: vi.fn(),
 }));
 
+vi.mock("../api/attempts", () => ({
+  listQuizAttempts: vi.fn(),
+}));
+
+import { listQuizAttempts } from "../api/attempts";
 import {
   deleteTopicGoal,
   getFeedbackHighlights,
@@ -185,9 +190,32 @@ const topic = {
   ],
 };
 
+const pastAttempts = [
+  {
+    id: "attempt-1",
+    attempt_number: 1,
+    status: "submitted",
+    score_percent: "40",
+    passed: false,
+    started_at: "2026-08-01T10:00:00Z",
+    submitted_at: "2026-08-01T10:20:00Z",
+  },
+  {
+    id: "attempt-4",
+    attempt_number: 4,
+    status: "submitted",
+    score_percent: "90",
+    passed: true,
+    started_at: "2026-08-04T10:00:00Z",
+    submitted_at: "2026-08-04T10:20:00Z",
+  },
+];
+
 describe("feedback hierarchy", () => {
   beforeEach(() => {
     vi.mocked(getFeedbackOverview).mockReset();
+    vi.mocked(listQuizAttempts).mockReset();
+    vi.mocked(listQuizAttempts).mockResolvedValue(pastAttempts);
     vi.mocked(getFeedbackSubject).mockReset();
     vi.mocked(getFeedbackTopic).mockReset();
     vi.mocked(getSelfEvaluation).mockReset();
@@ -281,8 +309,31 @@ describe("feedback hierarchy", () => {
     expect(screen.getByText("Average score")).toBeInTheDocument();
     expect(screen.getByText("64%")).toBeInTheDocument();
     expect(screen.getByText("Since the previous attempt")).toBeInTheDocument();
-    expect(screen.getByText("Score over attempts")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /Attempt 1, 40%/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Past attempts" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Performance over time" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: /Quiz scores across 2 attempts. Latest 90 percent, best 90 percent/,
+      }),
+    ).toBeInTheDocument();
+    const history = screen.getByRole("region", { name: "Past attempts" });
+    const rows = within(history).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Not passed · 40%");
+    expect(rows[0]).not.toHaveTextContent("—");
+    expect(rows[1]).toHaveTextContent("Passed · 90%");
+    expect(within(rows[0]).getByRole("link", { name: "View" })).toHaveAttribute(
+      "href",
+      "/attempts/attempt-1",
+    );
+    expect(within(rows[1]).getByRole("link", { name: "View" })).toHaveAttribute(
+      "href",
+      "/attempts/attempt-4",
+    );
+    expect(screen.getByRole("link", { name: "Show full history" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/mensuration/history",
+    );
+    expect(listQuizAttempts).toHaveBeenCalledWith("quiz-1");
     expect(screen.getByText("4 of 8 correct, 50%")).toBeInTheDocument();
     expect(screen.getByText("10 min")).toBeInTheDocument();
     expect(screen.getByText("Easy")).toBeInTheDocument();
@@ -364,6 +415,7 @@ describe("feedback hierarchy", () => {
   });
 
   it("leaves out topic metrics that have no stored data", async () => {
+    vi.mocked(listQuizAttempts).mockResolvedValue([]);
     vi.mocked(getFeedbackTopic).mockResolvedValue({
       ...topic,
       attempt_count: 0,
@@ -398,7 +450,13 @@ describe("feedback hierarchy", () => {
     expect(screen.getByText("No quiz attempts yet.")).toBeInTheDocument();
     expect(screen.queryByText("Average score")).not.toBeInTheDocument();
     expect(screen.queryByText("Time spent")).not.toBeInTheDocument();
-    expect(screen.queryByText("Score over attempts")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "No scored attempts yet. Take the quiz to see performance over time.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Performance over time" })).not.toBeInTheDocument();
+    expect(screen.getByText("No attempts recorded yet.")).toBeInTheDocument();
     expect(screen.queryByText("Accuracy by difficulty")).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Concepts" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);

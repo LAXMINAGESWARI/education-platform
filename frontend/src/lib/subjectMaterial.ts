@@ -66,6 +66,10 @@ export function topicLessonPath(subjectId: string, topicId: string): string {
   return `/subjects/${subjectId}/topics/${topicId}/lesson`;
 }
 
+export function topicHistoryPath(subjectId: string, topicId: string): string {
+  return `/subjects/${subjectId}/topics/${topicId}/history`;
+}
+
 export type TopicLessonEntry = {
   action: "Start" | "Continue" | "Review";
   detail: string;

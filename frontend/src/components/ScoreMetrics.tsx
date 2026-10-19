@@ -20,37 +20,6 @@ function difficultyLabel(level: FeedbackDifficulty): string {
   }
 }
 
-function ScoreChart({ scores }: { scores: FeedbackTopicDetail["attempt_scores"] }) {
-  const width = 280;
-  const height = 96;
-  const gap = 10;
-  const barWidth = Math.min(28, (width - gap * Math.max(scores.length - 1, 0)) / scores.length);
-  const label = scores
-    .map((point) => `Attempt ${point.attempt_number}, ${formatScore(point.score_percent)}`)
-    .join(". ");
-  return (
-    <figure className="feedback-chart">
-      <figcaption>Score over attempts</figcaption>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
-        {scores.map((point, index) => {
-          const score = Math.max(0, Math.min(100, scoreNumber(point.score_percent) ?? 0));
-          const barHeight = (score / 100) * (height - 22);
-          const x = index * (barWidth + gap);
-          const y = height - 18 - barHeight;
-          return (
-            <g key={point.attempt_number}>
-              <rect x={x} y={y} width={barWidth} height={Math.max(barHeight, 1)} rx={3} />
-              <text x={x + barWidth / 2} y={height - 4} textAnchor="middle">
-                {point.attempt_number}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </figure>
-  );
-}
-
 export function ScoreMetrics({ detail }: { detail: FeedbackTopicDetail }) {
   const hasAttempts = detail.attempt_count > 0 && scoreNumber(detail.best_score_percent) !== null;
   const change = formatTrend(detail.trend, detail.trend_delta);
@@ -114,8 +83,6 @@ export function ScoreMetrics({ detail }: { detail: FeedbackTopicDetail }) {
       ) : (
         <p className="progress-label">No quiz attempts yet.</p>
       )}
-
-      {detail.attempt_scores.length > 0 && <ScoreChart scores={detail.attempt_scores} />}
 
       {detail.difficulty_accuracy.length > 0 && (
         <div className="feedback-difficulty">
