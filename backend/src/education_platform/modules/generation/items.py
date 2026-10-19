@@ -167,6 +167,7 @@ class NodeItemRequest:
     quota: int
     bloom: tuple[BloomLevel, ...]
     repair_note: str = ""
+    outcome_statements: tuple[str, ...] = ()
 
 
 ItemsWriter = Callable[[NodeItemRequest], Sequence[GeneratedItem]]

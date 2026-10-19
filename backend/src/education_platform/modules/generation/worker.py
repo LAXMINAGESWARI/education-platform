@@ -133,6 +133,10 @@ from education_platform.modules.generation.types import (
     RunPhase,
     TeacherRoundNumber,
 )
+from education_platform.modules.judge.checks import ItemTarget, LessonTarget
+from education_platform.modules.judge.evaluate import open_judge
+from education_platform.modules.judge.hook import blind_fields, fold_item, fold_lesson, remember
+from education_platform.modules.judge.protocol import Judge
 from education_platform.modules.materials.models import SourceChunk
 from education_platform.modules.progress.types import run_subject
 from education_platform.modules.progress.wake import publish_wake
@@ -508,9 +512,12 @@ def _finish_items(
                     quota,
                     heavy=node_is_heavy(quota, node_count=node_count, target=target),
                 ),
+                outcome_statements=_outcome_statements(node),
             )
         )
     solver = resolve_blind_solver(blind_solver)
+    judge = _open_item_judge()
+    grade_voice = _grade_voice_for_topic(session, run.topic_id)
     sequence = 1
     considered = 0
     stats = {"passed": 0, "fixed_on_retry": 0, "dropped": 0}
@@ -530,6 +537,7 @@ def _finish_items(
                 return
             sequence = _persist_produced(
                 session,
+                run.id,
                 quiz_version.id,
                 produced,
                 sequence,
@@ -540,6 +548,8 @@ def _finish_items(
                 job_id=job_id,
                 taken=taken,
                 stats=stats,
+                judge=judge,
+                grade_voice=grade_voice,
             )
             considered += len(produced)
             session.flush()
@@ -557,6 +567,7 @@ def _finish_items(
         for request, produced in zip(requests, grouped, strict=True):
             sequence = _persist_produced(
                 session,
+                run.id,
                 quiz_version.id,
                 produced,
                 sequence,
@@ -567,6 +578,8 @@ def _finish_items(
                 job_id=job_id,
                 taken=taken,
                 stats=stats,
+                judge=judge,
+                grade_voice=grade_voice,
             )
             considered += len(produced)
             session.flush()
@@ -659,6 +672,15 @@ def _finish_lesson(session: Session, run_id: UUID, *, writer: TopicLessonWriter 
     )
     replace_run_lesson_sections(session, run.id, snapshots)
     run.draft_lesson_markdown = written.markdown
+    _record_lesson_judge(
+        session,
+        run,
+        lesson_nodes,
+        written.sections,
+        texts_by_node,
+        grade_voice,
+        job_id=None,
+    )
     run.failure_reason = None
     _enqueue_generation_job(session, run.id, GenerationJobKind.ITEMS)
     _maybe_advance_to_qa_review(session, run, completing=GenerationJobKind.LESSON)
@@ -898,8 +920,177 @@ def _blind_records(
     ]
 
 
+def _outcome_statements(node: ContentGenerationOutlineNode) -> tuple[str, ...]:
+    return tuple(
+        str(item).strip()
+        for item in (node.proposed_outcomes or [])
+        if isinstance(item, str) and item.strip()
+    )
+
+
+def _open_item_judge() -> Judge | None:
+    try:
+        return open_judge()
+    except Exception:
+        logger.warning("Jev judge is unavailable", exc_info=True)
+        return None
+
+
+def _item_target(item: GeneratedItem, request: NodeItemRequest, grade_voice: str) -> ItemTarget:
+    return ItemTarget(
+        heading=request.heading,
+        grade=grade_voice,
+        outcomes=request.outcome_statements,
+        chunks=request.chunk_texts,
+        prompt=item.prompt,
+        options={label: item.options.get(label, "") for label in OPTION_LABELS},
+        correct_label=item.correct_label,
+        correct_rationale=item.correct_rationale,
+        difficulty=difficulty_for_bloom(item.bloom).value,
+    )
+
+
+def _record_lesson_judge(
+    session: Session,
+    run: ContentGenerationRun,
+    nodes: Sequence[ContentGenerationOutlineNode],
+    sections: Sequence[LessonSection],
+    texts_by_node: Mapping[UUID, tuple[str, ...]],
+    grade_voice: str,
+    *,
+    job_id: UUID | None,
+) -> None:
+    judge = _open_item_judge()
+    if judge is None:
+        return
+    combined_outcomes: list[str] = []
+    combined_chunks: list[str] = []
+    for node, section in zip(nodes, sections, strict=True):
+        outcomes = _outcome_statements(node)
+        chunks = texts_by_node.get(node.id, ())
+        combined_outcomes.extend(outcomes)
+        combined_chunks.extend(chunks)
+        _remember_lesson(
+            session,
+            run,
+            judge,
+            LessonTarget(
+                heading=section.heading,
+                grade=grade_voice,
+                outcomes=outcomes,
+                chunks=chunks,
+                markdown=section.markdown,
+                kind="lesson_section",
+            ),
+            subject_key=node.id,
+            job_id=job_id,
+            include_claims=True,
+        )
+    if run.draft_lesson_markdown:
+        _remember_lesson(
+            session,
+            run,
+            judge,
+            LessonTarget(
+                heading=run.title,
+                grade=grade_voice,
+                outcomes=tuple(dict.fromkeys(combined_outcomes)),
+                chunks=tuple(dict.fromkeys(combined_chunks)),
+                markdown=run.draft_lesson_markdown,
+                kind="lesson",
+            ),
+            subject_key=run.id,
+            job_id=job_id,
+            include_claims=False,
+        )
+
+
+def _record_repaired_lesson(
+    session: Session,
+    run: ContentGenerationRun,
+    snapshots: Sequence[LessonSectionSnapshot],
+    texts_by_node: Mapping[UUID, tuple[str, ...]],
+    grade_voice: str,
+    section_keys: frozenset[UUID],
+) -> None:
+    judge = _open_item_judge()
+    if judge is None:
+        return
+    nodes = {
+        node.id: node
+        for node in session.scalars(
+            select(ContentGenerationOutlineNode).where(
+                ContentGenerationOutlineNode.run_id == run.id
+            )
+        ).all()
+    }
+    for snapshot in snapshots:
+        if snapshot.section_key not in section_keys:
+            continue
+        node = nodes.get(snapshot.section_key)
+        _remember_lesson(
+            session,
+            run,
+            judge,
+            LessonTarget(
+                heading=snapshot.heading,
+                grade=grade_voice,
+                outcomes=_outcome_statements(node) if node is not None else (),
+                chunks=texts_by_node.get(snapshot.section_key, ()),
+                markdown=snapshot.markdown,
+                kind="lesson_section",
+            ),
+            subject_key=snapshot.section_key,
+            job_id=None,
+            include_claims=True,
+        )
+    if run.draft_lesson_markdown:
+        _remember_lesson(
+            session,
+            run,
+            judge,
+            LessonTarget(
+                heading=run.title,
+                grade=grade_voice,
+                outcomes=(),
+                chunks=(),
+                markdown=run.draft_lesson_markdown,
+                kind="lesson",
+            ),
+            subject_key=run.id,
+            job_id=None,
+            include_claims=False,
+        )
+
+
+def _remember_lesson(
+    session: Session,
+    run: ContentGenerationRun,
+    judge: Judge,
+    target: LessonTarget,
+    *,
+    subject_key: UUID,
+    job_id: UUID | None,
+    include_claims: bool,
+) -> None:
+    evaluation = fold_lesson(target, judge, include_claims=include_claims)
+    remember(
+        session,
+        evaluation,
+        run_id=run.id,
+        generation_job_id=job_id,
+        subject_key=subject_key,
+        question_version_id=None,
+        gate_verdict=None,
+        gate_servable=None,
+        blind_status=None,
+        blind_answer=None,
+    )
+
+
 def _persist_produced(
     session: Session,
+    run_id: UUID,
     quiz_version_id: UUID,
     produced: Sequence[GeneratedItem],
     sequence: int,
@@ -911,6 +1102,8 @@ def _persist_produced(
     job_id: UUID | None,
     taken: list[str],
     stats: dict[str, int],
+    judge: Judge | None = None,
+    grade_voice: str = "",
 ) -> int:
     for item in produced:
         gated = gate_generated_item(
@@ -924,8 +1117,13 @@ def _persist_produced(
             ),
             taken=taken,
         )
+        gated, evaluation = fold_item(
+            gated,
+            _item_target(gated.item, request, grade_voice),
+            judge,
+        )
         stats[gated.verdict] = stats.get(gated.verdict, 0) + 1
-        _persist_generated_item(
+        version = _persist_generated_item(
             session,
             quiz_version_id,
             gated.item,
@@ -935,6 +1133,19 @@ def _persist_produced(
             lifecycle_status=(
                 QuestionVersionStatus.DRAFT if gated.servable else QuestionVersionStatus.ARCHIVED
             ),
+        )
+        status, answer = blind_fields(gated.blind_solve)
+        remember(
+            session,
+            evaluation,
+            run_id=run_id,
+            generation_job_id=job_id,
+            subject_key=version.id,
+            question_version_id=version.id,
+            gate_verdict=gated.verdict,
+            gate_servable=gated.servable,
+            blind_status=status,
+            blind_answer=answer,
         )
         sequence += 1
     return sequence
@@ -991,7 +1202,7 @@ def _persist_generated_item(
     blind_solve: dict[str, object] | None = None,
     item_check: dict[str, object] | None = None,
     lifecycle_status: QuestionVersionStatus = QuestionVersionStatus.DRAFT,
-) -> None:
+) -> QuestionVersion:
     _refuse_unshippable(item, archive=lifecycle_status is QuestionVersionStatus.ARCHIVED)
     item = _item_for_storage(item)
     question = Question(subtopic_id=item.subtopic_id)
@@ -1037,6 +1248,7 @@ def _persist_generated_item(
             sequence=sequence,
         )
     )
+    return version
 
 
 def _outcome_ids_for_node(session: Session, node: ContentGenerationOutlineNode) -> tuple[UUID, ...]:
@@ -1391,6 +1603,7 @@ def _repair_lesson_sections(
     run.draft_lesson_markdown = stitch_sections(
         StitchRequest(grade_voice=grade_voice, sections=tuple(stitch_sections_in))
     )
+    _record_repaired_lesson(session, run, snapshots, texts_by_node, grade_voice, section_keys)
     return True
 
 
@@ -1468,6 +1681,8 @@ def _replace_selected_items(
     node_count = len(nodes)
     target = run.target_item_count
     solver = resolve_blind_solver(blind_solver)
+    judge = _open_item_judge()
+    grade_voice = _grade_voice_for_topic(session, run.topic_id)
     for item, version, question in matched:
         node = node_by_subtopic.get(question.subtopic_id)
         if node is None:
@@ -1493,6 +1708,7 @@ def _replace_selected_items(
                 heavy=node_is_heavy(node.quota or 1, node_count=node_count, target=target),
             )[:1]
             or bloom_mix_for_quota(1, heavy=False),
+            outcome_statements=_outcome_statements(node),
         )
         try:
             produced = write_items_for_node(request, writer=writer)
@@ -1514,6 +1730,11 @@ def _replace_selected_items(
             ),
             taken=taken,
         )
+        gated, evaluation = fold_item(
+            gated,
+            _item_target(gated.item, request, grade_voice),
+            judge,
+        )
         if version.lifecycle_status is QuestionVersionStatus.DRAFT:
             version.lifecycle_status = QuestionVersionStatus.ARCHIVED
         new_version = _persist_question_version(
@@ -1527,6 +1748,19 @@ def _replace_selected_items(
             ),
         )
         item.question_version_id = new_version.id
+        status, answer = blind_fields(gated.blind_solve)
+        remember(
+            session,
+            evaluation,
+            run_id=run.id,
+            generation_job_id=None,
+            subject_key=new_version.id,
+            question_version_id=new_version.id,
+            gate_verdict=gated.verdict,
+            gate_servable=gated.servable,
+            blind_status=status,
+            blind_answer=answer,
+        )
         session.flush()
     return len(items)
 
