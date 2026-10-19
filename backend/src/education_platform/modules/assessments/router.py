@@ -7,11 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.api.deps import get_scope
 from education_platform.db.session import get_session
-from education_platform.modules.assessments import feedback_service, goals_service, service
+from education_platform.modules.assessments import (
+    feedback_hierarchy,
+    feedback_service,
+    goals_service,
+    service,
+)
 from education_platform.modules.assessments.schemas import (
     AttemptHistoryItem,
     AttemptResult,
     FeedbackHighlights,
+    FeedbackOverview,
+    FeedbackSubjectDetail,
+    FeedbackTopicDetail,
     GoalOut,
     SetGoalRequest,
     StartAttemptResponse,
@@ -67,6 +75,32 @@ async def get_subject_feedback(
     session: AsyncSession = Depends(get_session),
 ) -> SubjectFeedbackDashboard:
     return await feedback_service.get_subject_feedback(session, scope, subject_id)
+
+
+@router.get("/me/feedback", response_model=FeedbackOverview)
+async def get_feedback_overview(
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackOverview:
+    return await feedback_hierarchy.get_overview(session, scope)
+
+
+@router.get("/me/feedback/subjects/{subject_id}", response_model=FeedbackSubjectDetail)
+async def get_feedback_subject(
+    subject_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackSubjectDetail:
+    return await feedback_hierarchy.get_subject(session, scope, subject_id)
+
+
+@router.get("/me/feedback/topics/{topic_id}", response_model=FeedbackTopicDetail)
+async def get_feedback_topic(
+    topic_id: UUID,
+    scope: Scope = Depends(get_scope),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackTopicDetail:
+    return await feedback_hierarchy.get_topic(session, scope, topic_id)
 
 
 @router.get("/me/feedback-highlights", response_model=FeedbackHighlights)

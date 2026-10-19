@@ -1,22 +1,19 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FeedbackSubjectPickerPage } from "./FeedbackSubjectPickerPage";
 import { SubjectFeedbackPage } from "./SubjectFeedbackPage";
-
-vi.mock("../auth/AuthContext", () => ({
-  useAuth: () => ({ user: { full_name: "Asha Student" } }),
-}));
+import { TopicFeedbackPage } from "./TopicFeedbackPage";
 
 vi.mock("../api/feedback", () => ({
+  getFeedbackOverview: vi.fn(),
+  getFeedbackSubject: vi.fn(),
+  getFeedbackTopic: vi.fn(),
   getSubjectFeedback: vi.fn(),
   setSubtopicGoal: vi.fn(),
   deleteSubtopicGoal: vi.fn(),
-}));
-
-vi.mock("../api/engagement", () => ({
-  getSubjectEngagementRates: vi.fn(),
-  getEngagementRate: vi.fn(),
 }));
 
 vi.mock("../api/selfEvaluation", () => ({
@@ -24,134 +21,211 @@ vi.mock("../api/selfEvaluation", () => ({
   recordSelfEvaluation: vi.fn(),
 }));
 
-import { getSubjectEngagementRates, getEngagementRate } from "../api/engagement";
-import { getSubjectFeedback } from "../api/feedback";
+import { getFeedbackOverview, getFeedbackSubject, getFeedbackTopic } from "../api/feedback";
 import { getSelfEvaluation } from "../api/selfEvaluation";
 
-const dashboard = {
-  subject_id: "math-1",
-  subject_name: "Mathematics",
-  overall_percent: "80",
-  attempt_count: 1,
-  strength_subtopic_id: "st-1",
-  top_focus_subtopic_ids: [],
-  regressions: [],
-  summary: "Template summary.",
-  summary_status: "ready" as const,
-  subtopics: [
+const overview = {
+  score_percent: "75",
+  subjects: [
     {
-      subtopic_id: "st-1",
-      subtopic_name: "Square numbers",
-      topic_name: "Number patterns",
-      percent: "80",
-      question_count: 4,
-      attempts: [{ sequence: 1, percent: "80", submitted_at: "2026-10-01T00:00:00Z" }],
-      prior_percent: null,
-      delta: null,
-      percent_easy: null,
-      easy_question_count: 0,
-      percent_medium: null,
-      medium_question_count: 0,
-      percent_hard: null,
-      hard_question_count: 0,
-      class_avg_percent: null,
-      class_sample_size: 0,
-      is_weak: false,
-      remediation: null,
-      goal: null,
+      subject_id: "math-1",
+      subject_name: "Mathematics",
+      grade_name: "Grade 8",
+      score_percent: "80",
+      quizzes_taken: 4,
+      trend: "improving" as const,
+      trend_delta: "20",
+      strongest_topic: {
+        topic_id: "mensuration",
+        topic_name: "Mensuration",
+        best_score_percent: "90",
+      },
+      weakest_topic: {
+        topic_id: "algebra",
+        topic_name: "Algebra",
+        best_score_percent: "40",
+      },
+    },
+    {
+      subject_id: "sci-1",
+      subject_name: "Science",
+      grade_name: "Grade 8",
+      score_percent: null,
+      quizzes_taken: 0,
+      trend: null,
+      trend_delta: null,
+      strongest_topic: null,
+      weakest_topic: null,
     },
   ],
 };
 
-describe("SubjectFeedbackPage", () => {
+const subject = {
+  subject_id: "math-1",
+  subject_name: "Mathematics",
+  grade_name: "Grade 8",
+  score_percent: "90",
+  quizzes_taken: 4,
+  trend: "improving" as const,
+  trend_delta: "20",
+  topics_needing_attention: ["Algebra"],
+  summary: "You're doing well in Mensuration.",
+  summary_status: "fallback" as const,
+  topics: [
+    {
+      topic_id: "mensuration",
+      topic_name: "Mensuration",
+      sequence: 1,
+      best_score_percent: "90",
+      latest_score_percent: "90",
+      attempt_count: 4,
+      trend: "improving" as const,
+      trend_delta: "20",
+      badge: "passed" as const,
+      quiz_id: "quiz-1",
+      has_lesson: true,
+    },
+    {
+      topic_id: "decimals",
+      topic_name: "Decimals",
+      sequence: 2,
+      best_score_percent: null,
+      latest_score_percent: null,
+      attempt_count: 0,
+      trend: null,
+      trend_delta: null,
+      badge: "not_attempted" as const,
+      quiz_id: "quiz-2",
+      has_lesson: true,
+    },
+  ],
+};
+
+const topic = {
+  subject_id: "math-1",
+  subject_name: "Mathematics",
+  topic_id: "mensuration",
+  topic_name: "Mensuration",
+  best_score_percent: "90",
+  latest_score_percent: "90",
+  attempt_count: 4,
+  trend: "improving" as const,
+  trend_delta: "20",
+  badge: "passed" as const,
+  quiz_id: "quiz-1",
+  has_lesson: true,
+  summary: "Strong on Cuboid.",
+  subtopics: [
+    {
+      name: "Cuboid",
+      correct_count: 3,
+      answered_count: 4,
+      percent: "75",
+      band: "strong" as const,
+    },
+    {
+      name: "Area of a polygon",
+      correct_count: 1,
+      answered_count: 4,
+      percent: "25",
+      band: "needs_work" as const,
+    },
+  ],
+};
+
+describe("feedback hierarchy", () => {
   beforeEach(() => {
-    vi.mocked(getSubjectFeedback).mockReset();
-    vi.mocked(getSubjectEngagementRates).mockReset();
-    vi.mocked(getEngagementRate).mockReset();
+    vi.mocked(getFeedbackOverview).mockReset();
+    vi.mocked(getFeedbackSubject).mockReset();
+    vi.mocked(getFeedbackTopic).mockReset();
     vi.mocked(getSelfEvaluation).mockReset();
-    vi.mocked(getSubjectFeedback).mockResolvedValue(dashboard);
-    vi.mocked(getSubjectEngagementRates).mockResolvedValue([
-      {
-        subtopic_id: "st-1",
-        engaged_slides: 1,
-        total_slides: 2,
-        engagement_rate: 0.5,
-      },
-    ]);
+    vi.mocked(getFeedbackOverview).mockResolvedValue(overview);
+    vi.mocked(getFeedbackSubject).mockResolvedValue(subject);
+    vi.mocked(getFeedbackTopic).mockResolvedValue(topic);
     vi.mocked(getSelfEvaluation).mockResolvedValue({
       subject_id: "math-1",
-      confidence: "getting_it",
+      confidence: null,
     });
   });
 
-  it("loads scores, engagement, and the self-check together", async () => {
+  it("shows one card per subject and an overall score", async () => {
     render(
-      <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
-        <Routes>
-          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
-        </Routes>
+      <MemoryRouter>
+        <FeedbackSubjectPickerPage />
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "Your personalized feedback" })).toBeInTheDocument();
-    expect(getSubjectFeedback).toHaveBeenCalledWith("math-1");
-    expect(getSubjectEngagementRates).toHaveBeenCalledWith("math-1");
-    expect(getSelfEvaluation).toHaveBeenCalledWith("math-1");
-    expect(getEngagementRate).not.toHaveBeenCalled();
-    expect(await screen.findByText(/50% engaged/)).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Your feedback summary" })).toHaveTextContent(
-      "Template summary.",
-    );
-    expect(getSubjectFeedback).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("region", { name: "Across all subjects" })).toHaveTextContent("75%");
+    expect(screen.getByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByText(/Strongest topic: Mensuration/)).toBeInTheDocument();
+    expect(screen.getByText(/Weakest topic: Algebra/)).toBeInTheDocument();
+    expect(screen.getByText("Up 20 points since the previous attempt")).toBeInTheDocument();
+    const science = screen.getByRole("link", { name: /Science/ });
+    expect(science).toHaveTextContent("Not attempted");
+    expect(science).not.toHaveTextContent("0%");
+    expect(science).not.toHaveTextContent("declining");
+    expect(screen.queryByText(/· -/)).not.toBeInTheDocument();
   });
 
-  it("replaces the writing state with the model summary", async () => {
-    vi.mocked(getSubjectFeedback)
-      .mockResolvedValueOnce({
-        ...dashboard,
-        summary_status: "pending",
-        summary: "You're doing well in Square numbers.",
-      })
-      .mockResolvedValueOnce({
-        ...dashboard,
-        summary_status: "ready",
-        summary: "You nailed square numbers.",
-      });
-
+  it("lists topics in order and leaves an unattempted topic blank", async () => {
+    const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
         <Routes>
           <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          <Route
+            path="/subjects/:subjectId/feedback/topics/:topicId"
+            element={<TopicFeedbackPage />}
+          />
         </Routes>
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("Writing your feedback…")).toBeInTheDocument();
-    expect(await screen.findByText("You nailed square numbers.", {}, { timeout: 3000 })).toBeInTheDocument();
-    expect(screen.queryByText("Writing your feedback…")).not.toBeInTheDocument();
-    expect(getSubjectFeedback).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Subject summary" })).toHaveTextContent(
+      "You're doing well in Mensuration.",
+    );
+    expect(screen.getByText("Needs attention: Algebra")).toBeInTheDocument();
+    const links = screen.getAllByRole("link");
+    const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
+    expect(topicLinks.map((link) => link.textContent)).toEqual([
+      expect.stringContaining("Mensuration"),
+      expect.stringContaining("Decimals"),
+    ]);
+    expect(screen.getByRole("link", { name: /Decimals/ })).toHaveTextContent("Not attempted");
+    expect(screen.getByRole("link", { name: /Decimals/ })).not.toHaveTextContent("declining");
+    await user.click(screen.getByRole("link", { name: /Mensuration/ }));
+    expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
   });
 
-  it("shows the template when generation fell back", async () => {
-    vi.mocked(getSubjectFeedback).mockResolvedValue({
-      ...dashboard,
-      summary_status: "fallback",
-      summary: "Focus your next study session on: Fractions.",
-    });
-
+  it("shows cleaned concept names and links to the lesson and quiz", async () => {
     render(
-      <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
         <Routes>
-          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          <Route
+            path="/subjects/:subjectId/feedback/topics/:topicId"
+            element={<TopicFeedbackPage />}
+          />
         </Routes>
       </MemoryRouter>,
     );
 
-    expect(
-      await screen.findByText("Focus your next study session on: Fractions."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Writing your feedback…")).not.toBeInTheDocument();
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(getSubjectFeedback).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
+    expect(screen.getByText("Cuboid")).toBeInTheDocument();
+    expect(screen.getByText("Area of a polygon")).toBeInTheDocument();
+    expect(screen.queryByText(/9\.4\.1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/EXERCISE/)).not.toBeInTheDocument();
+    expect(screen.getByText("Strong")).toBeInTheDocument();
+    expect(screen.getByText("Needs work")).toBeInTheDocument();
+    expect(screen.getByText("Strong on Cuboid.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review the lesson" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/mensuration/lesson",
+    );
+    expect(screen.getByRole("link", { name: "Retake the quiz" })).toHaveAttribute(
+      "href",
+      "/quizzes/quiz-1",
+    );
+    expect(getFeedbackTopic).toHaveBeenCalledWith("mensuration");
   });
 });

@@ -196,3 +196,81 @@ class AttemptResult(BaseModel):
     passed: bool | None
     review_available: bool = True
     answers: list[AttemptAnswerOut] = Field(default_factory=list)
+
+
+class FeedbackTopicRef(BaseModel):
+    topic_id: UUID
+    topic_name: str
+    best_score_percent: Decimal | None
+
+
+class FeedbackTopicScore(BaseModel):
+    topic_id: UUID
+    topic_name: str
+    sequence: int
+    best_score_percent: Decimal | None
+    latest_score_percent: Decimal | None
+    attempt_count: int
+    trend: Literal["improving", "flat", "declining"] | None
+    trend_delta: Decimal | None
+    badge: Literal["not_attempted", "keep_going", "passed"]
+    quiz_id: UUID | None
+    has_lesson: bool
+
+
+class FeedbackSubjectCard(BaseModel):
+    subject_id: UUID
+    subject_name: str
+    grade_name: str
+    score_percent: Decimal | None
+    quizzes_taken: int
+    trend: Literal["improving", "flat", "declining"] | None
+    trend_delta: Decimal | None
+    strongest_topic: FeedbackTopicRef | None
+    weakest_topic: FeedbackTopicRef | None
+
+
+class FeedbackOverview(BaseModel):
+    """All-subjects landing. ``score_percent`` is the mean of subject scores."""
+
+    score_percent: Decimal | None
+    subjects: list[FeedbackSubjectCard]
+
+
+class FeedbackSubjectDetail(BaseModel):
+    subject_id: UUID
+    subject_name: str
+    grade_name: str
+    score_percent: Decimal | None
+    quizzes_taken: int
+    trend: Literal["improving", "flat", "declining"] | None
+    trend_delta: Decimal | None
+    topics_needing_attention: list[str]
+    summary: str
+    summary_status: Literal["ready", "fallback"]
+    topics: list[FeedbackTopicScore]
+
+
+class FeedbackSubtopicStrength(BaseModel):
+    name: str
+    correct_count: int
+    answered_count: int
+    percent: Decimal
+    band: Literal["strong", "okay", "needs_work"]
+
+
+class FeedbackTopicDetail(BaseModel):
+    subject_id: UUID
+    subject_name: str
+    topic_id: UUID
+    topic_name: str
+    best_score_percent: Decimal | None
+    latest_score_percent: Decimal | None
+    attempt_count: int
+    trend: Literal["improving", "flat", "declining"] | None
+    trend_delta: Decimal | None
+    badge: Literal["not_attempted", "keep_going", "passed"]
+    quiz_id: UUID | None
+    has_lesson: bool
+    summary: str
+    subtopics: list[FeedbackSubtopicStrength]

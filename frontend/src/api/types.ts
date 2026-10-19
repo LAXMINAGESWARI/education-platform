@@ -219,6 +219,88 @@ export type FeedbackHighlights = {
 
 export type FeedbackSummaryStatus = "ready" | "pending" | "fallback";
 
+export type FeedbackTrend = "improving" | "flat" | "declining" | null;
+
+export type FeedbackBadge = "not_attempted" | "keep_going" | "passed";
+
+export type FeedbackBand = "strong" | "okay" | "needs_work";
+
+export type FeedbackTopicRef = {
+  topic_id: string;
+  topic_name: string;
+  best_score_percent: string | number;
+};
+
+export type FeedbackTopicScore = {
+  topic_id: string;
+  topic_name: string;
+  sequence: number;
+  best_score_percent: string | number | null;
+  latest_score_percent: string | number | null;
+  attempt_count: number;
+  trend: FeedbackTrend;
+  trend_delta: string | number | null;
+  badge: FeedbackBadge;
+  quiz_id: string | null;
+  has_lesson: boolean;
+};
+
+export type FeedbackSubjectCard = {
+  subject_id: string;
+  subject_name: string;
+  grade_name: string;
+  score_percent: string | number | null;
+  quizzes_taken: number;
+  trend: FeedbackTrend;
+  trend_delta: string | number | null;
+  strongest_topic: FeedbackTopicRef | null;
+  weakest_topic: FeedbackTopicRef | null;
+};
+
+export type FeedbackOverview = {
+  score_percent: string | number | null;
+  subjects: FeedbackSubjectCard[];
+};
+
+export type FeedbackSubjectDetail = {
+  subject_id: string;
+  subject_name: string;
+  grade_name: string;
+  score_percent: string | number | null;
+  quizzes_taken: number;
+  trend: FeedbackTrend;
+  trend_delta: string | number | null;
+  topics_needing_attention: string[];
+  summary: string;
+  summary_status: "ready" | "fallback";
+  topics: FeedbackTopicScore[];
+};
+
+export type FeedbackSubtopicStrength = {
+  name: string;
+  correct_count: number;
+  answered_count: number;
+  percent: string | number;
+  band: FeedbackBand;
+};
+
+export type FeedbackTopicDetail = {
+  subject_id: string;
+  subject_name: string;
+  topic_id: string;
+  topic_name: string;
+  best_score_percent: string | number | null;
+  latest_score_percent: string | number | null;
+  attempt_count: number;
+  trend: FeedbackTrend;
+  trend_delta: string | number | null;
+  badge: FeedbackBadge;
+  quiz_id: string | null;
+  has_lesson: boolean;
+  summary: string;
+  subtopics: FeedbackSubtopicStrength[];
+};
+
 export type SubjectFeedbackDashboard = {
   subject_id: string;
   subject_name: string;
