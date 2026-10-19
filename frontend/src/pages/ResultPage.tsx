@@ -178,6 +178,8 @@ export function ResultPage() {
             <>
               <h2 className="section-title">Question review</h2>
               <p className="muted" style={{ marginBottom: "0.75rem", fontSize: "0.95rem" }}>
+                {result.answers.length}{" "}
+                {result.answers.length === 1 ? "question" : "questions"} in this attempt.
                 Correct answer keys stay hidden. You only see which items you got right.
               </p>
               <div className="answer-review">

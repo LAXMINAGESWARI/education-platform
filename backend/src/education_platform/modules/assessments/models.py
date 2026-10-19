@@ -224,6 +224,10 @@ class QuizVersion(UUIDTimestampMixin, Base):
             "max_attempts IS NULL OR max_attempts > 0",
             name="ck_quiz_versions_max_attempts",
         ),
+        CheckConstraint(
+            "attempt_question_count IS NULL OR attempt_question_count > 0",
+            name="ck_quiz_versions_attempt_question_count",
+        ),
     )
 
     quiz_id: Mapped[UUID] = mapped_column(ForeignKey("common_mastery_quizzes.id"), index=True)
@@ -241,6 +245,8 @@ class QuizVersion(UUIDTimestampMixin, Base):
     )
     pass_threshold_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("70.00"))
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # NULL serves the whole bank. Generated topic-mastery quizzes set this to 10.
+    attempt_question_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class QuizItem(UUIDTimestampMixin, Base):
@@ -357,6 +363,35 @@ class QuizAttempt(UUIDTimestampMixin, Base):
     score_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     pass_threshold_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class AttemptQuestion(UUIDTimestampMixin, Base):
+    """Question versions actually served on one attempt, in student-facing order.
+
+    `position` is the number the student sees (1..n for a draw, or the bank
+    sequence when the whole bank is served). Grading reads this row so the
+    served set and the graded set stay the same. Attempts from before this
+    table existed have no rows; those still grade the full quiz-item bank.
+    """
+
+    __tablename__ = "attempt_questions"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "position", name="uq_attempt_questions_attempt_position"),
+        UniqueConstraint(
+            "attempt_id",
+            "question_version_id",
+            name="uq_attempt_questions_attempt_question",
+        ),
+        CheckConstraint("position >= 1", name="ck_attempt_questions_position"),
+    )
+
+    attempt_id: Mapped[UUID] = mapped_column(
+        ForeignKey("quiz_attempts.id", ondelete="CASCADE"), index=True
+    )
+    question_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("question_versions.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
 
 
 class AttemptAnswer(UUIDTimestampMixin, Base):

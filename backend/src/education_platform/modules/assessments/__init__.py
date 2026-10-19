@@ -2,6 +2,7 @@
 
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
+    AttemptQuestion,
     CommonMasteryQuiz,
     Question,
     QuestionAnswerKey,
@@ -24,6 +25,7 @@ from education_platform.modules.assessments.models import (
 
 __all__ = [
     "AttemptAnswer",
+    "AttemptQuestion",
     "CommonMasteryQuiz",
     "Question",
     "QuestionAnswerKey",

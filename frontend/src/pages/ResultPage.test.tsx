@@ -316,5 +316,6 @@ describe("ResultPage", () => {
       "/subjects/subj-1/topics/topic-1/lesson",
     );
     expect(screen.getByText(/Correct answer keys stay hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/1 question in this attempt/)).toBeInTheDocument();
   });
 });

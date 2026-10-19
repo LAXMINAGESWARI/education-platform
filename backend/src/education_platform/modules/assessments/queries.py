@@ -6,6 +6,7 @@ creating a service-to-service cycle.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -87,21 +88,18 @@ async def released_quiz(
     return (row[0], row[1]) if row is not None else None
 
 
-async def questions_for_quiz_version(
-    session: AsyncSession, quiz_version_id: UUID
+async def questions_for_numbered(
+    session: AsyncSession, numbered: Sequence[tuple[int, UUID]]
 ) -> list[QuizQuestion]:
-    items = (
-        await session.scalars(
-            select(QuizItem)
-            .where(QuizItem.quiz_version_id == quiz_version_id)
-            .order_by(QuizItem.sequence)
-        )
-    ).all()
+    """Student-facing questions for (number, question_version_id) pairs.
 
+    Does not join answer keys. `number` is whatever the caller served (bank
+    sequence, or 1..n on a draw), not looked up again from `quiz_items`.
+    """
     questions: list[QuizQuestion] = []
-    for item in items:
+    for number, question_version_id in numbered:
         version = await session.scalar(
-            select(QuestionVersion).where(QuestionVersion.id == item.question_version_id)
+            select(QuestionVersion).where(QuestionVersion.id == question_version_id)
         )
         if version is None:
             continue
@@ -114,13 +112,30 @@ async def questions_for_quiz_version(
         ).all()
         questions.append(
             QuizQuestion(
-                number=item.sequence,
+                number=number,
                 difficulty=version.difficulty.value.title() if version.difficulty else None,
                 prompt=version.prompt,
                 options=[QuizOption(label=option.label, text=option.text) for option in options],
             )
         )
     return questions
+
+
+async def questions_for_quiz_version(
+    session: AsyncSession, quiz_version_id: UUID
+) -> list[QuizQuestion]:
+    """Every item on a quiz version, in bank order. Teacher and admin previews use this."""
+    items = (
+        await session.scalars(
+            select(QuizItem)
+            .where(QuizItem.quiz_version_id == quiz_version_id)
+            .order_by(QuizItem.sequence)
+        )
+    ).all()
+    return await questions_for_numbered(
+        session,
+        [(item.sequence, item.question_version_id) for item in items],
+    )
 
 
 async def open_release_for_quiz_version(

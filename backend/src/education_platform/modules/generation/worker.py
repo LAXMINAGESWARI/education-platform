@@ -41,6 +41,9 @@ from education_platform.modules.assessments.models import (
     QuizVersion,
     QuizVersionStatus,
 )
+from education_platform.modules.assessments.question_selection import (
+    DEFAULT_ATTEMPT_QUESTION_COUNT,
+)
 from education_platform.modules.generation.adk import difficulty_for_bloom, item_kind_for_bloom
 from education_platform.modules.generation.blind_solve import (
     BlindSolver,
@@ -740,11 +743,14 @@ def _draft_topic_quiz_version(session: Session, run: ContentGenerationRun) -> Qu
     if run.draft_quiz_version_id is not None:
         existing = session.get(QuizVersion, run.draft_quiz_version_id)
         if existing is not None and existing.lifecycle_status is QuizVersionStatus.DRAFT:
+            if existing.attempt_question_count is None:
+                existing.attempt_question_count = DEFAULT_ATTEMPT_QUESTION_COUNT
             return existing
     version = QuizVersion(
         quiz_id=quiz.id,
         version_number=_next_quiz_version_number(session, quiz.id),
         lifecycle_status=QuizVersionStatus.DRAFT,
+        attempt_question_count=DEFAULT_ATTEMPT_QUESTION_COUNT,
     )
     session.add(version)
     session.flush()

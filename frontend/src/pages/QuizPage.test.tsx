@@ -107,6 +107,37 @@ describe("QuizPage", () => {
     });
   });
 
+  it("numbers a ten-question draw and shows that served count", async () => {
+    startAttempt.mockResolvedValue({
+      ...attempt,
+      scope: "topic_mastery",
+      questions: Array.from({ length: 10 }, (_, index) => ({
+        number: index + 1,
+        difficulty: index < 4 ? "Easy" : index < 7 ? "Medium" : "Hard",
+        prompt: `Prompt ${index + 1}`,
+        options: [
+          { label: "A", text: "First" },
+          { label: "B", text: "Second" },
+        ],
+      })),
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={["/quizzes/quiz-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/quizzes/:quizId" element={<QuizPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Prompt 1")).toBeInTheDocument();
+    expect(screen.getByText(/Question 1 of 10/)).toBeInTheDocument();
+    expect(screen.getByText("Easy")).toBeInTheDocument();
+  });
+
   it("auto-starts the attempt and shows question options", async () => {
     render(
       <MemoryRouter
