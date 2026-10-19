@@ -860,6 +860,25 @@ export type GenerationChunkPreview = {
   preview: string;
 };
 
+export type JudgeCheckView = {
+  check_id: string;
+  kind: string;
+  decision: string;
+  summary: string;
+  probabilities: Record<string, number>;
+};
+
+export type JudgeReadout = {
+  subject_kind: string;
+  subject_key: string | null;
+  label: string;
+  decision: string;
+  reasons: string[];
+  checks: JudgeCheckView[];
+  model: string | null;
+  question_version_id?: string | null;
+};
+
 export type GenerationStepDetail = {
   timing: GenerationStepTiming;
   indexing: {
@@ -904,6 +923,7 @@ export type GenerationStepDetail = {
   lesson: {
     markdown: string | null;
     published_lesson_version_id: string | null;
+    judge?: JudgeReadout[];
   } | null;
   items: {
     count: number;
@@ -921,6 +941,7 @@ export type GenerationStepDetail = {
     dropped: number | null;
     key_disputed: number;
     items: GenerationQaItem[];
+    judge?: JudgeReadout[];
   } | null;
   ready: {
     phase: string;

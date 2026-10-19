@@ -64,6 +64,28 @@
   min-width: 0;
 }
 
+.step-detail__judge-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.step-detail__judge-decision {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.step-detail__judge-decision.is-reject,
+.step-detail__judge-decision.is-error {
+  color: var(--danger, #9b2c2c);
+}
+
+.step-detail__judge-decision.is-needs_review {
+  color: var(--warn, #8a5a00);
+}
+
 .step-detail__body h4 {
   margin: 0.2rem 0;
 }
