@@ -1,68 +1,67 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { getFeedbackHighlights } from "../api/feedback";
-import { fetchLearningDirectory } from "../api/materials";
-import type { FeedbackHighlights, LearningDirectory } from "../api/types";
+import { getFeedbackOverview } from "../api/feedback";
+import type { FeedbackOverview, FeedbackSubjectCard } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
+import { formatScore, formatTrend } from "../lib/feedbackHierarchy";
 
-function pct(value: string | number | null): number | null {
-  if (value === null || value === undefined) return null;
-  return typeof value === "string" ? Number(value) : value;
+function SubjectCard({ subject }: { subject: FeedbackSubjectCard }) {
+  const trend = formatTrend(subject.trend, subject.trend_delta);
+  return (
+    <Link to={`/subjects/${subject.subject_id}/feedback`} className="card feedback-card">
+      <p className="kicker">{subject.grade_name}</p>
+      <h2>{subject.subject_name}</h2>
+      <p className="feedback-card__score">{formatScore(subject.score_percent)}</p>
+      <p className="progress-label">
+        {subject.quizzes_taken === 0
+          ? "No topic quizzes yet"
+          : `${subject.quizzes_taken} topic ${subject.quizzes_taken === 1 ? "quiz" : "quizzes"} taken`}
+      </p>
+      {trend && <p className="feedback-card__trend">{trend}</p>}
+      {subject.strongest_topic && (
+        <p className="progress-label">
+          Strongest topic: {subject.strongest_topic.topic_name} (
+          {formatScore(subject.strongest_topic.best_score_percent)})
+        </p>
+      )}
+      {subject.weakest_topic && (
+        <p className="progress-label">
+          Weakest topic: {subject.weakest_topic.topic_name} (
+          {formatScore(subject.weakest_topic.best_score_percent)})
+        </p>
+      )}
+    </Link>
+  );
 }
 
 export function FeedbackSubjectPickerPage() {
-  const [directory, setDirectory] = useState<LearningDirectory | null>(null);
-  const [highlights, setHighlights] = useState<FeedbackHighlights | null>(null);
+  const [overview, setOverview] = useState<FeedbackOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const [directoryData, highlightsData] = await Promise.all([
-          fetchLearningDirectory(),
-          getFeedbackHighlights(),
-        ]);
+    void getFeedbackOverview()
+      .then((data) => {
+        if (!cancelled) setOverview(data);
+      })
+      .catch((err: unknown) => {
         if (!cancelled) {
-          setDirectory(directoryData);
-          setHighlights(highlightsData);
+          setError(err instanceof ApiError ? err.message : "Could not load feedback.");
         }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof ApiError ? err.message : "Could not load subjects.");
-        }
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
   }, []);
-
-  const subjects = directory?.subjects ?? [];
-
-  const subjectIdBySubtopicId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const subject of subjects) {
-      for (const topic of subject.topics) {
-        for (const subtopic of topic.subtopics) {
-          map.set(subtopic.id, subject.id);
-        }
-      }
-    }
-    return map;
-  }, [subjects]);
-
-  const dueReviews = highlights?.due_reviews ?? [];
-  const trajectories = highlights?.trajectories ?? [];
 
   return (
     <>
       <Crumbs parts={[{ label: "Feedback" }]} />
       <header className="page-head">
         <h1>Feedback</h1>
-        <p>Pick a subject to see your personalized quiz feedback.</p>
+        <p>Topic by topic, then the subject, then every subject together.</p>
       </header>
 
       {error && (
@@ -71,87 +70,31 @@ export function FeedbackSubjectPickerPage() {
         </p>
       )}
 
-      {!directory && !error && (
+      {!overview && !error && (
         <p className="muted" role="status">
-          Loading subjects…
+          Loading feedback…
         </p>
       )}
 
-      {dueReviews.length > 0 && (
+      {overview && (
         <>
-          <h2 className="section-title">Due for review</h2>
-          <div className="answer-review" style={{ marginBottom: "1rem" }}>
-            {dueReviews.map((nudge) => {
-              const subjectId = subjectIdBySubtopicId.get(nudge.subtopic_id);
-              return (
-                <div key={nudge.subtopic_id} className="answer-row">
-                  <span className="answer-row__num">{nudge.subtopic_name}</span>
-                  <span>
-                    Last attempted {nudge.days_since_last_attempt} days ago · due after{" "}
-                    {nudge.due_interval_days} days
-                  </span>
-                  {subjectId && (
-                    <Link to={`/subjects/${subjectId}/feedback`} className="btn btn--sm">
-                      Review
-                    </Link>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <section className="feedback-summary" aria-label="Across all subjects">
+            <p className="feedback-summary__kicker">Across all subjects</p>
+            <p className="feedback-card__score">{formatScore(overview.score_percent)}</p>
+            <p className="progress-label">
+              Average of each subject you have attempted. A subject with no topic quiz yet is left out.
+            </p>
+          </section>
+          {overview.subjects.length === 0 ? (
+            <div className="alert alert--info">No enrolled subjects yet.</div>
+          ) : (
+            <div className="feedback-grid">
+              {overview.subjects.map((subject) => (
+                <SubjectCard key={subject.subject_id} subject={subject} />
+              ))}
+            </div>
+          )}
         </>
-      )}
-
-      {trajectories.length > 0 && (
-        <>
-          <h2 className="section-title">Trends</h2>
-          <div className="answer-review" style={{ marginBottom: "1rem" }}>
-            {trajectories.map((trajectory) => {
-              const change = pct(trajectory.recent_change);
-              const status =
-                trajectory.trend === "improving"
-                  ? "is-correct"
-                  : trajectory.trend === "declining"
-                    ? "is-wrong"
-                    : "";
-              const subjectId = subjectIdBySubtopicId.get(trajectory.subtopic_id);
-              return (
-                <div key={trajectory.subtopic_id} className={`answer-row ${status}`}>
-                  <span className="answer-row__num">{trajectory.subtopic_name}</span>
-                  <span>
-                    {trajectory.trend}
-                    {change !== null && ` · ${change >= 0 ? "+" : ""}${Math.round(change)}%`}
-                  </span>
-                  {subjectId && (
-                    <Link to={`/subjects/${subjectId}/feedback`} className="btn btn--sm">
-                      View
-                    </Link>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {directory && subjects.length === 0 && (
-        <div className="alert alert--info">No enrolled subjects yet.</div>
-      )}
-
-      {subjects.length > 0 && (
-        <div className="grid grid--2">
-          {subjects.map((subject) => (
-            <Link key={subject.id} to={`/subjects/${subject.id}/feedback`} className="card">
-              <h2>{subject.name}</h2>
-              <p>
-                {subject.grade_name} · {subject.academic_period_name}
-              </p>
-              <div className="meta-row">
-                <span className="badge badge--info">View feedback</span>
-              </div>
-            </Link>
-          ))}
-        </div>
       )}
     </>
   );

@@ -1,907 +1,54 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { deleteSubtopicGoal, getSubjectFeedback, setSubtopicGoal } from "../api/feedback";
-import { getSubjectEngagementRates, type EngagementRate } from "../api/engagement";
-import { useAuth } from "../auth/AuthContext";
-import {
-  getSelfEvaluation,
-  recordSelfEvaluation,
-  type ConfidenceLevel,
-} from "../api/selfEvaluation";
-import type {
-  FeedbackSummaryStatus,
-  GoalOut,
-  RegressionOut,
-  SubjectFeedbackDashboard,
-  SubtopicAttemptScore,
-  SubtopicFeedback,
-} from "../api/types";
+import { getFeedbackSubject } from "../api/feedback";
+import { getSelfEvaluation, recordSelfEvaluation, type ConfidenceLevel } from "../api/selfEvaluation";
+import type { FeedbackSubjectDetail, FeedbackTopicScore } from "../api/types";
 import { ApiError } from "../api/types";
-import { MarkdownContent } from "../components/MarkdownContent";
 import { Crumbs } from "../components/Crumbs";
+import { badgeLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
 
-function pct(value: string | number | null): number | null {
-  if (value === null || value === undefined) return null;
-  return typeof value === "string" ? Number(value) : value;
-}
-
-const PASS_THRESHOLD = 70;
-const SUMMARY_POLL_INITIAL_MS = 400;
-const SUMMARY_POLL_MAX_MS = 5000;
-const SUMMARY_POLL_DEADLINE_MS = 60_000;
-
-function FeedbackSummaryCard({
-  summary,
-  status,
-  settled,
-}: {
-  summary: string;
-  status: FeedbackSummaryStatus;
-  settled: boolean;
-}) {
-  const waiting = status === "pending" && !settled;
-  if (waiting) {
-    return (
-      <section
-        className="feedback-summary feedback-summary--pending"
-        aria-busy="true"
-        aria-label="Your feedback summary"
-      >
-        <p className="feedback-summary__kicker">From your quizzes</p>
-        <p className="feedback-summary__status" role="status">
-          Writing your feedback…
-        </p>
-        <div className="feedback-summary__shimmer" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-      </section>
-    );
-  }
-  if (status === "ready" || status === "fallback" || status === "pending") {
-    return (
-      <section className="feedback-summary" aria-label="Your feedback summary">
-        <p className="feedback-summary__kicker">From your quizzes</p>
-        <div className="feedback-summary__text">
-          <MarkdownContent>{summary}</MarkdownContent>
-        </div>
-      </section>
-    );
-  }
-  const unreachable: never = status;
-  return unreachable;
-}
-
-function attemptTitle(
-  attempts: number,
-  bestScore: number,
-): { label: string; emoji: string; color: string } {
-  const band: "perfect" | "high" | "pass" =
-    bestScore === 100 ? "perfect" : bestScore >= 90 ? "high" : "pass";
-
-  const titles = {
-    perfect: [
-      { label: "Flawless",   emoji: "👑", color: "#92400e" },
-      { label: "Diamond",    emoji: "💎", color: "#0e7490" },
-      { label: "Tenacious",  emoji: "🏅", color: "#7c3aed" },
-      { label: "Champion",   emoji: "🥇", color: "#b45309" },
-      { label: "Legendary",  emoji: "🏆", color: "#be185d" },
-    ],
-    high: [
-      { label: "Star Performer", emoji: "🌟", color: "#166534" },
-      { label: "Sharp Mind",     emoji: "🔥", color: "#991b1b" },
-      { label: "Rising Star",    emoji: "🚀", color: "#1e40af" },
-      { label: "Breakthrough",   emoji: "💡", color: "#b45309" },
-      { label: "Hard Earned",    emoji: "⭐", color: "#7c3aed" },
-    ],
-    pass: [
-      { label: "First Try!",     emoji: "🎯", color: "#166534" },
-      { label: "Quick Learner",  emoji: "⚡", color: "#1e40af" },
-      { label: "Persistent",     emoji: "💪", color: "#7c3aed" },
-      { label: "Determined",     emoji: "🔄", color: "#b45309" },
-      { label: "Never Give Up",  emoji: "🌱", color: "#be185d" },
-    ],
-  };
-
-  const index = Math.min(attempts - 1, 4);
-  return titles[band][index];
-}
-
-// ─── NEW: Compute overall score (best score per subtopic, averaged) ───────────
-function computeOverallScore(subtopics: SubtopicFeedback[]): number | null {
-  const scores: number[] = [];
-  for (const s of subtopics) {
-    if (s.attempts.length === 0) continue;
-    const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
-    scores.push(best);
-  }
-  if (scores.length === 0) return null;
-  return scores.reduce((a, b) => a + b, 0) / scores.length;
-}
-
-// ─── NEW: Overall Score Hero ──────────────────────────────────────────────────
-function ScoreHero({
-  dashboard,
-  engagementBySubtopic,
-}: {
-  dashboard: SubjectFeedbackDashboard;
-  engagementBySubtopic: Map<string, EngagementRate>;
-}) {
-  const overallScore = computeOverallScore(dashboard.subtopics);
-
-  // Subject-level engagement = average of available subtopic engagement rates.
-  const engagementRates: number[] = [];
-  for (const s of dashboard.subtopics) {
-    const e = engagementBySubtopic.get(s.subtopic_id);
-    if (e && e.engagement_rate !== null) engagementRates.push(e.engagement_rate);
-  }
-  const subjectEngagement =
-    engagementRates.length > 0
-      ? Math.round((engagementRates.reduce((a, b) => a + b, 0) / engagementRates.length) * 100)
-      : null;
-
-  const passedSubtopics = dashboard.subtopics.filter((s) => {
-    if (s.attempts.length === 0) return false;
-    return Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)) >= PASS_THRESHOLD;
-  });
-
-  const scoreColor =
-    overallScore === null
-      ? "var(--ink-muted)"
-      : overallScore >= 70
-        ? "var(--success-border)"
-        : "var(--danger-border)";
-
-  const message =
-    overallScore === null
-      ? "Keep going — more attempts unlock your score."
-      : overallScore >= 80
-        ? "You're on a strong run in this subject."
-        : overallScore >= 60
-          ? "You're making real progress — keep it going."
-          : "Every attempt is moving you forward.";
-
-  // Milestone: how many subtopics mastered (passed) out of those attempted.
-  const attemptedCount = dashboard.subtopics.filter((s) => s.attempts.length > 0).length;
-  const masteredCount = passedSubtopics.length;
-
-  // Momentum: average improvement from first to latest attempt across subtopics.
-  const improvements: number[] = [];
-  for (const s of dashboard.subtopics) {
-    if (s.attempts.length < 2) continue;
-    const first = pct(s.attempts[0].percent) ?? 0;
-    const latest = pct(s.attempts[s.attempts.length - 1].percent) ?? 0;
-    improvements.push(latest - first);
-  }
-  const avgImprovement =
-    improvements.length > 0
-      ? Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length)
-      : null;
-
+function TopicCard({ subjectId, topic }: { subjectId: string; topic: FeedbackTopicScore }) {
+  const trend = formatTrend(topic.trend, topic.trend_delta);
+  const attempted = topic.badge !== "not_attempted";
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: "1.5rem",
-        alignItems: "center",
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "12px",
-        padding: "1.25rem 1.5rem",
-        marginBottom: "1.25rem",
-        flexWrap: "wrap",
-      }}
+    <Link
+      to={`/subjects/${subjectId}/feedback/topics/${topic.topic_id}`}
+      className="card feedback-card"
     >
-      {/* Big score circle */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          width: "90px",
-          height: "90px",
-          borderRadius: "50%",
-          border: `4px solid ${scoreColor}`,
-          flexShrink: 0,
-        }}
-      >
-        <span style={{ fontSize: "1.6rem", fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
-          {overallScore !== null ? `${Math.round(overallScore)}%` : "—"}
-        </span>
-        <span style={{ fontSize: "0.6rem", color: "var(--ink-muted)", marginTop: "2px" }}>
-          best score
+      <div className="meta-row">
+        <h2>{topic.topic_name}</h2>
+        <span className={`badge ${topic.badge === "passed" ? "badge--ok" : "badge--info"}`}>
+          {badgeLabel(topic.badge)}
         </span>
       </div>
-
-      {/* Stats + message */}
-      <div style={{ flex: 1, minWidth: "180px" }}>
-        <p style={{ margin: "0 0 8px 0", fontWeight: 600, fontSize: "0.95rem" }}>{message}</p>
-        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" }}>
-          {avgImprovement !== null && avgImprovement > 0 && (
-            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: "999px", padding: "3px 10px" }}>
-              ↑ up {avgImprovement}% since you started
-            </span>
-          )}
-          {attemptedCount > 0 && (
-            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: "999px", padding: "3px 10px" }}>
-              🏅 {masteredCount} of {attemptedCount} mastered
-            </span>
-          )}
-          {subjectEngagement !== null && (
-            <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "999px", padding: "3px 10px" }}>
-              📖 {subjectEngagement}% lesson engagement
-            </span>
-          )}
-        </div>
-        <p style={{ margin: "0", fontSize: "0.8rem", color: "var(--ink-muted)" }}>
-          {dashboard.attempt_count === 1
-            ? "1 attempt so far"
-            : `Across ${dashboard.attempt_count} attempts`}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-
-// ─── NEW: Your next step callout ──────────────────────────────────────────────
-function NextStepCallout({
-  subtopics,
-  subjectId,
-}: {
-  subtopics: SubtopicFeedback[];
-  subjectId: string;
-}) {
-  // Pick the single most useful next action: the weakest subtopic that has data.
-  const withData = subtopics.filter((s) => s.attempts.length > 0);
-  if (withData.length === 0) return null;
-
-  const scored = withData.map((s) => ({
-    s,
-    best: Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)),
-  }));
-  const target = scored.sort((a, b) => a.best - b.best)[0];
-
-  // If everything is already strong, no nudge needed.
-  if (target.best >= 90) return null;
-
-  const goalPct = target.s.goal ? (pct(target.s.goal.target_percent) ?? PASS_THRESHOLD) : PASS_THRESHOLD;
-  const gap = Math.max(0, Math.round(goalPct - target.best));
-  const gapText =
-    gap > 0 ? `You're just ${gap}% from your goal here.` : "A quick review will lock this in.";
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: "8px",
-        alignItems: "center",
-        flexWrap: "wrap",
-        fontSize: "0.88rem",
-        color: "var(--ink-muted)",
-        margin: "0 0 1.25rem 2px",
-      }}
-    >
-      <span style={{ color: "#1e40af", fontWeight: 600 }}>→ Next:</span>
-      <span>
-        revisit <strong style={{ color: "var(--ink)" }}>{target.s.subtopic_name}</strong>. {gapText}
-      </span>
-      <Link
-        to={
-          target.s.topic_id
-            ? `/subjects/${subjectId}/topics/${target.s.topic_id}/lesson`
-            : `/subjects/${subjectId}/subtopics/${target.s.subtopic_id}/lesson`
-        }
-        style={{ color: "#1e40af", fontWeight: 600, textDecoration: "underline" }}
-      >
-        Review lesson
-      </Link>
-    </div>
-  );
-}
-
-// ─── NEW: Focus / Achievement Banner ─────────────────────────────────────────
-function FocusBanner({
-  weakSubtopics,
-  overallScore,
-}: {
-  weakSubtopics: SubtopicFeedback[];
-  overallScore: number | null;
-}) {
-  // Weak subtopics are already surfaced by the "next step" line above — don't
-  // repeat them here. The focus banner now only celebrates full completion.
-  if (weakSubtopics.length > 0) {
-    return null;
-  }
-
-  // All subtopics passed — show tiered achievement banner
-  const score = overallScore ?? 0;
-  const tier =
-    score === 100
-      ? { emoji: "🏆", label: "Mastery!", sub: "Perfect score — you've completely nailed this subject!", color: "#78350f", bg: "#fffbeb", border: "#d97706" }
-      : score >= 90
-        ? { emoji: "🔥", label: "Advanced!", sub: "Excellent work — you're well above the bar!", color: "#312e81", bg: "#eef2ff", border: "#4f46e5" }
-        : score >= 80
-          ? { emoji: "⭐", label: "Proficient!", sub: "Solid understanding across all subtopics!", color: "#6b21a8", bg: "#faf5ff", border: "#9333ea" }
-          : { emoji: "🌱", label: "On Track!", sub: "You're passing — keep pushing to go higher!", color: "#0f766e", bg: "#f0fdfa", border: "#0d9488" };
-
-  return (
-    <div
-      style={{
-        background: tier.bg,
-        border: `1px solid ${tier.border}`,
-        borderRadius: "10px",
-        padding: "0.9rem 1.1rem",
-        marginBottom: "1.25rem",
-        display: "flex",
-        alignItems: "center",
-        gap: "12px",
-      }}
-    >
-      <span style={{ fontSize: "1.8rem" }}>{tier.emoji}</span>
-      <div>
-        <p style={{ margin: "0 0 2px 0", fontWeight: 800, fontSize: "1rem", color: tier.color }}>
-          {tier.label}
-        </p>
-        <p style={{ margin: 0, fontSize: "0.82rem", color: tier.color }}>{tier.sub}</p>
-      </div>
-    </div>
-  );
-}
-
-function AttemptChip({
-  attempt,
-  previousPercent,
-}: {
-  attempt: SubtopicAttemptScore;
-  previousPercent: number | null;
-}) {
-  const percent = pct(attempt.percent) ?? 0;
-  const trend = previousPercent === null ? "neutral" : percent >= previousPercent ? "up" : "down";
-  const bg =
-    trend === "up" ? "var(--success-bg)" : trend === "down" ? "var(--danger-bg)" : "var(--surface)";
-  const border =
-    trend === "up"
-      ? "var(--success-border)"
-      : trend === "down"
-        ? "var(--danger-border)"
-        : "var(--border)";
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "4px 10px",
-        borderRadius: "8px",
-        background: bg,
-        border: `1px solid ${border}`,
-        minWidth: "64px",
-      }}
-    >
-      <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>{Math.round(percent)}%</span>
-      <span style={{ fontSize: "0.65rem", color: "var(--ink-muted)" }}>
-        Attempt {attempt.sequence}
-      </span>
-    </span>
-  );
-}
-
-function formatDueDate(dueAt: string): string {
-  try {
-    return new Date(dueAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  } catch {
-    return dueAt;
-  }
-}
-
-function GoalSection({
-  subtopic,
-  onGoalChange,
-}: {
-  subtopic: SubtopicFeedback;
-  onGoalChange: (subtopicId: string, goal: GoalOut | null) => void;
-}) {
-  const [formOpen, setFormOpen] = useState(false);
-  const [targetPercent, setTargetPercent] = useState("80");
-  const [dueDate, setDueDate] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const goal = subtopic.goal;
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await setSubtopicGoal(subtopic.subtopic_id, {
-        target_percent: Number(targetPercent),
-        due_at: `${dueDate}T23:59:59.000Z`,
-      });
-      onGoalChange(subtopic.subtopic_id, result);
-      setFormOpen(false);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not save goal.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRemove() {
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteSubtopicGoal(subtopic.subtopic_id);
-      onGoalChange(subtopic.subtopic_id, null);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not remove goal.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (goal) {
-    // Override status if latest attempt already meets the target
-    const latestScore =
-      subtopic.attempts.length > 0
-        ? (pct(subtopic.attempts[subtopic.attempts.length - 1].percent) ?? 0)
-        : 0;
-    const effectiveStatus =
-      latestScore >= (pct(goal.target_percent) ?? 0) ? "achieved" : goal.status;
-
-    const badgeClass =
-      effectiveStatus === "achieved"
-        ? "badge--ok"
-        : effectiveStatus === "missed"
-          ? "badge--warn"
-          : "badge--info";
-    const statusLabel =
-      effectiveStatus === "achieved" ? "Achieved ✓" : effectiveStatus === "missed" ? "Missed" : "On track";
-    return (
-      <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <span className={`badge ${badgeClass}`}>{statusLabel}</span>
-          <span style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
-            Goal: {pct(goal.target_percent)}% by {formatDueDate(goal.due_at)}
-          </span>
-        </div>
-        {error && (
-          <p className="form__error" role="alert" style={{ fontSize: "0.8rem", marginTop: "4px" }}>
-            {error}
-          </p>
-        )}
-        <button
-          type="button"
-          className="btn btn--sm"
-          style={{ marginTop: "8px" }}
-          disabled={busy}
-          onClick={() => void handleRemove()}
-        >
-          {busy ? "Removing…" : "Remove goal"}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
-      {!formOpen ? (
-        <button type="button" className="btn btn--sm" onClick={() => setFormOpen(true)}>
-          Set a goal
-        </button>
-      ) : (
-        <form
-          onSubmit={(event) => void handleSubmit(event)}
-          style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}
-        >
-          <label style={{ fontSize: "0.8rem" }}>
-            Target %
-            <input
-              type="number"
-              min={0}
-              max={100}
-              required
-              value={targetPercent}
-              onChange={(event) => setTargetPercent(event.target.value)}
-              style={{ width: "64px", marginLeft: "6px" }}
-            />
-          </label>
-          <label style={{ fontSize: "0.8rem" }}>
-            Due by
-            <input
-              type="date"
-              required
-              value={dueDate}
-              onChange={(event) => setDueDate(event.target.value)}
-              style={{ marginLeft: "6px" }}
-            />
-          </label>
-          <button type="submit" className="btn btn--sm" disabled={busy || !dueDate}>
-            {busy ? "Saving…" : "Save"}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={busy}
-            onClick={() => setFormOpen(false)}
-          >
-            Cancel
-          </button>
-          {error && (
-            <p className="form__error" role="alert" style={{ fontSize: "0.8rem", width: "100%" }}>
-              {error}
-            </p>
-          )}
-        </form>
+      <p className="feedback-card__score">{formatScore(topic.best_score_percent)}</p>
+      <p className="progress-label">Best score</p>
+      {attempted && (
+        <p className="progress-label">Latest {formatScore(topic.latest_score_percent)}</p>
       )}
-    </div>
+      {trend && <p className="feedback-card__trend">{trend}</p>}
+    </Link>
   );
 }
 
-// ─── NEW: Engagement badge (constructive, never punitive) ────────────────────
-function EngagementBadge({ engagement }: { engagement: EngagementRate | undefined }) {
-  // No data yet (never opened the lesson, or lesson has no slides) — show nothing.
-  if (!engagement || engagement.engagement_rate === null || engagement.total_slides === 0) {
-    return null;
-  }
-
-  const rate = engagement.engagement_rate; // 0.0–1.0
-  const pctValue = Math.round(rate * 100);
-
-  // Soft, encouraging palette — no red. Low engagement is a nudge, not a failure.
-  const tier =
-    rate >= 0.7
-      ? { label: "Focused", color: "#0f766e", bg: "#f0fdfa", border: "#0d9488", icon: "📖" }
-      : rate >= 0.4
-        ? { label: "Skimmed", color: "#b45309", bg: "#fffbeb", border: "#d97706", icon: "📖" }
-        : { label: "Quick pass", color: "#1e40af", bg: "#eff6ff", border: "#3b82f6", icon: "📖" };
-
-  return (
-    <p
-      style={{
-        margin: "10px 0 0 0",
-        fontSize: "0.8rem",
-        display: "flex",
-        alignItems: "center",
-        gap: "6px",
-        flexWrap: "wrap",
-      }}
-    >
-      <span style={{ color: tier.color, fontWeight: 600 }}>
-        {tier.icon} {pctValue}% engaged
-      </span>
-      <span style={{ color: tier.color }}>· {tier.label}</span>
-      <span style={{ color: "var(--ink-muted)" }}>
-        ({engagement.engaged_slides}/{engagement.total_slides} slides)
-      </span>
-    </p>
-  );
-}
-
-function SubtopicCard({
-  subtopic,
-  subjectId,
-  regression,
-  engagement,
-  onGoalChange,
-}: {
-  subtopic: SubtopicFeedback;
-  subjectId: string;
-  regression: RegressionOut | undefined;
-  engagement: EngagementRate | undefined;
-  onGoalChange: (subtopicId: string, goal: GoalOut | null) => void;
-}) {
-  const attempts = subtopic.attempts;
-  const delta = pct(subtopic.delta);
-  const remediation = subtopic.remediation;
-
-  const bestScore = attempts.length > 0 ? Math.max(...attempts.map((a) => pct(a.percent) ?? 0)) : null;
-  const passed = bestScore !== null && bestScore >= PASS_THRESHOLD;
-  const title = passed && bestScore !== null ? attemptTitle(attempts.length, bestScore) : null;
-  const badgeClass = passed ? "badge--ok" : bestScore === null ? "badge--info" : "badge--warn";
-  const status = passed ? `${title!.emoji} ${title!.label}` : bestScore === null ? "No data yet" : "Keep going";
-  const lastIndex = attempts.length - 1;
-  const barColor = passed ? "#1D9E75" : bestScore === null ? "#cbd5e1" : "#378ADD";
-  const [expanded, setExpanded] = useState(false);
-  const latestScore =
-    attempts.length > 0 ? (pct(attempts[attempts.length - 1].percent) ?? 0) : null;
-  const isNewBest =
-    attempts.length >= 2 && bestScore !== null && latestScore === bestScore && (delta ?? 0) > 0;
-
-  return (
-    <div className="card" style={{ cursor: "default" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "8px" }}>
-        <h2>{subtopic.subtopic_name}</h2>
-        <span className={`badge ${badgeClass}`}>{status}</span>
-      </div>
-
-      {bestScore !== null && (
-        <div style={{ marginTop: "10px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
-            <span style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
-              <span style={{ fontSize: "1.3rem", fontWeight: 700 }}>{Math.round(bestScore)}%</span>
-              {isNewBest && (
-                <span
-                  style={{
-                    fontSize: "0.7rem",
-                    fontWeight: 700,
-                    color: "#0f766e",
-                    background: "#f0fdfa",
-                    border: "1px solid #99f6e4",
-                    borderRadius: "999px",
-                    padding: "1px 8px",
-                  }}
-                >
-                  ↑ New best!
-                </span>
-              )}
-            </span>
-            <span style={{ fontSize: "0.72rem", color: "var(--ink-muted)" }}>best score</span>
-          </div>
-          <div style={{ height: "6px", background: "#eef2f7", borderRadius: "999px", overflow: "hidden" }}>
-            <div style={{ width: `${Math.round(bestScore)}%`, height: "100%", background: barColor }} />
-          </div>
-        </div>
-      )}
-
-      <EngagementBadge engagement={engagement} />
-
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          marginTop: "10px",
-          background: "none",
-          border: "none",
-          color: "#1e40af",
-          fontSize: "0.8rem",
-          fontWeight: 600,
-          cursor: "pointer",
-          padding: 0,
-        }}
-      >
-        {expanded ? "Hide details ▲" : "Show details ▼"}
-      </button>
-
-      {expanded && (
-      <>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
-        {attempts.map((attempt, index) => {
-          const chip = (
-            <AttemptChip
-              attempt={attempt}
-              previousPercent={index > 0 ? pct(attempts[index - 1].percent) : null}
-            />
-          );
-          if (index !== lastIndex || attempts.length < 2) {
-            return <span key={attempt.sequence}>{chip}</span>;
-          }
-          return (
-            <details key={attempt.sequence}>
-              <summary style={{ cursor: "pointer" }}>{chip}</summary>
-              <div style={{ marginTop: "8px", fontSize: "0.85rem", color: "var(--ink-muted)" }}>
-                {delta !== null && (
-                  <p style={{ margin: 0 }}>
-                    {delta >= 0 ? "+" : ""}
-                    {Math.round(delta)}% since Attempt {attempts.length - 1}
-                  </p>
-                )}
-                {regression && (
-                  <p style={{ margin: 0 }}>
-                    {regression.regressed_question_count} question
-                    {regression.regressed_question_count === 1 ? "" : "s"} you got right before
-                    {regression.regressed_question_count === 1 ? " is" : " are"} now wrong.
-                  </p>
-                )}
-              </div>
-            </details>
-          );
-        })}
-      </div>
-
-      <p className="muted" style={{ fontSize: "0.85rem", marginTop: "10px" }}>
-        {subtopic.question_count} question{subtopic.question_count === 1 ? "" : "s"}
-        {subtopic.class_sample_size > 0 &&
-          pct(subtopic.class_avg_percent) !== null &&
-          ` · class avg ${Math.round(pct(subtopic.class_avg_percent) ?? 0)}%`}
-      </p>
-
-      {remediation && (remediation.material_title || remediation.retake_quiz_id) && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" }}>
-          {remediation.material_title && (
-            <Link
-              to={
-                subtopic.topic_id
-                  ? `/subjects/${subjectId}/topics/${subtopic.topic_id}/lesson`
-                  : `/subjects/${subjectId}/subtopics/${subtopic.subtopic_id}/lesson`
-              }
-              className="btn btn--sm"
-            >
-              Review lesson: {remediation.material_title}
-            </Link>
-          )}
-          {remediation.retake_quiz_id && (
-            <Link to={`/quizzes/${remediation.retake_quiz_id}`} className="btn btn--sm">
-              Retake the topic quiz
-            </Link>
-          )}
-        </div>
-      )}
-
-      <GoalSection subtopic={subtopic} onGoalChange={onGoalChange} />
-      </>
-      )}
-    </div>
-  );
-}
-
-// ─── NEW: Report card (inline + print to PDF) ─────────────────────────────────
-function ReportCard({
-  dashboard,
-  engagementBySubtopic,
-  studentName,
-}: {
-  dashboard: SubjectFeedbackDashboard;
-  engagementBySubtopic: Map<string, EngagementRate>;
-  studentName: string;
-}) {
-  const overallScore = computeOverallScore(dashboard.subtopics);
-
-  const engagementRates: number[] = [];
-  for (const s of dashboard.subtopics) {
-    const e = engagementBySubtopic.get(s.subtopic_id);
-    if (e && e.engagement_rate !== null) engagementRates.push(e.engagement_rate);
-  }
-  const subjectEngagement =
-    engagementRates.length > 0
-      ? Math.round((engagementRates.reduce((a, b) => a + b, 0) / engagementRates.length) * 100)
-      : null;
-
-  const today = new Date().toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-
-  return (
-    <div className="report-card-print" style={{ marginTop: "2rem" }}>
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          .report-card-print, .report-card-print * { visibility: visible !important; }
-          .report-card-print { position: absolute; top: 0; left: 0; width: 100%; padding: 0 !important; }
-          .report-card-no-print { display: none !important; }
-        }
-      `}</style>
-
-      <div
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: "12px",
-          padding: "1.5rem",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "12px",
-            flexWrap: "wrap",
-            borderBottom: "2px solid var(--border)",
-            paddingBottom: "12px",
-            marginBottom: "16px",
-          }}
-        >
-          <div>
-            <p style={{ margin: 0, fontSize: "1.2rem", fontWeight: 800 }}>Report Card</p>
-            <p style={{ margin: "2px 0 0 0", fontSize: "0.9rem", color: "var(--ink-muted)" }}>
-              {studentName} · {dashboard.subject_name}
-            </p>
-            <p style={{ margin: "2px 0 0 0", fontSize: "0.78rem", color: "var(--ink-muted)" }}>
-              {today}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="btn btn--sm report-card-no-print"
-            onClick={() => window.print()}
-          >
-            Download / Print
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "16px" }}>
-          <div>
-            <p style={{ margin: 0, fontSize: "1.6rem", fontWeight: 800 }}>
-              {overallScore !== null ? `${Math.round(overallScore)}%` : "—"}
-            </p>
-            <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--ink-muted)" }}>overall best score</p>
-          </div>
-          <div>
-            <p style={{ margin: 0, fontSize: "1.6rem", fontWeight: 800 }}>
-              {subjectEngagement !== null ? `${subjectEngagement}%` : "—"}
-            </p>
-            <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--ink-muted)" }}>lesson engagement</p>
-          </div>
-        </div>
-
-        <div className="table-scroll">
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border)" }}>
-              <th style={{ padding: "6px 8px" }}>Subtopic</th>
-              <th style={{ padding: "6px 8px" }}>Best</th>
-              <th style={{ padding: "6px 8px" }}>Attempts</th>
-              <th style={{ padding: "6px 8px" }}>Engagement</th>
-              <th style={{ padding: "6px 8px" }}>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {dashboard.subtopics.map((s) => {
-              const best =
-                s.attempts.length > 0
-                  ? Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0))
-                  : null;
-              const passed = best !== null && best >= PASS_THRESHOLD;
-              const t = passed && best !== null ? attemptTitle(s.attempts.length, best) : null;
-              const e = engagementBySubtopic.get(s.subtopic_id);
-              const eng =
-                e && e.engagement_rate !== null ? `${Math.round(e.engagement_rate * 100)}%` : "—";
-              const statusLabel = passed
-                ? `${t!.emoji} ${t!.label}`
-                : best === null
-                  ? "No data yet"
-                  : "Keep going";
-              return (
-                <tr key={s.subtopic_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "6px 8px" }}>{s.subtopic_name}</td>
-                  <td style={{ padding: "6px 8px" }}>{best !== null ? `${Math.round(best)}%` : "—"}</td>
-                  <td style={{ padding: "6px 8px" }}>{s.attempts.length}</td>
-                  <td style={{ padding: "6px 8px" }}>{eng}</td>
-                  <td style={{ padding: "6px 8px" }}>{statusLabel}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
-
-        <p style={{ margin: "16px 0 0 0", fontSize: "0.72rem", color: "var(--ink-muted)" }}>
-          Engagement reflects active time spent on lesson slides before the quiz. Scores show the
-          best result per subtopic.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ─── NEW: Self-evaluation self-check ──────────────────────────────────────────
 function SelfCheck({
   subjectId,
   subjectName,
-  overallScore,
-  initialConfidence,
+  initial,
 }: {
   subjectId: string;
   subjectName: string;
-  overallScore: number | null;
-  initialConfidence: ConfidenceLevel | null;
+  initial: ConfidenceLevel | null;
 }) {
-  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(initialConfidence);
+  const [confidence, setConfidence] = useState<ConfidenceLevel | null>(initial);
 
   useEffect(() => {
-    setConfidence(initialConfidence);
-  }, [initialConfidence]);
+    setConfidence(initial);
+  }, [initial]);
 
   async function choose(level: ConfidenceLevel) {
-    setConfidence(level); // optimistic
+    setConfidence(level);
     await recordSelfEvaluation(subjectId, level);
   }
 
@@ -912,308 +59,103 @@ function SelfCheck({
   ];
 
   return (
-    <div
-      style={{
-        background: "#eff6ff",
-        border: "1px solid #bfdbfe",
-        borderRadius: "10px",
-        padding: "0.9rem 1.1rem",
-        marginTop: "1.5rem",
-      }}
-    >
-      <p style={{ margin: "0 0 8px 0", fontWeight: 600, fontSize: "0.9rem", color: "#1e40af" }}>
-        🙂 Your self-check: how well do you feel you understand {subjectName}?
-      </p>
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-        {options.map((o) => {
-          const active = confidence === o.value;
-          return (
-            <button
-              key={o.value}
-              type="button"
-              className="btn btn--sm"
-              onClick={() => void choose(o.value)}
-              style={
-                active
-                  ? { background: "#1e40af", color: "#ffffff", borderColor: "#1e40af" }
-                  : undefined
-              }
-            >
-              {o.label}
-            </button>
-          );
-        })}
+    <section className="feedback-self-check" aria-label={`Self-check for ${subjectName}`}>
+      <p>How well do you feel you understand {subjectName}?</p>
+      <div className="feedback-self-check__options">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className="btn btn--sm"
+            aria-pressed={confidence === option.value}
+            onClick={() => void choose(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
-      {confidence !== null && (
-        <p style={{ margin: "8px 0 0 0", fontSize: "0.78rem", color: "#1e3a8a" }}>
-          {calibrationMessage(confidence, overallScore)}
-        </p>
-      )}
-    </div>
+    </section>
   );
-}
-
-// Gently compares how a student feels vs how they're scoring (calibration).
-function calibrationMessage(confidence: ConfidenceLevel, score: number | null): string {
-  if (score !== null) {
-    if (confidence === "confident" && score < 70) {
-      return "You're feeling confident — a quick review will help your scores catch up to that confidence.";
-    }
-    if (confidence === "still_learning" && score >= 80) {
-      return 'You said "still learning," but your scores say you\'ve got this — trust yourself a little more!';
-    }
-    if (confidence === "still_learning" && score >= 70) {
-      return "You're doing better than you feel — keep going, you're closer than you think.";
-    }
-    if (confidence === "confident" && score >= 80) {
-      return "Confident and scoring high — you really do know this. Nice.";
-    }
-  }
-  return "Thanks — we saved how you're feeling. You can change it anytime.";
 }
 
 export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
-  const { user } = useAuth();
-  const [showReport, setShowReport] = useState(false);
-  const [dashboard, setDashboard] = useState<SubjectFeedbackDashboard | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [engagementBySubtopic, setEngagementBySubtopic] = useState<Map<string, EngagementRate>>(
-    new Map(),
-  );
+  const [detail, setDetail] = useState<FeedbackSubjectDetail | null>(null);
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
-  const [summarySettled, setSummarySettled] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    let timer = 0;
-    setDashboard(null);
-    setError(null);
-    setEngagementBySubtopic(new Map());
-    setConfidence(null);
-    setSummarySettled(false);
-
-    // Scores, lesson engagement, and the self-check start together. The dashboard
-    // renders as soon as feedback returns; it does not wait on the other two.
-    void getSubjectFeedback(subjectId)
+    void getFeedbackSubject(subjectId)
       .then((data) => {
-        if (cancelled) return;
-        setDashboard(data);
-        if (data.summary_status !== "pending") return;
-
-        const started = Date.now();
-        let delay = SUMMARY_POLL_INITIAL_MS;
-        const poll = () => {
-          if (cancelled) return;
-          if (Date.now() - started >= SUMMARY_POLL_DEADLINE_MS) {
-            setSummarySettled(true);
-            return;
-          }
-          timer = window.setTimeout(() => {
-            void getSubjectFeedback(subjectId)
-              .then((next) => {
-                if (cancelled) return;
-                setDashboard((prev) =>
-                  prev
-                    ? { ...prev, summary: next.summary, summary_status: next.summary_status }
-                    : next,
-                );
-                if (next.summary_status !== "pending") return;
-                delay = Math.min(Math.round(delay * 1.8), SUMMARY_POLL_MAX_MS);
-                poll();
-              })
-              .catch(() => {
-                if (!cancelled) setSummarySettled(true);
-              });
-          }, delay);
-        };
-        poll();
+        if (!cancelled) setDetail(data);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           setError(err instanceof ApiError ? err.message : "Could not load feedback.");
         }
       });
-
-    void getSubjectEngagementRates(subjectId).then((rates) => {
-      if (cancelled) return;
-      setEngagementBySubtopic(new Map(rates.map((rate) => [rate.subtopic_id, rate])));
+    void getSelfEvaluation(subjectId).then((row) => {
+      if (!cancelled) setConfidence(row?.confidence ?? null);
     });
-
-    void getSelfEvaluation(subjectId).then((evaluation) => {
-      if (!cancelled) setConfidence(evaluation?.confidence ?? null);
-    });
-
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [subjectId]);
 
-  const regressionsBySubtopic = new Map(
-    (dashboard?.regressions ?? []).map((r) => [r.subtopic_id, r]),
-  );
-
-  function handleGoalChange(subtopicId: string, goal: GoalOut | null) {
-    setDashboard((prev) =>
-      prev
-        ? {
-            ...prev,
-            subtopics: prev.subtopics.map((s) =>
-              s.subtopic_id === subtopicId ? { ...s, goal } : s,
-            ),
-          }
-        : prev,
+  if (!detail && !error) {
+    return (
+      <p className="muted" role="status">
+        Loading feedback…
+      </p>
+    );
+  }
+  if (error || !detail) {
+    return (
+      <p className="form__error" role="alert">
+        {error ?? "Could not load feedback."}
+      </p>
     );
   }
 
-  // ─── NEW: Sort weak subtopics first ────────────────────────────────────────
-  const getCardStatus = (s: SubtopicFeedback) => {
-    if (s.attempts.length === 0) return "no-data";
-    const best = Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0));
-    return best < PASS_THRESHOLD ? "weak" : "passed";
-  };
-
-  const sortedSubtopics = dashboard
-    ? [...dashboard.subtopics].sort((a, b) => {
-        const rank = (s: SubtopicFeedback) => {
-          const st = getCardStatus(s);
-          return st === "weak" ? 0 : st === "no-data" ? 1 : 2;
-        };
-        return rank(a) - rank(b);
-      })
-    : [];
-
-  const overallScore = computeOverallScore(sortedSubtopics);
-
-  const FOCUS_THRESHOLD = 70;
-  const weakSubtopics = sortedSubtopics.filter((s) => {
-    if (s.attempts.length === 0) return false;
-    return Math.max(...s.attempts.map((a) => pct(a.percent) ?? 0)) < FOCUS_THRESHOLD;
-  });
+  const trend = formatTrend(detail.trend, detail.trend_delta);
 
   return (
     <>
       <Crumbs
         parts={[
           { label: "Feedback", to: "/feedback" },
-          { label: dashboard?.subject_name ?? "Subject" },
+          { label: detail.subject_name },
         ]}
       />
+      <header className="page-head">
+        <p className="kicker">
+          {detail.grade_name} · {detail.subject_name}
+        </p>
+        <h1>{detail.subject_name}</h1>
+      </header>
 
-      {!dashboard && !error && (
-        <div className="center-state" role="status">
-          Loading feedback…
-        </div>
-      )}
-
-      {error && (
-        <div className="center-state">
-          <p className="form__error" role="alert">
-            {error}
+      <section className="feedback-summary" aria-label="Subject summary">
+        <p className="feedback-summary__kicker">Subject</p>
+        <p className="feedback-card__score">{formatScore(detail.score_percent)}</p>
+        {trend && <p className="feedback-card__trend">{trend}</p>}
+        {detail.topics_needing_attention.length > 0 && (
+          <p className="progress-label">
+            Needs attention: {detail.topics_needing_attention.join(", ")}
           </p>
+        )}
+        <div className="feedback-summary__text">
+          <p>{detail.summary}</p>
         </div>
-      )}
+      </section>
 
-      {dashboard && (
-        <div>
-          <header className="page-head">
-            <p className="kicker">Feedback · {dashboard.subject_name}</p>
-            <h1>Your personalized feedback</h1>
-          </header>
+      <div className="feedback-grid">
+        {detail.topics.map((topic) => (
+          <TopicCard key={topic.topic_id} subjectId={subjectId} topic={topic} />
+        ))}
+      </div>
 
-          {dashboard.attempt_count === 0 ? (
-            <div
-              style={{
-                background: "var(--surface)",
-                border: "1px solid var(--border)",
-                borderRadius: "12px",
-                padding: "2rem 1.5rem",
-                textAlign: "center",
-                marginTop: "1rem",
-              }}
-            >
-              <p style={{ fontSize: "2rem", margin: "0 0 8px 0" }}>🌱</p>
-              <p style={{ fontWeight: 700, fontSize: "1.1rem", margin: "0 0 6px 0" }}>
-                Your feedback starts here
-              </p>
-              <p
-                style={{
-                  color: "var(--ink-muted)",
-                  fontSize: "0.9rem",
-                  margin: "0 0 16px 0",
-                  maxWidth: "440px",
-                  marginLeft: "auto",
-                  marginRight: "auto",
-                }}
-              >
-                Once you take your first quiz in {dashboard.subject_name}, this page fills with your
-                scores, your progress over time, and a personalized next step.
-              </p>
-              <Link to={`/subjects/${subjectId}`} className="btn btn--sm">
-                Start a lesson
-              </Link>
-            </div>
-          ) : (
-            <>
-              <FeedbackSummaryCard
-                summary={dashboard.summary}
-                status={dashboard.summary_status}
-                settled={summarySettled}
-              />
-
-              {/* ─── NEW: Score Hero ──────────────────────────────────────── */}
-              <ScoreHero dashboard={dashboard} engagementBySubtopic={engagementBySubtopic} />
-
-              {/* ─── NEW: Your next step callout ──────────────────────────── */}
-              <NextStepCallout subtopics={sortedSubtopics} subjectId={subjectId} />
-
-              {/* ─── NEW: Focus / Achievement Banner ────────────────────── */}
-              <FocusBanner weakSubtopics={weakSubtopics} overallScore={overallScore} />
-
-              {/* ─── Subtopic grid (weak first) ──────────────────────────── */}
-              <div className="grid grid--2" style={{ marginTop: "1rem" }}>
-                {sortedSubtopics.map((s) => (
-                  <SubtopicCard
-                    key={s.subtopic_id}
-                    subtopic={s}
-                    subjectId={subjectId}
-                    regression={regressionsBySubtopic.get(s.subtopic_id)}
-                    engagement={engagementBySubtopic.get(s.subtopic_id)}
-                    onGoalChange={handleGoalChange}
-                  />
-                ))}
-              </div>
-
-              {/* ─── NEW: Self-evaluation self-check ──────────────────────── */}
-              <SelfCheck
-                subjectId={subjectId}
-                subjectName={dashboard.subject_name}
-                overallScore={overallScore}
-                initialConfidence={confidence}
-              />
-
-              {/* ─── NEW: Report card (collapsed behind a toggle) ─────────── */}
-              <div style={{ marginTop: "1.5rem" }}>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={() => setShowReport((v) => !v)}
-                >
-                  {showReport ? "Hide report card" : "View report card"}
-                </button>
-              </div>
-              {showReport && (
-                <ReportCard
-                  dashboard={dashboard}
-                  engagementBySubtopic={engagementBySubtopic}
-                  studentName={user?.full_name ?? "Student"}
-                />
-              )}
-            </>
-          )}
-        </div>
-      )}
+      <SelfCheck subjectId={subjectId} subjectName={detail.subject_name} initial={confidence} />
     </>
   );
 }

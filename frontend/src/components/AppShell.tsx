@@ -53,7 +53,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     });
   }
 
-  const onFeedback = location.pathname.startsWith("/feedback") || location.pathname.endsWith("/feedback");
+  const onFeedback = /\/feedback(\/|$)/.test(location.pathname);
   const onHome = !onFeedback;
 
   useEffect(() => {

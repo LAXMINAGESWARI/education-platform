@@ -1,0 +1,113 @@
+import { useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+
+import { getFeedbackTopic } from "../api/feedback";
+import type { FeedbackTopicDetail } from "../api/types";
+import { ApiError } from "../api/types";
+import { Crumbs } from "../components/Crumbs";
+import { badgeLabel, bandLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+
+export function TopicFeedbackPage() {
+  const { subjectId = "", topicId = "" } = useParams();
+  const [detail, setDetail] = useState<FeedbackTopicDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getFeedbackTopic(topicId)
+      .then((data) => {
+        if (!cancelled) setDetail(data);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof ApiError ? err.message : "Could not load this topic.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [topicId]);
+
+  if (!detail && !error) {
+    return (
+      <p className="muted" role="status">
+        Loading topic feedback…
+      </p>
+    );
+  }
+  if (error || !detail) {
+    return (
+      <p className="form__error" role="alert">
+        {error ?? "Could not load this topic."}
+      </p>
+    );
+  }
+
+  const trend = formatTrend(detail.trend, detail.trend_delta);
+
+  return (
+    <>
+      <Crumbs
+        parts={[
+          { label: "Feedback", to: "/feedback" },
+          { label: detail.subject_name, to: `/subjects/${subjectId}/feedback` },
+          { label: detail.topic_name },
+        ]}
+      />
+      <header className="page-head">
+        <p className="kicker">{detail.subject_name}</p>
+        <h1>{detail.topic_name}</h1>
+        <p>
+          <span className={`badge ${detail.badge === "passed" ? "badge--ok" : "badge--info"}`}>
+            {badgeLabel(detail.badge)}
+          </span>
+        </p>
+      </header>
+
+      <section className="feedback-summary" aria-label="Topic summary">
+        <p className="feedback-summary__kicker">Topic quiz</p>
+        <p className="feedback-card__score">{formatScore(detail.best_score_percent)}</p>
+        <p className="progress-label">
+          {detail.attempt_count === 0
+            ? "Not attempted"
+            : `Best score · latest ${formatScore(detail.latest_score_percent)}`}
+        </p>
+        {trend && <p className="feedback-card__trend">{trend}</p>}
+        <div className="feedback-summary__text">
+          <p>{detail.summary}</p>
+        </div>
+        <div className="meta-row">
+          {detail.has_lesson && (
+            <Link to={`/subjects/${subjectId}/topics/${topicId}/lesson`} className="btn btn--sm">
+              Review the lesson
+            </Link>
+          )}
+          {detail.quiz_id && (
+            <Link to={`/quizzes/${detail.quiz_id}`} className="btn btn--sm btn--primary">
+              {detail.attempt_count > 0 ? "Retake the quiz" : "Take the quiz"}
+            </Link>
+          )}
+        </div>
+      </section>
+
+      <h2 className="section-title">Ideas in this topic</h2>
+      {detail.subtopics.length === 0 ? (
+        <p className="progress-label">
+          No separate concepts to break out yet. The topic score includes every question.
+        </p>
+      ) : (
+        <ul className="feedback-concepts">
+          {detail.subtopics.map((row) => (
+            <li key={row.name} className={`feedback-concept feedback-concept--${row.band}`}>
+              <span className="feedback-concept__name">{row.name}</span>
+              <span className="feedback-concept__meta">
+                {row.correct_count} of {row.answered_count} correct
+              </span>
+              <span className="badge">{bandLabel(row.band)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}

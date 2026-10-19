@@ -76,6 +76,14 @@ export function isAmbientBackdropPath(pathname: string): boolean {
   if (matchPath({ path: "/subjects/:subjectId/feedback", end: true }, pathname)) return true;
   if (
     matchPath(
+      { path: "/subjects/:subjectId/feedback/topics/:topicId", end: true },
+      pathname,
+    )
+  ) {
+    return true;
+  }
+  if (
+    matchPath(
       { path: "/subjects/:subjectId/subtopics/:subtopicId/lesson", end: false },
       pathname,
     )

@@ -1,5 +1,26 @@
 import { apiRequest } from "./client";
-import type { FeedbackHighlights, GoalOut, SubjectFeedbackDashboard } from "./types";
+import type {
+  FeedbackHighlights,
+  FeedbackOverview,
+  FeedbackSubjectDetail,
+  FeedbackTopicDetail,
+  GoalOut,
+  SubjectFeedbackDashboard,
+} from "./types";
+
+export async function getFeedbackOverview(): Promise<FeedbackOverview> {
+  return apiRequest<FeedbackOverview>("/me/feedback");
+}
+
+export async function getFeedbackSubject(subjectId: string): Promise<FeedbackSubjectDetail> {
+  return apiRequest<FeedbackSubjectDetail>(
+    `/me/feedback/subjects/${encodeURIComponent(subjectId)}`,
+  );
+}
+
+export async function getFeedbackTopic(topicId: string): Promise<FeedbackTopicDetail> {
+  return apiRequest<FeedbackTopicDetail>(`/me/feedback/topics/${encodeURIComponent(topicId)}`);
+}
 
 export async function getSubjectFeedback(subjectId: string): Promise<SubjectFeedbackDashboard> {
   return apiRequest<SubjectFeedbackDashboard>(`/subjects/${encodeURIComponent(subjectId)}/feedback`);
