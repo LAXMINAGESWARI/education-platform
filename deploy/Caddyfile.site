@@ -34,6 +34,22 @@
 		reverse_proxy api:8000
 	}
 
+	# The service worker and manifest must not sit in a long-lived edge cache.
+	# nginx sets the same headers; these overwrite them if an upstream default differs.
+	handle /sw.js {
+		reverse_proxy web:80 {
+			header_down Cache-Control "no-cache, max-age=0, must-revalidate"
+			header_down Content-Type "application/javascript"
+		}
+	}
+
+	handle /manifest.webmanifest {
+		reverse_proxy web:80 {
+			header_down Cache-Control "no-cache, max-age=0, must-revalidate"
+			header_down Content-Type "application/manifest+json"
+		}
+	}
+
 	handle {
 		reverse_proxy web:80
 	}
