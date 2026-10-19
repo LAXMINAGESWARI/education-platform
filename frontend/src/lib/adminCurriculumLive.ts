@@ -108,7 +108,7 @@ function mapTopic(topic: TopicNode): AdminTopic {
   return {
     id: topic.id,
     title: topic.title,
-    unitLabel: `Unit ${topic.sequence}`,
+    unitLabel: `Topic ${topic.sequence}`,
     order: topic.sequence,
     status: "published",
     hasTopicLesson: Boolean(topic.has_topic_lesson),
@@ -213,34 +213,16 @@ function publishedLessonSubtopics(topic: AdminTopic): AdminSubtopic[] {
   return topic.subtopics.filter((subtopic) => subtopic.lesson != null);
 }
 
-/** Chapter cards: published subtopic lessons, or one topic card when none exist. */
+/** One card per topic. Subtopic lessons stay on the topic page. */
 export function subjectUnitCards(subject: AdminSubject): AdminUnitCard[] {
-  const cards: AdminUnitCard[] = [];
-  for (const topic of subject.topics) {
-    const lessonUnits = publishedLessonSubtopics(topic);
-    if (lessonUnits.length > 0) {
-      for (const subtopic of lessonUnits) {
-        cards.push({
-          key: subtopic.id,
-          title: subtopic.title,
-          topicId: topic.id,
-          unitId: subtopic.id,
-          hasLesson: true,
-          quizTitle: subtopic.quiz?.title ?? topic.masteryQuiz?.title ?? null,
-        });
-      }
-      continue;
-    }
-    cards.push({
-      key: topic.id,
-      title: topic.title,
-      topicId: topic.id,
-      unitId: null,
-      hasLesson: topic.hasTopicLesson,
-      quizTitle: topic.masteryQuiz?.title ?? null,
-    });
-  }
-  return cards;
+  return subject.topics.map((topic) => ({
+    key: topic.id,
+    title: topic.title,
+    topicId: topic.id,
+    unitId: null,
+    hasLesson: topic.hasTopicLesson || publishedLessonSubtopics(topic).length > 0,
+    quizTitle: topic.masteryQuiz?.title ?? null,
+  }));
 }
 
 /** Parent topics with a published topic lesson and published subtopic lesson cards. */

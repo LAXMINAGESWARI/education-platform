@@ -73,9 +73,8 @@ describe("subjectMaterial topic lesson helpers", () => {
       subtopics: [],
       overall_quiz: null,
     };
-    expect(subjectUnitEntries([parent, leaf]).map((entry) => entry.subtopic?.title ?? entry.topic.title)).toEqual([
-      "Rectangles",
-      "Square Numbers",
+    expect(subjectUnitEntries([parent, leaf]).map((entry) => entry.topic.title)).toEqual([
+      "Approved Materials",
       "Fractions",
     ]);
     expect(subjectTopicLessonTopics([parent, leaf]).map((topic) => topic.title)).toEqual([
@@ -149,8 +148,8 @@ describe("subjectMaterial topic lesson helpers", () => {
         },
       ],
     };
-    expect(subjectUnitEntries([mixed]).map((entry) => entry.subtopic?.title ?? entry.topic.title)).toEqual([
-      "Rectangles",
+    expect(subjectUnitEntries([mixed]).map((entry) => entry.topic.title)).toEqual([
+      "Approved Materials",
     ]);
     expect(subjectTopicLessonTopics([mixed]).map((topic) => topic.title)).toEqual(["Approved Materials"]);
   });
@@ -172,14 +171,13 @@ describe("subjectMaterial topic lesson helpers", () => {
     expect(overallQuizGate(topic)).toBe("topic_lesson");
     const copy = overallQuizCopy(topic);
     expect(copy.eyebrow).toBe("From the topic lesson");
-    expect(copy.body).toMatch(/topic lesson is published/i);
-    expect(copy.body).not.toMatch(/complete the lesson first/i);
+    expect(copy.body).toMatch(/topic lesson is complete/i);
     expect(copy.body).not.toMatch(/every unit quiz/i);
   });
 
   it("keeps the seeded pass-all-subtopic-quizzes gate without a topic lesson", () => {
     expect(overallQuizGate(baseTopic)).toBe("subtopic_quizzes");
-    expect(overallQuizCopy(baseTopic).eyebrow).toBe("After all units");
-    expect(overallQuizCopy(baseTopic).body).toMatch(/every unit quiz/i);
+    expect(overallQuizCopy(baseTopic).eyebrow).toBe("After subtopic quizzes");
+    expect(overallQuizCopy(baseTopic).body).toMatch(/every subtopic quiz/i);
   });
 });

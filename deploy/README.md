@@ -371,6 +371,20 @@ A quiet log after that means the queue is empty, not that the process stopped.
 docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml ps
 ```
 
+`deploy/migrate.sh` writes a timestamped custom-format dump before it promotes
+synthetic Core topics. The migrate service mounts `${BACKUP_DIR:-./backups}`
+(relative to this directory) at `/backups` in the container. A failed dump
+stops the migration. The file name is `education-YYYYmmddTHHMMSSZ.dump`.
+
+Restore that file the same way as a manual dump, from the host directory that
+holds it:
+
+```bash
+docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' \
+  < deploy/backups/education-YYYYmmddTHHMMSSZ.dump
+```
+
 ## Back up the database
 
 ```bash

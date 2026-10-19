@@ -48,7 +48,7 @@ export function AtRiskDismissDialog({ flag, busy, onCancel, onConfirm }: AtRiskD
             rows={3}
             value={note}
             onChange={(event) => setNote(event.target.value)}
-            placeholder="e.g. Spoke with the student; retaking the unit."
+            placeholder="e.g. Spoke with the student; retaking the topic."
             disabled={busy}
           />
         </div>

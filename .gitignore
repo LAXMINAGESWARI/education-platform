@@ -16,6 +16,10 @@ out/
 !.env.example
 !.env.prod.example
 
+# Database dumps written by deploy/migrate.sh before topic promotion
+deploy/backups/
+*.dump
+
 # Logs
 logs/
 *.log

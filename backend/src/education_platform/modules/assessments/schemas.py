@@ -118,6 +118,7 @@ class GoalOut(BaseModel):
 class SubtopicFeedback(BaseModel):
     subtopic_id: UUID
     subtopic_name: str
+    topic_id: UUID
     topic_name: str
     percent: Decimal
     question_count: int

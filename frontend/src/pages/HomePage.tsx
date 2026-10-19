@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { fetchLearningDirectory } from "../api/materials";
-import type { LearningDirectory, SubjectNode, TopicNode } from "../api/types";
+import type { LearningDirectory, SubjectNode } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { SchoolMaterialPanel } from "../components/SchoolMaterialPanel";
@@ -52,15 +52,14 @@ function subjectBlurb(subject: SubjectNode): string {
 function SubjectMaterialView({
   subjectId,
   subjectName,
-  topics,
+  subject,
 }: {
   subjectId: string;
   subjectName: string;
-  topics: TopicNode[];
+  subject: SubjectNode;
 }) {
-  const done = topics.filter((topic) => topic.progress_percent === 100).length;
-  const total = topics.length;
-  const pct = total === 0 ? 0 : Math.round(topics.reduce((sum, topic) => sum + topic.progress_percent, 0) / total);
+  const topics = subject.topics;
+  const { done, total, pct } = subjectProgress(subject);
 
   useEffect(() => {
     if (topics.length === 0) {
@@ -70,7 +69,7 @@ function SubjectMaterialView({
 
     setBackdropChrome({
       progressPercent: pct,
-      progressLabel: `Subject completion · ${pct}% · ${done}/${total} units`,
+      progressLabel: `Subject completion · ${pct}% · ${done}/${total} topics`,
       statusLabel: done === total && total > 0 ? "Complete" : "In progress",
       complete: done === total && total > 0,
     });
@@ -80,7 +79,7 @@ function SubjectMaterialView({
 
   const progressSr =
     topics.length > 0
-      ? `Subject completion · ${pct}% · ${done}/${total} units`
+      ? `Subject completion · ${pct}% · ${done}/${total} topics`
       : null;
 
   return (
@@ -150,7 +149,7 @@ export function HomePage() {
       <SubjectMaterialView
         subjectId={selected.id}
         subjectName={selected.name}
-        topics={selected.topics}
+        subject={selected}
       />
     );
   }
@@ -206,7 +205,7 @@ export function HomePage() {
                 <h2>{subject.name}</h2>
                 <p>{subjectBlurb(subject)}</p>
                 <div className="progress-label">
-                  {prog.done}/{prog.total} units complete · {prog.pct}%
+                  {prog.done}/{prog.total} topics complete · {prog.pct}%
                 </div>
                 <div
                   className={`progress ${prog.pct >= 100 ? "progress--complete" : "progress--in-progress"}`}

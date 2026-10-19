@@ -18,20 +18,9 @@ function publishedLessonSubtopics(topic: TopicNode): SubtopicNode[] {
   return topic.subtopics.filter((subtopic) => subtopic.has_lesson);
 }
 
-/** Same grain as the student Units list: published subtopic lessons, or the topic when none exist. */
+/** One card per topic. Subtopic lessons stay off the subject page. */
 export function subjectUnitEntries(topics: TopicNode[]): SubjectUnitEntry[] {
-  const entries: SubjectUnitEntry[] = [];
-  for (const topic of topics) {
-    const lessonUnits = publishedLessonSubtopics(topic);
-    if (lessonUnits.length > 0) {
-      for (const subtopic of lessonUnits) {
-        entries.push({ topic, subtopic });
-      }
-      continue;
-    }
-    entries.push({ topic, subtopic: null });
-  }
-  return entries;
+  return topics.map((topic) => ({ topic, subtopic: null }));
 }
 
 export function subjectTopicLessonTopics(topics: TopicNode[]): TopicNode[] {
@@ -45,13 +34,19 @@ export function subjectProgress(subject: SubjectNode): {
   total: number;
   pct: number;
 } {
-  const subtopics = subjectSubtopics(subject);
-  const total = subtopics.length;
-  const done = subtopics.filter((item) => item.progress_percent === 100).length;
+  if (subject.done != null && subject.total != null) {
+    return {
+      done: subject.done,
+      total: subject.total,
+      pct: subject.progress_percent,
+    };
+  }
+  const total = subject.topics.length;
+  const done = subject.topics.filter((topic) => topic.complete).length;
   return {
     done,
     total,
-    pct: total === 0 ? 0 : Math.round(subject.progress_percent),
+    pct: total === 0 ? 0 : Math.round((100 * done) / total),
   };
 }
 
@@ -100,26 +95,26 @@ export function overallQuizCopy(topic: TopicNode): OverallQuizCopy {
           ? passed
             ? "Passed · subject complete"
             : "Unlocked · ready to take"
-          : "Locked until the topic lesson is published",
+          : "Locked until the topic lesson is complete",
         body: unlocked
           ? passed
-            ? "You passed the overall topic quiz."
-            : "The topic lesson is published. You can take the overall quiz now."
-          : "The overall quiz unlocks when the topic lesson is published.",
+            ? "You passed the topic quiz."
+            : "The topic lesson is complete. You can take the topic quiz now."
+          : "The topic quiz unlocks when this lesson is marked complete.",
       };
     case "subtopic_quizzes":
       return {
-        eyebrow: "After all units",
+        eyebrow: "After subtopic quizzes",
         statusLine: unlocked
           ? passed
             ? "Passed · subject complete"
             : "Unlocked · ready to take"
-          : "Locked until every unit quiz is passed",
+          : "Locked until every subtopic quiz is passed",
         body: unlocked
           ? passed
-            ? "You passed the overall topic quiz."
-            : "All unit quizzes passed. You can take the overall subject quiz."
-          : "Finish every unit quiz to unlock this subject quiz.",
+            ? "You passed the topic quiz."
+            : "All subtopic quizzes passed. You can take the topic quiz."
+          : "Finish every subtopic quiz to unlock this topic quiz.",
       };
     default: {
       const _exhaustive: never = gate;

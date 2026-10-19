@@ -9,11 +9,13 @@ import { TopicPageRedirect } from "./TopicPageRedirect";
 
 const getTopicMaterial = vi.fn();
 const fetchLearningDirectory = vi.fn();
+const updateTopicMaterialProgress = vi.fn();
 const getGenerationRun = vi.fn();
 
 vi.mock("../api/materials", () => ({
   getTopicMaterial: (...args: unknown[]) => getTopicMaterial(...args),
   fetchLearningDirectory: (...args: unknown[]) => fetchLearningDirectory(...args),
+  updateTopicMaterialProgress: (...args: unknown[]) => updateTopicMaterialProgress(...args),
 }));
 
 vi.mock("../api/generation", () => ({
@@ -123,8 +125,10 @@ describe("TopicLessonPage", () => {
     clearTopicLessonCache();
     getTopicMaterial.mockReset();
     fetchLearningDirectory.mockReset();
+    updateTopicMaterialProgress.mockReset();
     getGenerationRun.mockReset();
     getTopicMaterial.mockResolvedValue(lessonPayload);
+    updateTopicMaterialProgress.mockResolvedValue({ status: "completed" });
     fetchLearningDirectory.mockResolvedValue(directory);
   });
 
