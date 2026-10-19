@@ -6158,6 +6158,99 @@ a.btn:disabled:hover {
   font-size: 0.95rem;
 }
 
+.feedback-metrics-section {
+  margin-top: 1.5rem;
+}
+
+.feedback-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.55rem;
+  margin: 0.4rem 0 1rem;
+}
+
+.feedback-metrics div {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.feedback-metrics dt {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.feedback-metrics dd {
+  margin: 0.15rem 0 0;
+  font-weight: 700;
+}
+
+.feedback-metrics__subhead {
+  margin: 1rem 0 0.45rem;
+  font-size: 1rem;
+}
+
+.feedback-chart {
+  margin: 0.2rem 0 0.8rem;
+}
+
+.feedback-chart figcaption {
+  margin-bottom: 0.25rem;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.feedback-chart svg {
+  width: 100%;
+  max-width: 22rem;
+  height: auto;
+}
+
+.feedback-chart rect {
+  fill: var(--accent);
+}
+
+.feedback-chart text {
+  fill: var(--ink-muted);
+  font-size: 11px;
+  font-family: var(--font-body);
+}
+
+.feedback-difficulty ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.feedback-difficulty li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.feedback-bar {
+  flex: 1 1 6rem;
+  height: 0.45rem;
+  min-width: 4.5rem;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  overflow: hidden;
+}
+
+.feedback-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
 .feedback-concepts {
   list-style: none;
   margin: 0;
@@ -6240,6 +6333,11 @@ a.btn:disabled:hover {
 .feedback-view .feedback-achievement,
 .feedback-view .feedback-engagement,
 .feedback-view .feedback-goal,
+.feedback-view .feedback-metrics,
+.feedback-view .feedback-metrics__subhead,
+.feedback-view .feedback-chart,
+.feedback-view .feedback-difficulty,
+.feedback-view .feedback-bar,
 .feedback-view .btn {
   font-family: var(--font-body);
 }

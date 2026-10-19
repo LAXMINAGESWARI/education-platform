@@ -150,6 +150,21 @@ const topic = {
   concepts_mastered: 1,
   concepts_attempted: 2,
   goal: null,
+  average_score_percent: "63.75",
+  attempt_scores: [
+    { attempt_number: 1, score_percent: "40" },
+    { attempt_number: 2, score_percent: "55" },
+    { attempt_number: 3, score_percent: "70" },
+    { attempt_number: 4, score_percent: "90" },
+  ],
+  questions_answered: 8,
+  questions_correct: 4,
+  accuracy_percent: "50",
+  time_spent_seconds: 600,
+  difficulty_accuracy: [
+    { difficulty: "easy" as const, correct_count: 2, answered_count: 2, percent: "100" },
+    { difficulty: "hard" as const, correct_count: 0, answered_count: 1, percent: "0" },
+  ],
   subtopics: [
     {
       subtopic_id: "cuboid-1",
@@ -259,14 +274,35 @@ describe("feedback hierarchy", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Score and metrics" })).toBeInTheDocument();
+    expect(screen.getByText("Attempts")).toBeInTheDocument();
+    expect(screen.getByText("Best score")).toBeInTheDocument();
+    expect(screen.getByText("Latest score")).toBeInTheDocument();
+    expect(screen.getByText("Average score")).toBeInTheDocument();
+    expect(screen.getByText("64%")).toBeInTheDocument();
+    expect(screen.getByText("Since the previous attempt")).toBeInTheDocument();
+    expect(screen.getByText("Score over attempts")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Attempt 1, 40%/ })).toBeInTheDocument();
+    expect(screen.getByText("4 of 8 correct, 50%")).toBeInTheDocument();
+    expect(screen.getByText("10 min")).toBeInTheDocument();
+    expect(screen.getByText("Easy")).toBeInTheDocument();
+    expect(screen.getByText("2 of 2 correct, 100%")).toBeInTheDocument();
+    expect(screen.getByText("Hard")).toBeInTheDocument();
+    expect(screen.getByText("0 of 1 correct, 0%")).toBeInTheDocument();
+    expect(screen.queryByText("Medium")).not.toBeInTheDocument();
     expect(screen.getByText("Cuboid")).toBeInTheDocument();
     expect(screen.getByText("Area of a polygon")).toBeInTheDocument();
+    expect(screen.getByText("1 of 4 correct, 25%")).toBeInTheDocument();
+    expect(screen.getByText("3 of 4 correct, 75%")).toBeInTheDocument();
+    const concepts = within(screen.getByRole("list", { name: "Concepts" })).getAllByRole("listitem");
+    expect(concepts[0]).toHaveTextContent("Area of a polygon");
+    expect(concepts[1]).toHaveTextContent("Cuboid");
     expect(screen.queryByText(/9\.4\.1/)).not.toBeInTheDocument();
     expect(screen.queryByText(/EXERCISE/)).not.toBeInTheDocument();
     expect(screen.getByText("Strong")).toBeInTheDocument();
     expect(screen.getByText("Needs work")).toBeInTheDocument();
     expect(
-      within(screen.getByRole("list")).queryByRole("button", { name: "Set a goal" }),
+      within(screen.getByRole("list", { name: "Concepts" })).queryByRole("button", { name: "Set a goal" }),
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Set a goal" })).toHaveLength(1);
     expect(screen.getByText("Strong on Cuboid.")).toBeInTheDocument();
@@ -305,7 +341,7 @@ describe("feedback hierarchy", () => {
       </MemoryRouter>,
     );
 
-    const ideas = await screen.findByRole("list");
+    const ideas = await screen.findByRole("list", { name: "Concepts" });
     expect(within(ideas).queryByRole("button", { name: "Set a goal" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Set a goal" }));
     await user.clear(screen.getByLabelText("Target percent for Mensuration"));
@@ -325,6 +361,47 @@ describe("feedback hierarchy", () => {
     expect(await screen.findByRole("button", { name: "Set a goal" })).toBeInTheDocument();
     expect(within(ideas).queryByRole("button")).not.toBeInTheDocument();
     expect(deleteTopicGoal).toHaveBeenCalledWith("mensuration");
+  });
+
+  it("leaves out topic metrics that have no stored data", async () => {
+    vi.mocked(getFeedbackTopic).mockResolvedValue({
+      ...topic,
+      attempt_count: 0,
+      best_score_percent: null,
+      latest_score_percent: null,
+      trend: null,
+      trend_delta: null,
+      badge: "not_attempted",
+      average_score_percent: null,
+      attempt_scores: [],
+      questions_answered: null,
+      questions_correct: null,
+      accuracy_percent: null,
+      time_spent_seconds: null,
+      difficulty_accuracy: [],
+      subtopics: [],
+      concepts_mastered: 0,
+      concepts_attempted: 0,
+    });
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback/topics/mensuration"]}>
+        <Routes>
+          <Route
+            path="/subjects/:subjectId/feedback/topics/:topicId"
+            element={<TopicFeedbackPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Score and metrics" })).toBeInTheDocument();
+    expect(screen.getByText("No quiz attempts yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Average score")).not.toBeInTheDocument();
+    expect(screen.queryByText("Time spent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Score over attempts")).not.toBeInTheDocument();
+    expect(screen.queryByText("Accuracy by difficulty")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Concepts" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
   });
 
   it("shows the engagement badge and the confidence note on the subject page", async () => {

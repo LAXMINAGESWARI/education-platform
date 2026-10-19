@@ -302,6 +302,20 @@ export type FeedbackSubtopicStrength = {
   band: FeedbackBand;
 };
 
+export type FeedbackAttemptScore = {
+  attempt_number: number;
+  score_percent: string | number;
+};
+
+export type FeedbackDifficulty = "easy" | "medium" | "hard";
+
+export type FeedbackDifficultyAccuracy = {
+  difficulty: FeedbackDifficulty;
+  correct_count: number;
+  answered_count: number;
+  percent: string | number;
+};
+
 export type FeedbackTopicDetail = {
   subject_id: string;
   subject_name: string;
@@ -320,6 +334,13 @@ export type FeedbackTopicDetail = {
   goal: GoalOut | null;
   concepts_mastered: number;
   concepts_attempted: number;
+  average_score_percent: string | number | null;
+  attempt_scores: FeedbackAttemptScore[];
+  questions_answered: number | null;
+  questions_correct: number | null;
+  accuracy_percent: string | number | null;
+  time_spent_seconds: number | null;
+  difficulty_accuracy: FeedbackDifficultyAccuracy[];
 };
 
 export type SubjectFeedbackDashboard = {

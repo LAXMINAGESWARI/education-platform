@@ -14,6 +14,17 @@ export function focusSentence(gapPercent: number, topicName: string): string {
   return `${gapPercent}% to go to reach your goal on ${topicName}.`;
 }
 
+/** Minutes from a stored duration. Missing durations stay off the page. */
+export function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return "Under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (rest === 0) return `${hours} h`;
+  return `${hours} h ${rest} min`;
+}
+
 export function formatScore(value: string | number | null | undefined): string {
   const number = scoreNumber(value);
   if (number === null) return "Not attempted";

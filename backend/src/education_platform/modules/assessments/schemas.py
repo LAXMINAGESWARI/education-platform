@@ -277,6 +277,18 @@ class FeedbackSubtopicStrength(BaseModel):
     band: Literal["strong", "okay", "needs_work"]
 
 
+class FeedbackAttemptScore(BaseModel):
+    attempt_number: int
+    score_percent: Decimal
+
+
+class FeedbackDifficultyAccuracy(BaseModel):
+    difficulty: Literal["easy", "medium", "hard"]
+    correct_count: int
+    answered_count: int
+    percent: Decimal
+
+
 class FeedbackTopicDetail(BaseModel):
     subject_id: UUID
     subject_name: str
@@ -295,3 +307,10 @@ class FeedbackTopicDetail(BaseModel):
     goal: GoalOut | None = None
     concepts_mastered: int = 0
     concepts_attempted: int = 0
+    average_score_percent: Decimal | None = None
+    attempt_scores: list[FeedbackAttemptScore] = Field(default_factory=list)
+    questions_answered: int | None = None
+    questions_correct: int | None = None
+    accuracy_percent: Decimal | None = None
+    time_spent_seconds: int | None = None
+    difficulty_accuracy: list[FeedbackDifficultyAccuracy] = Field(default_factory=list)

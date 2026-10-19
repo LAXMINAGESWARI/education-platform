@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { attemptBadge, focusSentence, formatScore, formatTrend } from "./feedbackHierarchy";
+import { attemptBadge, focusSentence, formatDuration, formatScore, formatTrend } from "./feedbackHierarchy";
 
 describe("feedback hierarchy display", () => {
   it("says not attempted instead of 0%", () => {
@@ -11,6 +11,13 @@ describe("feedback hierarchy display", () => {
     expect(formatTrend("declining", "-100")).toBe("Down 100 points since the previous attempt");
     expect(formatTrend("improving", "0")).toBe("No change since the previous attempt");
     expect(formatTrend(null, "100")).toBeNull();
+  });
+
+  it("turns a stored duration into minutes and leaves sub-minute attempts short", () => {
+    expect(formatDuration(600)).toBe("10 min");
+    expect(formatDuration(30)).toBe("Under a minute");
+    expect(formatDuration(90)).toBe("1 min");
+    expect(formatDuration(5400)).toBe("1 h 30 min");
   });
 
   it("says just only when the topic goal is 10 points away or closer", () => {

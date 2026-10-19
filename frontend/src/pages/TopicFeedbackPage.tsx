@@ -6,7 +6,8 @@ import type { FeedbackTopicDetail, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
 import { GoalSection, Milestone } from "../components/FeedbackExtras";
-import { attemptBadge, bandLabel, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { ScoreMetrics } from "../components/ScoreMetrics";
+import { attemptBadge, formatScore, formatTrend } from "../lib/feedbackHierarchy";
 
 export function TopicFeedbackPage() {
   const { subjectId = "", topicId = "" } = useParams();
@@ -103,24 +104,7 @@ export function TopicFeedbackPage() {
         </div>
       </section>
 
-      <h2 className="section-title">Ideas in this topic</h2>
-      {detail.subtopics.length === 0 ? (
-        <p className="progress-label">
-          No separate concepts to break out yet. The topic score includes every question.
-        </p>
-      ) : (
-        <ul className="feedback-concepts">
-          {detail.subtopics.map((row) => (
-            <li key={row.subtopic_id} className={`feedback-concept feedback-concept--${row.band}`}>
-              <span className="feedback-concept__name">{row.name}</span>
-              <span className="feedback-concept__meta">
-                {row.correct_count} of {row.answered_count} correct
-              </span>
-              <span className="badge">{bandLabel(row.band)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ScoreMetrics detail={detail} />
     </div>
   );
 }
