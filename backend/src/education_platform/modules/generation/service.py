@@ -1047,13 +1047,19 @@ async def _delete_topic_rows(
 
 
 async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[QaItem]:
-    """Teacher QA table. Joins keys on purpose; student routes must not call this."""
+    """Item bank for staff review. Joins keys on purpose; student routes must not call this."""
     if run.phase not in {RunPhase.QA_REVIEW, RunPhase.PUBLISHED}:
         return []
     stored = await _load_run_row(session, run.id)
     quiz_version_id = stored.published_quiz_version_id or stored.draft_quiz_version_id
     if quiz_version_id is None:
         return []
+    title_by_subtopic = {
+        subtopic.id: subtopic.name
+        for subtopic in (
+            await session.scalars(select(Subtopic).where(Subtopic.topic_id == stored.topic_id))
+        ).all()
+    }
     items = (
         await session.scalars(
             select(QuizItem)
@@ -1101,6 +1107,8 @@ async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[Qa
                 blind_solve=blind_solve,
                 check_attempts=check_attempts,
                 check_verdict=check_verdict,
+                difficulty=version.difficulty.value if version.difficulty is not None else None,
+                subtopic_title=title_by_subtopic.get(question.subtopic_id),
             )
         )
     return out

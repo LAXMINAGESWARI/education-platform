@@ -26,61 +26,80 @@
 }
 
 .qa-review__slides {
-  display: grid;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   gap: 0.85rem;
-  min-height: 0;
+  height: auto;
+  min-height: min-content;
 }
 
-.qa-review .lesson-overview {
-  flex: none;
-  overflow: visible;
-}
-
+.qa-review .lesson-overview,
 .qa-review .lesson-overview__scroll {
+  flex: 0 0 auto;
+  height: auto;
+  min-height: min-content;
   overflow: visible;
-  flex: none;
 }
 
 .qa-review .lesson-quiz-panel {
   min-height: 100%;
 }
 
-.qa-review__table-wrap {
-  overflow-x: auto;
-  width: 100%;
+.quiz-item-cards {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
 }
 
-.qa-review__table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 0.9rem;
-}
-
-.qa-review__table th,
-.qa-review__table td {
-  text-align: left;
-  vertical-align: top;
-  padding: 0.55rem 0.7rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.qa-review__table th {
-  font-size: 0.78rem;
-  font-weight: 650;
-  color: var(--ink-muted);
-  white-space: nowrap;
-}
-
-.qa-review__bloom {
-  display: inline-block;
-  font-size: 0.78rem;
-  font-weight: 650;
-  text-transform: capitalize;
-}
-
-.qa-review__misconceptions {
+.quiz-item-cards__list {
+  display: grid;
+  gap: 0.75rem;
   margin: 0;
-  max-width: 12rem;
+  padding: 0;
+  list-style: none;
+}
+
+.quiz-item-card {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.quiz-item-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+}
+
+.quiz-item-card__number {
+  font-weight: 700;
+}
+
+.quiz-item-card__chip {
+  font-size: 0.75rem;
+  font-weight: 650;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+
+.quiz-item-card__prompt,
+.quiz-item-card__explanation {
+  margin: 0;
+  min-width: 0;
+}
+
+.quiz-item-card__correct {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--success);
 }
 
 .qa-review__disputed {

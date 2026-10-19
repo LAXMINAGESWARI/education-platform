@@ -827,6 +827,110 @@ export type GenerationQaItem = {
   blind_answer?: string | null;
   check_attempts?: number | null;
   check_verdict?: string | null;
+  difficulty?: string | null;
+  subtopic_title?: string | null;
+};
+
+export type GenerationStepId =
+  | "indexing"
+  | "outlining"
+  | "outline_review"
+  | "lesson"
+  | "items"
+  | "ready";
+
+export type GenerationStepStatus = "complete" | "current" | "pending" | "failed";
+
+export type GenerationStepTiming = {
+  step: GenerationStepId;
+  label: string;
+  status: GenerationStepStatus;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error: string | null;
+  available: boolean;
+  hint: string | null;
+};
+
+export type GenerationChunkPreview = {
+  ordinal: number;
+  page_number: number | null;
+  section_heading: string | null;
+  preview: string;
+};
+
+export type GenerationStepDetail = {
+  timing: GenerationStepTiming;
+  indexing: {
+    page_count: number | null;
+    chunk_count: number;
+    chunks: GenerationChunkPreview[];
+    truncated: boolean;
+  } | null;
+  outline: {
+    target_item_count: number;
+    nodes: Array<{
+      id: string;
+      parent_id: string | null;
+      title: string;
+      sequence: number;
+      quota: number | null;
+      proposed_outcomes: string[];
+      chunks: GenerationChunkPreview[];
+    }>;
+    unmapped_chunks: GenerationChunkPreview[];
+  } | null;
+  outline_review: {
+    rounds: Array<{
+      id: string;
+      stage: string;
+      number: number;
+      opened_at: string;
+      sealed_at: string | null;
+      decisions: Array<{ reviewer: string; verdict: string }>;
+      comments: Array<{
+        author: string;
+        kind: string;
+        field: string;
+        comment: string;
+        target_title: string | null;
+      }>;
+      closure_action: string | null;
+      closed_by: string | null;
+      rationale: string | null;
+    }>;
+  } | null;
+  lesson: {
+    markdown: string | null;
+    published_lesson_version_id: string | null;
+  } | null;
+  items: {
+    count: number;
+    difficulty_mix: { easy: number; medium: number; hard: number; unlabeled: number };
+    bloom_mix: {
+      remember: number;
+      understand: number;
+      apply: number;
+      analyze: number;
+      unlabeled: number;
+    };
+    subtopic_counts: Array<{ subtopic_id: string; title: string; count: number }>;
+    passed: number | null;
+    fixed_on_retry: number | null;
+    dropped: number | null;
+    key_disputed: number;
+    items: GenerationQaItem[];
+  } | null;
+  ready: {
+    phase: string;
+    published: boolean;
+    published_at: string | null;
+    created_at: string;
+    updated_at: string;
+    lesson_version_id: string | null;
+    quiz_version_id: string | null;
+  } | null;
 };
 
 export type ItemValidationStats = {

@@ -275,7 +275,7 @@ function AdminPublishedMaterial({
         <section className="lesson-layout__main" aria-label="Published lesson">
           {main}
         </section>
-        <aside className="lesson-layout__aside" aria-label="Published quiz">
+        <aside className="lesson-layout__aside" id="published-quiz" aria-label="Published quiz">
           <AdminPublishedQuiz items={quizItems} loading={quizLoading} />
           <TopicItemStats topicId={topicId} />
         </aside>
@@ -460,6 +460,7 @@ export function AdminMaterialsTopicDetailPage() {
               <TopicGenerationUpload
                 topicId={topic.id}
                 defaultTitle={topic.title}
+                publishedHref={`/admin/materials/grades/${gradeKey}/subjects/${subjectId}/topics/${topic.id}?tab=published`}
                 onPublished={() => {
                   void reload();
                   openPublished("overview");

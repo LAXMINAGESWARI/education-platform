@@ -208,4 +208,34 @@ describe("TopicGenerationQa", () => {
     expect(screen.getByText("Dropped · 3 attempts")).toBeInTheDocument();
     expect(screen.getByText("4 passed · 1 fixed on retry · 2 dropped")).toBeInTheDocument();
   });
+
+  it("renders each question as a card with math instead of a wide table", () => {
+    render(
+      <TopicGenerationQa
+        items={[
+          item({
+            prompt: "What is the area when the side is $n^2$?",
+            misconception_labels: [],
+            subtopic_title: "Area of a polygon",
+            difficulty: "easy",
+          }),
+        ]}
+        draftLessonMarkdown="# Lesson"
+        phase="qa_review"
+        busy={false}
+        canPublish={false}
+        canReject={false}
+        onRejectSelected={vi.fn()}
+        onRequestPublish={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByText("None listed")).not.toBeInTheDocument();
+    expect(screen.getByText("Area of a polygon")).toBeInTheDocument();
+    expect(screen.getByText("Easy")).toBeInTheDocument();
+    expect(screen.getByText("Correct")).toBeInTheDocument();
+    expect(document.querySelector(".katex")).not.toBeNull();
+    expect(screen.queryByText("$n^2$")).not.toBeInTheDocument();
+  });
 });

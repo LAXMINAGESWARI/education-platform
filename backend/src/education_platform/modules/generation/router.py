@@ -37,6 +37,11 @@ from education_platform.modules.generation.schemas import (
     close_round_command,
     teacher_decision_command,
 )
+from education_platform.modules.generation.step_read import get_step_detail, list_step_timings
+from education_platform.modules.generation.step_schemas import (
+    GenerationStepDetailOut,
+    GenerationStepTimingOut,
+)
 from education_platform.modules.generation.types import (
     PATCH_OUTLINE_GONE,
     SUBTOPIC_GENERATION_GONE,
@@ -105,6 +110,35 @@ async def topic_item_stats(
     # administrator who knows another tenant's topic UUID receives answer keys.
     await service._authorised_topic(session, await scope_for(session, principal), topic_id)
     return await item_stats_for_topic(session, topic_id)
+
+
+@router.get(
+    "/admin/generation-runs/{run_id}/steps",
+    response_model=list[GenerationStepTimingOut],
+)
+async def list_generation_steps(
+    run_id: UUID,
+    principal: Principal = Depends(require_administrator),
+    session: AsyncSession = Depends(get_session),
+) -> list[GenerationStepTimingOut]:
+    scope = await scope_for(session, principal)
+    timings = await list_step_timings(session, scope, run_id)
+    return [GenerationStepTimingOut.from_domain(item) for item in timings]
+
+
+@router.get(
+    "/admin/generation-runs/{run_id}/steps/{step}",
+    response_model=GenerationStepDetailOut,
+)
+async def show_generation_step(
+    run_id: UUID,
+    step: str,
+    principal: Principal = Depends(require_administrator),
+    session: AsyncSession = Depends(get_session),
+) -> GenerationStepDetailOut:
+    scope = await scope_for(session, principal)
+    detail = await get_step_detail(session, scope, run_id, step)
+    return GenerationStepDetailOut.from_domain(detail)
 
 
 @router.post(

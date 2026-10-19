@@ -1,17 +1,15 @@
 import { useMemo, useState } from "react";
 
 import type {
-  BloomLevel,
   GenerationQaItem,
   ItemValidationStats,
   LessonMaterial,
   RunPhase,
 } from "../api/types";
 import { slidesForLessonView } from "../lib/lessonSlides";
-import { presentQuizText } from "../lib/quizText";
 import { LessonSlideFrame } from "./LessonSlideFrame";
-import { MarkdownContent } from "./MarkdownContent";
 import { PushButton } from "./PushButton";
+import { QuizItemCards } from "./QuizItemCards";
 import "./TopicGenerationQa.css";
 
 export type QaReviewPhase = Extract<RunPhase, "qa_review" | "published">;
@@ -30,53 +28,9 @@ export type TopicGenerationQaProps = {
   itemValidation?: ItemValidationStats | null;
 };
 
-function bloomLabel(bloom: BloomLevel | null | undefined): string {
-  if (bloom == null) return "Unlabeled";
-  switch (bloom) {
-    case "remember":
-      return "Remember";
-    case "understand":
-      return "Understand";
-    case "apply":
-      return "Apply";
-    case "analyze":
-      return "Analyze";
-    default: {
-      const _never: never = bloom;
-      return _never;
-    }
-  }
-}
-
-function misconceptionText(item: GenerationQaItem): string {
-  const labels = item.misconception_labels ?? [];
-  if (labels.length === 0) return "None listed";
-  return labels.join(" · ");
-}
-
-function checkBadge(item: GenerationQaItem): string | null {
-  const verdict = item.check_verdict;
-  if (verdict == null || verdict === "" || verdict === "passed") return null;
-  const attempts = item.check_attempts ?? 1;
-  if (verdict === "fixed_on_retry") return `Fixed on retry · ${attempts} attempts`;
-  if (verdict === "dropped") return `Dropped · ${attempts} attempts`;
-  return verdict;
-}
-
 function validationSummary(stats: ItemValidationStats | null | undefined): string | null {
   if (stats == null) return null;
   return `${stats.passed} passed · ${stats.fixed_on_retry} fixed on retry · ${stats.dropped} dropped`;
-}
-
-function disputedBadge(item: GenerationQaItem): string | null {
-  if (item.key_disputed !== true || item.blind_answer == null || item.blind_answer === "") {
-    return null;
-  }
-  return `Key disputed - solver chose ${item.blind_answer}`;
-}
-
-function optionEntries(options: Record<string, string>): [string, string][] {
-  return Object.entries(options).sort(([left], [right]) => left.localeCompare(right));
 }
 
 function phaseHeadline(phase: QaReviewPhase): string {
@@ -235,108 +189,15 @@ export function TopicGenerationQa({
             {sortedItems.length === 0 ? (
               <p className="lesson-toolbar__hint">No items in the draft bank yet.</p>
             ) : (
-              <div className="qa-review__table-wrap">
-                <table className="qa-review__table">
-                  <caption className="sr-only">Item bank for QA review</caption>
-                  <thead>
-                    <tr>
-                      {canReject && phase === "qa_review" ? (
-                        <th scope="col">
-                          <label className="qa-review__select">
-                            <input
-                              type="checkbox"
-                              checked={allSelected}
-                              disabled={busy}
-                              onChange={toggleAll}
-                              aria-label="Select all items"
-                            />
-                            Select
-                          </label>
-                        </th>
-                      ) : null}
-                      <th scope="col">#</th>
-                      <th scope="col">Prompt</th>
-                      <th scope="col">Bloom</th>
-                      <th scope="col">Misconceptions</th>
-                      <th scope="col">Options</th>
-                      <th scope="col">Correct</th>
-                      <th scope="col">Rationales</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedItems.map((item) => (
-                      <tr key={item.question_id}>
-                        {canReject && phase === "qa_review" ? (
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selected.has(item.question_id)}
-                              disabled={busy}
-                              onChange={() => toggle(item.question_id)}
-                              aria-label={`Select item ${item.sequence}`}
-                            />
-                          </td>
-                        ) : null}
-                        <td>{item.sequence}</td>
-                        <td>
-                          <p className="qa-review__prompt">
-                            <MarkdownContent inline>{presentQuizText(item.prompt)}</MarkdownContent>
-                          </p>
-                          {disputedBadge(item) ? (
-                            <p className="qa-review__disputed">
-                              <span className="badge badge--warn">{disputedBadge(item)}</span>
-                            </p>
-                          ) : null}
-                          {checkBadge(item) ? (
-                            <p className="qa-review__disputed">
-                              <span className="badge badge--warn">{checkBadge(item)}</span>
-                            </p>
-                          ) : null}
-                        </td>
-                        <td>
-                          <span className="qa-review__bloom">{bloomLabel(item.bloom)}</span>
-                        </td>
-                        <td>
-                          <p className="qa-review__misconceptions">{misconceptionText(item)}</p>
-                        </td>
-                        <td>
-                          <ul className="qa-review__options">
-                            {optionEntries(item.options).map(([label, text]) => (
-                              <li
-                                key={label}
-                                className={
-                                  label === item.correct_label
-                                    ? "qa-review__option--correct"
-                                    : undefined
-                                }
-                              >
-                                <span className="qa-review__key">{label}.</span>{" "}
-                                <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
-                              </li>
-                            ))}
-                          </ul>
-                        </td>
-                        <td>
-                          <strong>{item.correct_label}</strong>
-                        </td>
-                        <td>
-                          <p className="qa-review__rationale">
-                            <MarkdownContent inline>
-                              {presentQuizText(item.correct_rationale)}
-                            </MarkdownContent>
-                          </p>
-                          {optionEntries(item.distractor_rationales).map(([label, text]) => (
-                            <p key={label} className="qa-review__rationale muted">
-                              {label}:{" "}
-                              <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
-                            </p>
-                          ))}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <QuizItemCards
+                items={sortedItems}
+                canSelect={canReject && phase === "qa_review"}
+                busy={busy}
+                selected={selected}
+                allSelected={allSelected}
+                onToggle={toggle}
+                onToggleAll={toggleAll}
+              />
             )}
           </div>
         </aside>
