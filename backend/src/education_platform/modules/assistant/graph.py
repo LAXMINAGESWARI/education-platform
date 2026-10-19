@@ -11,6 +11,8 @@ from uuid import UUID
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
+from education_platform.ai_platform.gateway.api import CallContext, complete
+from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import (
     OpenRouterError,
@@ -159,7 +161,8 @@ async def injection_guard(state: GraphState, *, settings: Settings) -> GraphStat
         current.injection_blocked = False
         return _exit(current)
     try:
-        data = await chat_completion_json(
+        data = await _policy_json(
+            "policy_chat.guard",
             [
                 {
                     "role": "system",
@@ -195,7 +198,8 @@ async def question_validator(state: GraphState, *, settings: Settings) -> GraphS
         current.question_valid = True
         return _exit(current)
     try:
-        data = await chat_completion_json(
+        data = await _policy_json(
+            "policy_chat.validator",
             [
                 {
                     "role": "system",
@@ -312,7 +316,7 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
         )
 
     try:
-        content = await chat_completion(messages, settings=settings, temperature=0.2)
+        content = await _policy_answer(messages, settings=settings)
         kept_citations = citations if chunks else []
     except OpenRouterError as exc:
         content = f"The language model is temporarily unavailable ({exc}). Please try again."
@@ -324,6 +328,42 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
         citations=kept_citations,
         prompt_tokens=prompt_tokens,
     )
+
+
+async def _policy_json(
+    step: str,
+    messages: list[dict[str, str]],
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Flag off calls the legacy client with the same arguments as before."""
+    if not gateway_enabled("policy_chat", settings):
+        return await chat_completion_json(messages, settings=settings)
+    result = await complete(
+        step,
+        messages,
+        ctx=CallContext(feature="policy_chat", settings=settings),
+        response_format={"type": "json_object"},
+    )
+    if result.parsed_json is None:
+        raise OpenRouterError("Expected a JSON object from OpenRouter")
+    return result.parsed_json
+
+
+async def _policy_answer(
+    messages: list[dict[str, str]],
+    *,
+    settings: Settings,
+) -> str:
+    """Flag off calls the legacy client with the same arguments as before."""
+    if not gateway_enabled("policy_chat", settings):
+        return await chat_completion(messages, settings=settings, temperature=0.2)
+    result = await complete(
+        "policy_chat.answer",
+        messages,
+        ctx=CallContext(feature="policy_chat", settings=settings),
+    )
+    return result.text
 
 
 def _commit_answer(

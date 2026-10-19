@@ -95,6 +95,30 @@ class Settings(BaseSettings):
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
 
+    # LLM gateway. Defaults keep every caller on its existing client. Set a
+    # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.
+    ai_gateway_features: str = ""
+    ai_gateway_policy_chat: bool = False
+    ai_gateway_text_to_sql: bool = False
+    ai_gateway_generation: bool = False
+    ai_gateway_feedback: bool = False
+    ai_gateway_review_chat: bool = False
+    ai_gateway_authoring: bool = False
+    ai_gateway_timeout_chat_answer_seconds: float = 30.0
+    ai_gateway_timeout_sql_generate_seconds: float = 20.0
+    ai_gateway_timeout_guard_seconds: float = 8.0
+    ai_gateway_timeout_generation_seconds: float = 120.0
+    ai_gateway_timeout_feedback_seconds: float = 20.0
+    ai_gateway_max_retries: int = 2
+    ai_gateway_retry_base_seconds: float = 0.25
+    ai_gateway_retry_max_seconds: float = 8.0
+    ai_gateway_circuit_failure_threshold: int = 5
+    ai_gateway_circuit_cooldown_seconds: float = 30.0
+    ai_gateway_concurrency_interactive: int = 8
+    ai_gateway_concurrency_guard: int = 16
+    ai_gateway_concurrency_generation: int = 2
+    ai_gateway_concurrency_batch: int = 2
+
     @property
     def is_development(self) -> bool:
         return self.environment.lower() == "development"
