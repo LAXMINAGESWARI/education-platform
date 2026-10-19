@@ -1,0 +1,43 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "curioed.clusterName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  instances: {{ .Values.cnpg.instances }}
+  imageName: {{ .Values.cnpg.image | quote }}
+  imagePullPolicy: {{ .Values.cnpg.imagePullPolicy }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.database }}
+      owner: {{ .Values.cnpg.owner }}
+      secret:
+        name: {{ .Values.secrets.database.existingSecret }}
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+        {{- if .Values.cnpg.ownerSuperuser }}
+        - ALTER ROLE {{ .Values.cnpg.owner }} SUPERUSER
+        {{- end }}
+  postgresql:
+    parameters:
+      {{- range $key, $value := .Values.cnpg.parameters }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+  storage:
+    size: {{ .Values.cnpg.storage.size }}
+    {{- with .Values.cnpg.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.cnpg.resources | nindent 4 }}
+  managed:
+    roles:
+      - name: {{ .Values.cnpg.readerRole }}
+        ensure: present
+        login: true
+        superuser: false
+        comment: Least-privilege role used by text-to-SQL
+        passwordSecret:
+          name: {{ .Values.secrets.textToSql.existingSecret }}

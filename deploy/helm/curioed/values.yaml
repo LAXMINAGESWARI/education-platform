@@ -1,0 +1,224 @@
+# CurioEd chart values. Image tags, resource sizes, and non-secret config live
+# here. Secret values do not. Create the Secrets named below before install
+# (SOPS or kubectl). See README.md for the keys each Secret must contain.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Public hostname. Cloudflare terminates TLS. Traefik only sees HTTP.
+domain: school.example.com
+clusterDomain: cluster.local
+
+# Optional GHCR pull secret. Leave empty for a public package.
+imagePullSecrets:
+  existingSecret: ""
+
+nodeSelector: {}
+tolerations: []
+
+secrets:
+  # JWT_SECRET, TEXT_TO_SQL_DB_PASSWORD, OPENROUTER_API_KEY.
+  # OPENROUTER_API_KEY may be an empty string. The key must still exist.
+  app:
+    existingSecret: curioed-app
+    jwtSecretKey: JWT_SECRET
+    textToSqlPasswordKey: TEXT_TO_SQL_DB_PASSWORD
+    openRouterApiKeyKey: OPENROUTER_API_KEY
+  # kubernetes.io/basic-auth. username must be cnpg.owner.
+  # Password must be URL-safe (letters, digits, hyphen), same rule as Compose.
+  database:
+    existingSecret: curioed-postgres-app
+    usernameKey: username
+    passwordKey: password
+  # kubernetes.io/basic-auth for the CNPG managed role.
+  # password must equal the app Secret's TEXT_TO_SQL_DB_PASSWORD.
+  # username must equal cnpg.readerRole.
+  textToSql:
+    existingSecret: curioed-postgres-reader
+    usernameKey: username
+    passwordKey: password
+  # Key holds the remotely managed tunnel token. Same token on both replicas.
+  tunnel:
+    existingSecret: curioed-cloudflared
+    tokenKey: TUNNEL_TOKEN
+
+config:
+  environment: production
+  # JSON list. Pydantic reads CORS_ORIGINS this way.
+  corsOrigins: '["https://school.example.com"]'
+  corsOriginRegex: ""
+  openRouterBaseUrl: https://openrouter.ai/api/v1
+  openRouterModel: openai/gpt-4o-mini
+  adkModel: openrouter/openai/gpt-4o-mini
+  blindSolverModel: openai/gpt-4o
+  textToSqlUser: text_to_sql_reader
+  # Compose's example defaults this to true. The chart defaults to false so a
+  # cluster install does not build the demo school unless you opt in.
+  seedSynthetic: "false"
+  syntheticInstitution: Al Noor International
+  syntheticStudentsPerSection: "24"
+  syntheticSectionsPerGrade: "2"
+  syntheticTermWeeks: "10"
+  syntheticSeed: "20260812"
+
+# Workers and the migrate hook use this same image.
+api:
+  image:
+    repository: ghcr.io/aushakanuj/curioed-api
+    # Set to the commit SHA pushed by .github/workflows/images.yml.
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    port: 8000
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 65
+    scaleUpStabilizationSeconds: 0
+    scaleDownStabilizationSeconds: 300
+  # Paths from the live/ready health endpoints. Liveness does not touch Postgres.
+  probes:
+    livePath: /health/live
+    readyPath: /health/ready
+
+web:
+  replicas: 2
+  image:
+    repository: ghcr.io/aushakanuj/curioed-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    port: 80
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# One replica. Ingest is memory-heavy, so the limit stays at 6Gi.
+# Recreate avoids a second 6Gi pod during rollout.
+workerDocling:
+  replicas: 1
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests:
+      cpu: "1"
+      memory: 3Gi
+    limits:
+      cpu: "4"
+      memory: 6Gi
+
+# Same process as worker-docling until the app can select queues.
+# A Docling job claimed here can hit this smaller limit. See README.md.
+workerLlm:
+  replicas: 2
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1.5Gi
+
+migrate:
+  enabled: true
+  # pre-install runs before this chart's Cluster and backup PVC exist.
+  # First install: --set migrate.enabled=false, wait for CNPG, then upgrade.
+  hooks: pre-install,pre-upgrade
+  weight: "5"
+  deletePolicy: before-hook-creation,hook-succeeded
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  databaseWaitSeconds: 180
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+cloudflared:
+  replicas: 2
+  image:
+    repository: cloudflare/cloudflared
+    tag: "2026.10.1"
+    pullPolicy: IfNotPresent
+  # Dashboard public-hostname service for the tunnel. Not passed to `tunnel run`;
+  # a token tunnel reads its origin from Cloudflare.
+  origin: http://traefik.kube-system.svc.cluster.local:80
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# CloudNativePG operator is installed on the cluster, not by this chart.
+# Image: CNPG "standard" builds include pgvector. Tag verified on GHCR.
+cnpg:
+  instances: 1
+  image: ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
+  imagePullPolicy: IfNotPresent
+  database: education
+  owner: education
+  readerRole: text_to_sql_reader
+  # Compose's POSTGRES_USER is a superuser, so Alembic can CREATE EXTENSION.
+  # CNPG's owner is not. Bootstrap SQL grants SUPERUSER so the same migration
+  # can run. Applies only when the cluster is first initialized.
+  ownerSuperuser: true
+  storage:
+    size: 20Gi
+    storageClass: local-path
+  parameters:
+    max_connections: "300"
+    shared_buffers: "1536MB"
+    effective_cache_size: "4GB"
+    work_mem: "16MB"
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 6Gi
+  # Off-site Barman / Backblaze is a later phase. Leaving this false keeps
+  # object-storage credentials out of the chart. The migrate hook's pg_dump
+  # is the backup that runs before Alembic.
+  backup:
+    enabled: false
+
+persistence:
+  storageClass: local-path
+  uploads:
+    size: 20Gi
+  hfCache:
+    size: 5Gi
+  inductorCache:
+    size: 5Gi
+  backups:
+    size: 10Gi
+
+ingress:
+  # k3s Traefik HTTP entrypoint. Cloudflare has already terminated TLS.
+  entryPoint: web
+  responseHeaderTimeout: 300s
+  dialTimeout: 30s
+  idleTimeout: 300s
+  # 32MiB, matching the Caddy site body limit. Quoted so Helm does not
+  # rewrite it as a float.
+  maxRequestBodyBytes: "33554432"
+  flushInterval: 1ms
