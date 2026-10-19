@@ -12,6 +12,7 @@ from education_platform.modules.assistant.strategy import (
     ChatCitation,
     ChatTurn,
 )
+from education_platform.modules.audit.service import AuditAction, record_event
 from education_platform.modules.authorization.principal import Principal
 
 
@@ -27,7 +28,6 @@ class PolicyAssistantStrategy:
         history: tuple[ChatTurn, ...],
         message: str,
     ) -> AssistantReply:
-        del session
         if context.kind != "policy":
             raise TypeError("policy graph requires a policy context")
         result = await run_assistant_turn(
@@ -35,6 +35,22 @@ class PolicyAssistantStrategy:
             user_message=message,
             history=[{"role": turn.role, "content": turn.content} for turn in history],
         )
+        if result.get("injection_blocked") or result.get("question_valid") is False:
+            await record_event(
+                session,
+                institution_id=principal.institution_id,
+                actor_user_id=principal.user_id,
+                event_type=AuditAction.ASSISTANT_REFUSED,
+                entity_type="policy_chat",
+                payload={
+                    "surface": "policy",
+                    "injection_blocked": bool(result.get("injection_blocked")),
+                    "question_valid": result.get("question_valid"),
+                    "injection_probability": result.get("injection_probability"),
+                    "scope_probability": result.get("scope_probability"),
+                    "message_preview": message[:160],
+                },
+            )
         citations: list[ChatCitation] = []
         for item in result.get("citations") or []:
             if not isinstance(item, dict):

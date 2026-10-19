@@ -1,4 +1,4 @@
-"""Run the labelled chat-guard fixture live against Jev. Do not call this from pytest."""
+"""Compare Jev with the previous GPT guard classifiers. Do not call this from pytest."""
 
 from __future__ import annotations
 

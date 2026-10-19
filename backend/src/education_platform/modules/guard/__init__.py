@@ -1,1 +1,1 @@
-"""Prompt-injection and abuse guard for chat surfaces that send free text to an LLM."""
+"""Shared Jev client for the existing assistant guard nodes."""

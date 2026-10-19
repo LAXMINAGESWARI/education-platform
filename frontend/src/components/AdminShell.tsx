@@ -17,7 +17,6 @@ const NAV_ITEMS = [
   { to: "/admin/documents", label: "Documents", short: "D" },
   { to: "/admin/policy", label: "Policy assistant", short: "P" },
   { to: "/admin/at-risk", label: "At-risk flags", short: "!" },
-  { to: "/admin/guard", label: "Guard log", short: "G" },
 ] as const;
 
 function readCollapsed(): boolean {

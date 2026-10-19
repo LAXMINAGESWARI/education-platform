@@ -60,13 +60,16 @@ a node that never touches that check at all.
 
 from __future__ import annotations
 
-import json
-from typing import Final
-
-from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Any, Final
 
 from education_platform.core.config import get_settings
-from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion_json
+from education_platform.modules.guard.classifier import (
+    DATA_OFF_TOPIC,
+    classify_noul,
+    guard_state,
+    is_positive,
+)
+from education_platform.modules.guard.jev_client import JevError
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
     TextToSQLState,
@@ -81,28 +84,6 @@ _GUARD_UNAVAILABLE_REPLY: Final[str] = (
     "This request's safety check is unavailable right now — please try again shortly."
 )
 
-# Written at the same style/quality as injection_guard's own prompt -- measured clean
-# (8/8 hit rate, 0/10 false positives on legitimate questions, including the exact
-# "What subject do I teach?" phrasing the combined prompt failed on) before this node
-# was built. See this module's own docstring for the full comparison.
-_CLASSIFIER_SYSTEM_PROMPT: Final[str] = (
-    "You are a topic-relevance classifier in front of a text-to-SQL data assistant for "
-    'a school. Return JSON {"off_topic": true|false, "reason": "..."}. Set "off_topic" '
-    "for a question that has nothing to do with a school's students, grades, "
-    "attendance, or curriculum data at all (e.g. the weather, general trivia, writing a "
-    'poem, unrelated coding help). Do not set "off_topic" for a question that is '
-    "merely blunt, broad, vague, or oddly phrased but still about school data — a "
-    "genuinely ambiguous in-domain question should not be flagged. Default to false "
-    "when in doubt."
-)
-
-
-class _OffTopicClassifierResult(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    off_topic: bool
-    reason: str = ""
-
 
 async def question_validator(state: TextToSQLState) -> TextToSQLState:
     question = state.get("question") or ""
@@ -113,25 +94,29 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
         return {**state}
 
     try:
-        data = await chat_completion_json(
-            [
-                {"role": "system", "content": _CLASSIFIER_SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
+        probability = await classify_noul(
+            state=guard_state(question),
+            question=DATA_OFF_TOPIC,
             settings=settings,
         )
-        classified = _OffTopicClassifierResult.model_validate(data)
-    except (OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
+    except JevError:
         # Fail closed under this node's own category -- see module docstring.
         return {
             **state,
+            "audit_entry": {**(state.get("audit_entry") or {}), "guard_stage": "jev_error"},
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
         }
 
-    if classified.off_topic:
+    audit: dict[str, Any] = {
+        **(state.get("audit_entry") or {}),
+        "guard_stage": "jev",
+        "off_topic_probability": probability,
+    }
+    if is_positive(probability, settings):
         return {
             **state,
+            "audit_entry": audit,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
 
-    return {**state}
+    return {**state, "audit_entry": audit}

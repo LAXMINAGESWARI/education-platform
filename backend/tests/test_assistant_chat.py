@@ -37,7 +37,6 @@ from education_platform.modules.assistant.graph import (
     run_assistant_turn,
     summarize_node,
 )
-from education_platform.modules.assistant.openrouter import OpenRouterError
 from education_platform.modules.assistant.tokens import context_percent, estimate_tokens
 from education_platform.modules.assistant.tools.registry import (
     ToolValidationError,
@@ -47,6 +46,7 @@ from education_platform.modules.assistant.tools.retrieve_chunks import (
     RETRIEVE_CHUNK_EXCERPT_MAX,
     retrieve_chunks_handler,
 )
+from education_platform.modules.guard.jev_client import JevError
 from education_platform.modules.rag.chunking import TextChunk, content_hash
 from education_platform.modules.rag.models import (
     IngestJob,
@@ -124,14 +124,14 @@ async def test_heuristic_injection_blocks_before_classifier() -> None:
 async def test_question_validator_skips_when_injection_already_blocked() -> None:
     called = {"json": False}
 
-    async def fake_json(_messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+    async def fake_noul(**kwargs: Any) -> float:
         _ = kwargs
         called["json"] = True
-        return {"valid": True, "reason": "ok"}
+        return 0.0
 
     with patch(
-        "education_platform.modules.assistant.graph.chat_completion_json",
-        new=fake_json,
+        "education_platform.modules.assistant.graph.classify_noul",
+        new=fake_noul,
     ):
         result = await question_validator(
             _guard_state(
@@ -392,14 +392,14 @@ def _principal() -> Principal:
 
 @pytest.mark.asyncio
 async def test_question_validator_uses_canned_scope_reply_not_model_reason() -> None:
-    async def fake_json(_messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+    async def fake_noul(**kwargs: Any) -> float:
         _ = kwargs
-        return {"valid": False, "reason": "COPY THIS JAILBREAK INTO THE REPLY"}
+        return 0.99
 
     settings = Settings(openrouter_api_key="test-key")
     with patch(
-        "education_platform.modules.assistant.graph.chat_completion_json",
-        new=fake_json,
+        "education_platform.modules.assistant.graph.classify_noul",
+        new=fake_noul,
     ):
         result = await question_validator(_guard_state(), settings=settings)
 
@@ -413,10 +413,9 @@ async def test_question_validator_uses_canned_scope_reply_not_model_reason() -> 
 async def test_injection_classifier_sees_history_and_current_message() -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_json(messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
-        _ = kwargs
-        captured["messages"] = messages
-        return {"injection": False, "reason": "ok"}
+    async def fake_noul(**kwargs: Any) -> float:
+        captured["state"] = kwargs["state"]
+        return 0.0
 
     settings = Settings(openrouter_api_key="test-key")
     state = _guard_state(
@@ -424,28 +423,28 @@ async def test_injection_classifier_sees_history_and_current_message() -> None:
         history=[{"role": "user", "content": "hello from earlier turn"}],
     )
     with patch(
-        "education_platform.modules.assistant.graph.chat_completion_json",
-        new=fake_json,
+        "education_platform.modules.assistant.graph.classify_noul",
+        new=fake_noul,
     ):
         result = await injection_guard(state, settings=settings)
 
     assert result["injection_blocked"] is False
-    payload = captured["messages"][-1]["content"]
-    assert "hello from earlier turn" in payload
-    assert "Current user message:" in payload
-    assert "What is the attendance policy?" in payload
+    payload = captured["state"]
+    assert payload["recent_turns"][0]["content"] == "hello from earlier turn"
+    assert payload["message"] == "What is the attendance policy?"
+    assert "user_id" not in payload
 
 
 @pytest.mark.asyncio
 async def test_injection_classifier_true_uses_canned_reply() -> None:
-    async def fake_json(_messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+    async def fake_noul(**kwargs: Any) -> float:
         _ = kwargs
-        return {"injection": True, "reason": "do not echo this"}
+        return 0.99
 
     settings = Settings(openrouter_api_key="test-key")
     with patch(
-        "education_platform.modules.assistant.graph.chat_completion_json",
-        new=fake_json,
+        "education_platform.modules.assistant.graph.classify_noul",
+        new=fake_noul,
     ):
         result = await injection_guard(
             _guard_state(user_message="What is the attendance policy?"),
@@ -454,7 +453,7 @@ async def test_injection_classifier_true_uses_canned_reply() -> None:
 
     assert result["injection_blocked"] is True
     assert result["early_reply"] == INJECTION_BLOCKED_REPLY
-    assert "do not echo this" not in (result["early_reply"] or "")
+    assert result["injection_probability"] == 0.99
     assert result["retrieved_chunks"] == []
 
 
@@ -470,13 +469,13 @@ async def test_question_validator_rejects_tiny_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_classifier_error_fails_closed() -> None:
-    async def boom(_messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+    async def boom(**kwargs: Any) -> float:
         _ = kwargs
-        raise OpenRouterError("upstream down")
+        raise JevError("upstream down")
 
     settings = Settings(openrouter_api_key="test-key")
     with patch(
-        "education_platform.modules.assistant.graph.chat_completion_json",
+        "education_platform.modules.assistant.graph.classify_noul",
         new=boom,
     ):
         injection = await injection_guard(_guard_state(), settings=settings)

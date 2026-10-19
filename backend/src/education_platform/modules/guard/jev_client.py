@@ -135,8 +135,7 @@ async def post_decisions(
 ) -> DecisionsResponse:
     """One Decisions API call. Times out around ``jev_timeout_seconds`` and retries once.
 
-    HTTP 402 (credits exhausted) is not retried. The guard treats every ``JevError``
-    as fail-open.
+    HTTP 402 (credits exhausted) is not retried. Callers choose fail-open or fail-closed.
     """
     cfg = settings or get_settings()
     if not cfg.openrouter_configured or not cfg.openrouter_api_key:

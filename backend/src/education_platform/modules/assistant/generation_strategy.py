@@ -9,7 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from education_platform.core.config import get_settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import OpenRouterError, chat_completion_json
 from education_platform.modules.assistant.strategy import (
     AssistantContext,
@@ -22,6 +22,7 @@ from education_platform.modules.assistant.tools.retrieve_run_chunks import (
     RunChunk,
     retrieve_run_chunks,
 )
+from education_platform.modules.audit.service import AuditAction, record_event
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.generation.models import ContentGenerationRun, GenerationRevision
 from education_platform.modules.generation.revisions import (
@@ -47,7 +48,13 @@ from education_platform.modules.generation.types import (
     QuizItemTarget,
     ReviewTarget,
 )
-from education_platform.modules.guard.reminder import with_hardened_reminder
+from education_platform.modules.guard.classifier import (
+    REVIEW_INJECTION,
+    classify_noul,
+    guard_state,
+    is_positive,
+)
+from education_platform.modules.guard.jev_client import JevError
 
 _INJECTION_PATTERNS = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instructions|"
@@ -58,6 +65,12 @@ _INJECTION_PATTERNS = re.compile(
 
 INJECTION_BLOCKED_REPLY = (
     "I can't process that request. Ask about this frozen outline, lesson, or quiz."
+)
+# This surface previously had only the regex. The Jev stage uses the same
+# fail-open-when-unconfigured / fail-closed-on-error rule as the policy and
+# text-to-SQL guards: a configured check that errors is not skipped.
+GUARD_UNAVAILABLE_REPLY = (
+    "This review assistant's safety check is unavailable. Please try again shortly."
 )
 REFUSAL_REPLY = (
     "Ask a concrete question about this generation review so I can explain the "
@@ -77,6 +90,42 @@ _SYSTEM = (
 )
 
 
+async def _record_refusal(session: AsyncSession, principal: Principal, message: str) -> None:
+    await record_event(
+        session,
+        institution_id=principal.institution_id,
+        actor_user_id=principal.user_id,
+        event_type=AuditAction.ASSISTANT_REFUSED,
+        entity_type="generation_review",
+        payload={"surface": "generation_review", "message_preview": message[:160]},
+    )
+
+
+async def screen_review_message(
+    message: str,
+    history: tuple[ChatTurn, ...],
+    settings: Settings,
+) -> str | None:
+    """Jev stage after the regex has already missed. None means continue.
+
+    Unconfigured Jev fails open. A Jev error fails closed, matching the policy
+    and text-to-SQL guards. This surface previously stopped at the regex.
+    """
+    if not settings.openrouter_configured:
+        return None
+    try:
+        probability = await classify_noul(
+            state=guard_state(message, [(turn.role, turn.content) for turn in history]),
+            question=REVIEW_INJECTION,
+            settings=settings,
+        )
+    except JevError:
+        return GUARD_UNAVAILABLE_REPLY
+    if is_positive(probability, settings):
+        return INJECTION_BLOCKED_REPLY
+    return None
+
+
 class GenerationReviewStrategy:
     kind = AssistantKind.GENERATION_REVIEW
 
@@ -89,16 +138,20 @@ class GenerationReviewStrategy:
         history: tuple[ChatTurn, ...],
         message: str,
     ) -> AssistantReply:
-        del principal
         if context.kind != "generation_review":
             raise TypeError("generation review graph requires a generation_review context")
         text = message.strip()
         if _INJECTION_PATTERNS.search(text):
+            await _record_refusal(session, principal, text)
             return AssistantReply(
                 content=INJECTION_BLOCKED_REPLY, citations=(), draft_change_request=None
             )
         if len(text) < 3:
             return AssistantReply(content=REFUSAL_REPLY, citations=(), draft_change_request=None)
+        refusal = await screen_review_message(text, history, get_settings())
+        if refusal is not None:
+            await _record_refusal(session, principal, text)
+            return AssistantReply(content=refusal, citations=(), draft_change_request=None)
 
         run = await session.get(ContentGenerationRun, context.run_id)
         if run is None:
@@ -334,9 +387,7 @@ def _llm_messages(
     ]
     evidence = "\n\n".join(evidence_blocks) if evidence_blocks else "(no intake chunks)"
     target_json = _target_json(target)
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": with_hardened_reminder(_SYSTEM)}
-    ]
+    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM}]
     for turn in history[-_HISTORY_TURNS:]:
         messages.append({"role": turn.role, "content": turn.content})
     messages.append(

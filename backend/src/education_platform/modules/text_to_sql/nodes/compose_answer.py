@@ -144,7 +144,6 @@ from sqlglot.errors import SqlglotError
 
 from education_platform.core.config import get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion
-from education_platform.modules.guard.reminder import with_hardened_reminder
 from education_platform.modules.text_to_sql.nodes.execute_sql import ROW_CAP, is_zero_result
 from education_platform.modules.text_to_sql.nodes.sanity_check import PERCENTAGE_COLUMNS
 from education_platform.modules.text_to_sql.state import TextToSQLState
@@ -515,7 +514,7 @@ def _build_messages(question: str, rows: list[dict[str, Any]]) -> list[dict[str,
         f"Query result rows ({len(rows)} total):\n{_serialize_rows_for_prompt(rows)}"
     )
     return [
-        {"role": "system", "content": with_hardened_reminder(_SYSTEM_PROMPT)},
+        {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 

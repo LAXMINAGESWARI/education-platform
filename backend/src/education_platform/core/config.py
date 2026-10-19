@@ -59,8 +59,8 @@ class Settings(BaseSettings):
     jev_model: str = "typesafe/jev-1.14"
     jev_decisions_url: str = ""
     jev_timeout_seconds: float = 5.0
+    # Noul probability that replaces the old classifier's boolean ``true``.
     jev_block_threshold: float = 0.85
-    jev_flag_threshold: float = 0.5
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300

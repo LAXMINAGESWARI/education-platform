@@ -20,7 +20,6 @@ from education_platform.modules.auth.router import router as auth_router
 from education_platform.modules.authoring.router import router as authoring_router
 from education_platform.modules.engagement.router import router as engagement_router
 from education_platform.modules.generation.router import router as generation_router
-from education_platform.modules.guard.router import router as guard_router
 from education_platform.modules.insights.router import router as insights_router
 from education_platform.modules.materials.router import router as materials_router
 from education_platform.modules.materials.seed import seed_approved_materials
@@ -78,7 +77,6 @@ app.include_router(insights_router, prefix=settings.api_v1_prefix)
 app.include_router(authoring_router, prefix=settings.api_v1_prefix)
 app.include_router(text_to_sql_router, prefix=settings.api_v1_prefix)
 app.include_router(generation_router, prefix=settings.api_v1_prefix)
-app.include_router(guard_router, prefix=settings.api_v1_prefix)
 app.include_router(progress_router, prefix=settings.api_v1_prefix)
 app.include_router(at_risk_router, prefix=settings.api_v1_prefix)
 
