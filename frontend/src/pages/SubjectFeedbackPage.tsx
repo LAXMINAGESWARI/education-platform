@@ -121,7 +121,7 @@ export function SubjectFeedbackPage() {
   const trend = formatTrend(detail.trend, detail.trend_delta);
 
   return (
-    <>
+    <div className="feedback-view">
       <Crumbs
         parts={[
           { label: "Feedback", to: "/feedback" },
@@ -156,6 +156,6 @@ export function SubjectFeedbackPage() {
       </div>
 
       <SelfCheck subjectId={subjectId} subjectName={detail.subject_name} initial={confidence} />
-    </>
+    </div>
   );
 }

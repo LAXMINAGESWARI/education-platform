@@ -6221,3 +6221,20 @@ a.btn:disabled:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* Feedback copy uses the body face. Kickers, badges, and breadcrumbs are mono
+   everywhere else; headings keep the styles they already have. */
+.main__inner:has(.feedback-view) .crumbs {
+  font-family: var(--font-body);
+}
+
+.feedback-view .kicker,
+.feedback-view .progress-label,
+.feedback-view .feedback-summary__kicker,
+.feedback-view .badge,
+.feedback-view .feedback-concept__name,
+.feedback-view .feedback-concept__meta,
+.feedback-view .feedback-self-check,
+.feedback-view .btn {
+  font-family: var(--font-body);
+}

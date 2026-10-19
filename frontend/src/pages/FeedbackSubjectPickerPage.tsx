@@ -57,7 +57,7 @@ export function FeedbackSubjectPickerPage() {
   }, []);
 
   return (
-    <>
+    <div className="feedback-view">
       <Crumbs parts={[{ label: "Feedback" }]} />
       <header className="page-head">
         <h1>Feedback</h1>
@@ -96,6 +96,6 @@ export function FeedbackSubjectPickerPage() {
           )}
         </>
       )}
-    </>
+    </div>
   );
 }
