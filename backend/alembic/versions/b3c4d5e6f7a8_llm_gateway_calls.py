@@ -1,7 +1,7 @@
 """Meter LLM gateway calls without storing prompts or responses.
 
 Revision ID: b3c4d5e6f7a8
-Revises: c5d6e7f8a9b0
+Revises: d6e7f8a9b0c1
 Create Date: 2026-10-19 21:40:00.000000
 
 One append-only row per gateway call. The table is new, so upgrade does not
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str | Sequence[str] | None = "b3c4d5e6f7a8"
-down_revision: str | Sequence[str] | None = "c5d6e7f8a9b0"
+down_revision: str | Sequence[str] | None = "d6e7f8a9b0c1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
