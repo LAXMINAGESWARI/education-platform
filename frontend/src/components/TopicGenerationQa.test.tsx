@@ -177,10 +177,35 @@ describe("TopicGenerationQa", () => {
     );
 
     expect(screen.getByText("Key disputed - solver chose C")).toBeInTheDocument();
+    expect(screen.queryByText(/Dropped/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/Key disputed/)).toHaveLength(1);
     expect(screen.queryByText("Key disputed - solver chose A")).not.toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: "Select item 2" }));
     await user.click(screen.getByRole("button", { name: "Reject selected items" }));
     expect(onRejectSelected).toHaveBeenCalledWith(["q-2"]);
+  });
+
+  it("shows dropped items and the run validation counts", () => {
+    render(
+      <TopicGenerationQa
+        items={[
+          item({
+            check_verdict: "dropped",
+            check_attempts: 3,
+          }),
+        ]}
+        draftLessonMarkdown="# Lesson"
+        phase="qa_review"
+        busy={false}
+        canPublish={false}
+        canReject={false}
+        onRejectSelected={vi.fn()}
+        onRequestPublish={vi.fn()}
+        itemValidation={{ passed: 4, fixed_on_retry: 1, dropped: 2 }}
+      />,
+    );
+
+    expect(screen.getByText("Dropped · 3 attempts")).toBeInTheDocument();
+    expect(screen.getByText("4 passed · 1 fixed on retry · 2 dropped")).toBeInTheDocument();
   });
 });

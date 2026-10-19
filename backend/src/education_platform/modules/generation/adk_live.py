@@ -614,6 +614,7 @@ def _node_items_user_message(
         "heading": node.heading,
         "quota": node.quota,
         "bloom": list(node.bloom),
+        "repair_note": node.repair_note,
         "lesson_section": lesson_section,
         "misconceptions": [dict(item) for item in misconceptions],
         "excerpts": list(node.chunk_texts),

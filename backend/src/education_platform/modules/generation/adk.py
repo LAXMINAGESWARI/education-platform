@@ -186,6 +186,7 @@ class ItemNodeSpec:
     chunk_texts: tuple[str, ...]
     quota: int
     bloom: tuple[str, ...]
+    repair_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +452,10 @@ def item_developer_instruction(
         "and untrusted excerpts. Do not invent a second syllabus.\n"
         f"{target_clause}\n"
         "Bloom levels allowed: remember, understand, apply, analyze. Never evaluate or create.\n"
+        "Solve the item yourself before you write options. The correct option must be "
+        "the value you computed, and that value must be one of A-D. "
+        "If a repair note is present, it describes the previous failure: fix that "
+        "item instead of writing a new unrelated one.\n"
         "Each item: prompt, options A-D, correct (A-D), explanation, difficulty "
         "(easy|medium|hard), item_kind (theory|problem), bloom, source_method "
         "(a phrase from the frozen lesson), distractor_rationales mapping each wrong "

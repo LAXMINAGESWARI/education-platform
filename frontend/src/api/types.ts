@@ -696,6 +696,14 @@ export type GenerationQaItem = {
   misconception_labels?: string[];
   key_disputed?: boolean;
   blind_answer?: string | null;
+  check_attempts?: number | null;
+  check_verdict?: string | null;
+};
+
+export type ItemValidationStats = {
+  passed: number;
+  fixed_on_retry: number;
+  dropped: number;
 };
 
 export type PublishedTopic = {
@@ -720,6 +728,7 @@ export type GenerationRun = {
   published_lesson_version_id?: string | null;
   published_quiz_version_id?: string | null;
   qa_items?: GenerationQaItem[];
+  item_validation?: ItemValidationStats | null;
   jobs: GenerationJobStatus[];
   created_at: string;
 };

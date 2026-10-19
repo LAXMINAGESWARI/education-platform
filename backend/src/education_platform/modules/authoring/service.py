@@ -37,6 +37,7 @@ from education_platform.modules.assessments.models import (
 )
 from education_platform.modules.authoring.schemas import MAX_PER_REQUEST
 from education_platform.modules.authorization.scope import Scope
+from education_platform.modules.generation.item_checks import numeric_problems, structural_problems
 from education_platform.modules.generation.latex_text import normalize_quiz_math
 
 OPTION_LABELS = ("A", "B", "C", "D")
@@ -146,6 +147,12 @@ def validate(raw: object) -> DraftQuestion | str:
     correct = str(raw.get("correct") or "").strip().upper()
     if correct not in options:
         return f"{prompt[:40]}…: correct answer is not one of the options"
+
+    explanation = str(raw.get("explanation") or "").strip()
+    problems = structural_problems(options, correct, explanation)
+    problems += numeric_problems(options, correct, explanation)
+    if problems:
+        return f"{prompt[:40]}…: " + "; ".join(problems)
 
     difficulty_raw = str(raw.get("difficulty") or "medium").strip().lower()
     try:
