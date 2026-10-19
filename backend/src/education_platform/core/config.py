@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     cors_origin_regex: str = ""
     materials_dir: Path = _DEFAULT_MATERIALS_DIR
     database_url: str = _DEFAULT_DATABASE_URL
+    # Budget for the readiness SELECT 1. Compose's /health check allows 5s
+    # (deploy/docker-compose.prod.yml); keep this shorter so the probe returns
+    # an HTTP status before that client timeout.
+    health_ready_timeout_seconds: float = 2.0
     jwt_secret: str = "dev-only-change-me-use-32bytes-min!!"
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 60
