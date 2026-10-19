@@ -5,6 +5,7 @@ import { getSubtopicMaterial, getSubtopicQuiz, getTopicMaterial } from "../../ap
 import type { LessonMaterial, QuizMaterial, QuizSummary, TopicNode } from "../../api/types";
 import { Crumbs } from "../../components/Crumbs";
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { presentQuizText } from "../../lib/quizText";
 import { useLearningDirectory } from "../../lib/useLearningDirectory";
 import { findClass, useTeacherClasses } from "../../lib/useTeacherClasses";
 
@@ -390,13 +391,16 @@ function QuizPreview({ quiz }: { quiz: QuizMaterial }) {
         {quiz.questions.map((question) => (
           <li key={question.number}>
             <p>
-              <strong>Q{question.number}.</strong> {question.prompt}
+              <strong>Q{question.number}.</strong>{" "}
+              <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>
             </p>
             <ul className="draft-options">
               {question.options.map((option) => (
                 <li key={option.label} className="draft-option">
                   <span className="draft-option__label">{option.label}</span>
-                  <span>{option.text}</span>
+                  <span>
+                    <MarkdownContent inline>{presentQuizText(option.text)}</MarkdownContent>
+                  </span>
                 </li>
               ))}
             </ul>

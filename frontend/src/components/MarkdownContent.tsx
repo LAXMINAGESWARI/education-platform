@@ -60,7 +60,9 @@ export function MarkdownContent({
   className,
   inline = false,
 }: MarkdownContentProps) {
-  const classes = ["markdown-content", className].filter(Boolean).join(" ");
+  const classes = ["markdown-content", inline ? "markdown-content--inline" : "", className]
+    .filter(Boolean)
+    .join(" ");
   const Tag = inline ? "span" : "div";
   return (
     <Tag className={classes}>

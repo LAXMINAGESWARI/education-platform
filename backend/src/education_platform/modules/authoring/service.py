@@ -37,6 +37,7 @@ from education_platform.modules.assessments.models import (
 )
 from education_platform.modules.authoring.schemas import MAX_PER_REQUEST
 from education_platform.modules.authorization.scope import Scope
+from education_platform.modules.generation.latex_text import normalize_quiz_math
 
 OPTION_LABELS = ("A", "B", "C", "D")
 _BOUND_TO_QUIZ = exists().where(QuizItem.question_version_id == QuestionVersion.id)
@@ -94,7 +95,10 @@ def _prompt_for(
         "  - Do not write 'all of the above' or 'none of the above'.\n"
         "  - The explanation says why the correct answer is correct, in one sentence a\n"
         "    student would understand.\n"
-        "  - Ask about the outcomes above, not about trivia surrounding them."
+        "  - Ask about the outcomes above, not about trivia surrounding them.\n"
+        "  - Wrap every formula in $...$. Never leave a bare command such as \\frac, "
+        "\\times, \\div, or \\sqrt in the prompt, an option, or the explanation.\n"
+        '  - Example option: "Area = $\\frac{1}{2} \\times (base_1 + base_2) \\times height$".'
     )
 
 
@@ -150,10 +154,10 @@ def validate(raw: object) -> DraftQuestion | str:
         difficulty = QuestionDifficulty.MEDIUM
 
     return DraftQuestion(
-        prompt=prompt,
-        options=options,
+        prompt=normalize_quiz_math(prompt),
+        options={label: normalize_quiz_math(text) for label, text in options.items()},
         correct_label=correct,
-        explanation=str(raw.get("explanation") or "").strip(),
+        explanation=normalize_quiz_math(str(raw.get("explanation") or "").strip()),
         difficulty=difficulty,
     )
 

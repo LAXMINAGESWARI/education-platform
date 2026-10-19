@@ -133,6 +133,9 @@ def test_item_system_prompt_requires_renderable_katex() -> None:
     assert r"\(" in _ITEMS_SYSTEM
     assert "```markdown" in _ITEMS_SYSTEM
     assert "```json" in _ITEMS_SYSTEM
+    assert "bare command" in _ITEMS_SYSTEM
+    assert "base_1 + base_2" in _ITEMS_SYSTEM
+    assert r"\frac" in _ITEMS_SYSTEM
 
 
 def test_texts_for_nodes_does_not_dump_whole_pdf() -> None:

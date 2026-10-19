@@ -19,6 +19,7 @@ from education_platform.modules.generation.blueprint import (
     ITEM_BATCH_MIN,
     curriculum_item_slots,
 )
+from education_platform.modules.generation.latex_text import normalize_quiz_math
 from education_platform.modules.generation.types import BloomLevel, HeadingCluster, ReviewStatus
 
 UNTRUSTED_SOURCE_BANNER = (
@@ -456,6 +457,10 @@ def item_developer_instruction(
         "label to a string that cites a misconception id.\n"
         "No all-of-the-above or none-of-the-above. "
         f"{KATEX_MARKDOWN_RULES}"
+        "Math in the prompt, every option, the explanation, and every rationale "
+        "must be wrapped in $...$ or $$...$$. Never emit a bare command such as "
+        "\\frac, \\times, \\div, \\sqrt, \\pi, \\text, \\cdot, \\le, \\ge, or \\neq. "
+        "Example option: Area = $\\frac{1}{2} \\times (base_1 + base_2) \\times height$.\n"
         "JSON shape:\n"
         '{"items": [...]} or {"questions": [...]} or {"item_batches": [[...], [...]]}.'
     )
@@ -621,15 +626,21 @@ def parse_bank_item(raw: object) -> BankItem | str:
         raw.get("misconception_labels") or raw.get("misconceptions"), distractors
     )
     return BankItem(
-        prompt=repair_latex_controls(checked.prompt),
-        options={label: repair_latex_controls(checked.options[label]) for label in OPTION_LABELS},
+        prompt=normalize_quiz_math(repair_latex_controls(checked.prompt)),
+        options={
+            label: normalize_quiz_math(repair_latex_controls(checked.options[label]))
+            for label in OPTION_LABELS
+        },
         correct_label=checked.correct_label,
-        explanation=repair_latex_controls(checked.explanation),
+        explanation=normalize_quiz_math(repair_latex_controls(checked.explanation)),
         difficulty=resolved_difficulty,
         item_kind=kind,
         source_method=method,
         bloom=resolved_bloom,
-        distractor_rationales=distractors,
+        distractor_rationales={
+            label: normalize_quiz_math(repair_latex_controls(text))
+            for label, text in distractors.items()
+        },
         misconception_labels=misconceptions,
     )
 

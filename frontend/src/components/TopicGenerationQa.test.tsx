@@ -49,7 +49,7 @@ describe("TopicGenerationQa", () => {
     expect(screen.getAllByText("two halves make one").length).toBeGreaterThan(0);
     expect(screen.getAllByText("A").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Two halves make a whole.").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("B: That is only one half.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("That is only one half.").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Publish to students" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Reject selected items" })).toBeDisabled();
   });

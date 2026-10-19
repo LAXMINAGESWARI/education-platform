@@ -208,6 +208,58 @@ describe("QuizPage", () => {
     expect(submitAttempt).toHaveBeenCalledTimes(1);
   });
 
+  it("renders bare LaTeX options and keeps Next disabled until an answer is chosen", async () => {
+    startAttempt.mockResolvedValue({
+      ...attempt,
+      title: "mensuration topic mastery",
+      scope: "topic_mastery",
+      questions: [
+        {
+          number: 1,
+          difficulty: "easy",
+          prompt: "Which formula gives the area of a trapezoid?",
+          options: [
+            {
+              label: "A",
+              text: String.raw`Area = \frac{1}{2} \times (base_1 + base_2) \times height`,
+            },
+            { label: "B", text: String.raw`Volume = \frac{1}{3} \times base \times height` },
+            { label: "C", text: String.raw`Share \div 2` },
+            { label: "D", text: "A rectangle with equal sides" },
+          ],
+        },
+        {
+          number: 2,
+          difficulty: "easy",
+          prompt: "Which comparison is true?",
+          options: [
+            { label: "A", text: String.raw`\pi r^{2}` },
+            { label: "B", text: "A circle" },
+            { label: "C", text: "A line" },
+            { label: "D", text: "A point" },
+          ],
+        },
+      ],
+    });
+    render(
+      <MemoryRouter
+        initialEntries={["/quizzes/quiz-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/quizzes/:quizId" element={<QuizPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Question 1 of 2/)).toBeInTheDocument();
+    expect(document.querySelector(".option__text .katex")).not.toBeNull();
+    const next = screen.getByRole("button", { name: "Next question" });
+    expect(next).toBeDisabled();
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    expect(next).toBeEnabled();
+  });
+
   it("links a topic mastery quiz back to the published topic lesson", async () => {
     startAttempt.mockResolvedValue({
       ...attempt,

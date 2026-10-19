@@ -1,3 +1,5 @@
+import { delimitBareLatex } from "./delimitBareLatex";
+
 const FENCED_BLOCK = /(```[\s\S]*?```)/g;
 const UNDECODED_FORMULA = /<!--\s*formula-not-decoded\s*-->/gi;
 const WRAPPING_MARKDOWN_FENCE = /^```(?:markdown|md)[ \t]*\n([\s\S]*)\n```[ \t]*$/i;
@@ -272,7 +274,7 @@ function normalizeMathInProse(markdown: string): string {
     /(^|\n)[ \t]*\$\$([\s\S]*?)\$\$[ \t]*(?=\n|$)/g,
     (_match, lead: string, body: string) => `${lead}\n\n${formatDisplayMath(body)}\n\n`,
   );
-  return repairDisplayMath(tightenDollarMath(text));
+  return delimitBareLatex(repairDisplayMath(tightenDollarMath(text)));
 }
 
 /** Strip a document-level ```markdown wrapper without touching inner fences. */

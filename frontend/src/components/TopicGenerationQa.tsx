@@ -290,10 +290,15 @@ export function TopicGenerationQa({
                           <strong>{item.correct_label}</strong>
                         </td>
                         <td>
-                          <p className="qa-review__rationale">{item.correct_rationale}</p>
+                          <p className="qa-review__rationale">
+                            <MarkdownContent inline>
+                              {presentQuizText(item.correct_rationale)}
+                            </MarkdownContent>
+                          </p>
                           {optionEntries(item.distractor_rationales).map(([label, text]) => (
                             <p key={label} className="qa-review__rationale muted">
-                              {label}: {text}
+                              {label}:{" "}
+                              <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
                             </p>
                           ))}
                         </td>

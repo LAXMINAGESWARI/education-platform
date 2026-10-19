@@ -18,6 +18,7 @@ import type {
   SubtopicFeedback,
 } from "../api/types";
 import { ApiError } from "../api/types";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { Crumbs } from "../components/Crumbs";
 
 function pct(value: string | number | null): number | null {
@@ -63,7 +64,9 @@ function FeedbackSummaryCard({
     return (
       <section className="feedback-summary" aria-label="Your feedback summary">
         <p className="feedback-summary__kicker">From your quizzes</p>
-        <p className="feedback-summary__text">{summary}</p>
+        <div className="feedback-summary__text">
+          <MarkdownContent>{summary}</MarkdownContent>
+        </div>
       </section>
     );
   }

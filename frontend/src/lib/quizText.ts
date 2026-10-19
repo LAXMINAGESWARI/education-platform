@@ -1,3 +1,5 @@
+import { delimitBareLatex } from "./delimitBareLatex";
+
 const ITEM_FRAME =
   /^Item\s+\d+\s+\([^)]+\)\s+for\s+[^:]+:\s*which statement is grounded in this source excerpt:\s*/i;
 const FACT_FRAME = /^A fact from the .+? excerpt:\s*/i;
@@ -29,7 +31,7 @@ export function presentQuizText(text: string): string {
     if (next === body) break;
     body = next;
   }
-  return dropUnclosedMath(body.trim());
+  return delimitBareLatex(dropUnclosedMath(body.trim()));
 }
 
 /** Stored excerpts are sometimes cut off mid-equation. Drop the unfinished tail. */

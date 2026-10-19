@@ -9,7 +9,8 @@ writes published source material or released quizzes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select
@@ -63,6 +64,10 @@ from education_platform.modules.generation.items import (
     texts_for_nodes,
     write_items_for_node,
     write_items_for_nodes,
+)
+from education_platform.modules.generation.latex_text import (
+    bare_latex_outside_delimiters,
+    normalize_quiz_math,
 )
 from education_platform.modules.generation.lesson import (
     LessonSection,
@@ -848,6 +853,7 @@ def _persist_generated_item(
     *,
     blind_solve: dict[str, object] | None = None,
 ) -> None:
+    item = _item_for_storage(item)
     question = Question(subtopic_id=item.subtopic_id)
     session.add(question)
     session.flush()
@@ -1365,6 +1371,32 @@ def _replace_selected_items(
     return len(items)
 
 
+def _math_for_storage(text: str, *, field: str) -> str:
+    """Item-save schema: math commands belong inside ``$...$`` or ``$$...$$``."""
+    cleaned = normalize_quiz_math(text)
+    if bare_latex_outside_delimiters(cleaned):
+        logger.warning("Undelimited LaTeX remains in quiz item %s", field)
+    return cleaned
+
+
+def _item_for_storage(item: GeneratedItem) -> GeneratedItem:
+    options: Mapping[str, str] = item.options
+    distractors: Mapping[str, str] = item.distractor_rationales
+    return replace(
+        item,
+        prompt=_math_for_storage(item.prompt, field="prompt"),
+        options={
+            label: _math_for_storage(text, field=f"option {label}")
+            for label, text in options.items()
+        },
+        correct_rationale=_math_for_storage(item.correct_rationale, field="correct_rationale"),
+        distractor_rationales={
+            label: _math_for_storage(text, field=f"distractor {label}")
+            for label, text in distractors.items()
+        },
+    )
+
+
 def _persist_question_version(
     session: Session,
     question_id: UUID,
@@ -1372,6 +1404,7 @@ def _persist_question_version(
     *,
     blind_solve: dict[str, object] | None = None,
 ) -> QuestionVersion:
+    item = _item_for_storage(item)
     current = session.scalar(
         select(func.max(QuestionVersion.version_number)).where(
             QuestionVersion.question_id == question_id
