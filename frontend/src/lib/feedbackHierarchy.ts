@@ -1,4 +1,10 @@
-import type { FeedbackBadge, FeedbackBand, FeedbackTrend } from "../api/types";
+import type {
+  FeedbackAttemptScore,
+  FeedbackBadge,
+  FeedbackBand,
+  FeedbackTrend,
+  GoalOut,
+} from "../api/types";
 
 export function scoreNumber(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -66,33 +72,33 @@ export function badgeLabel(badge: FeedbackBadge): string {
   }
 }
 
-type AttemptTitle = { label: string; emoji: string };
+export type AttemptTitle = { label: string; emoji: string; color: string };
 
-/** Same titles the old subtopic cards used, now earned by the topic quiz. */
-function attemptTitle(attempts: number, bestScore: number): AttemptTitle {
+/** Same titles and colours the old subtopic cards used, earned by the topic quiz. */
+export function attemptTitle(attempts: number, bestScore: number): AttemptTitle {
   const band: "perfect" | "high" | "pass" =
     bestScore === 100 ? "perfect" : bestScore >= 90 ? "high" : "pass";
   const titles: Record<typeof band, AttemptTitle[]> = {
     perfect: [
-      { label: "Flawless", emoji: "👑" },
-      { label: "Diamond", emoji: "💎" },
-      { label: "Tenacious", emoji: "🏅" },
-      { label: "Champion", emoji: "🥇" },
-      { label: "Legendary", emoji: "🏆" },
+      { label: "Flawless", emoji: "👑", color: "#92400e" },
+      { label: "Diamond", emoji: "💎", color: "#0e7490" },
+      { label: "Tenacious", emoji: "🏅", color: "#7c3aed" },
+      { label: "Champion", emoji: "🥇", color: "#b45309" },
+      { label: "Legendary", emoji: "🏆", color: "#be185d" },
     ],
     high: [
-      { label: "Star Performer", emoji: "🌟" },
-      { label: "Sharp Mind", emoji: "🔥" },
-      { label: "Rising Star", emoji: "🚀" },
-      { label: "Breakthrough", emoji: "💡" },
-      { label: "Hard Earned", emoji: "⭐" },
+      { label: "Star Performer", emoji: "🌟", color: "#166534" },
+      { label: "Sharp Mind", emoji: "🔥", color: "#991b1b" },
+      { label: "Rising Star", emoji: "🚀", color: "#1e40af" },
+      { label: "Breakthrough", emoji: "💡", color: "#b45309" },
+      { label: "Hard Earned", emoji: "⭐", color: "#7c3aed" },
     ],
     pass: [
-      { label: "First Try!", emoji: "🎯" },
-      { label: "Quick Learner", emoji: "⚡" },
-      { label: "Persistent", emoji: "💪" },
-      { label: "Determined", emoji: "🔄" },
-      { label: "Never Give Up", emoji: "🌱" },
+      { label: "First Try!", emoji: "🎯", color: "#166534" },
+      { label: "Quick Learner", emoji: "⚡", color: "#1e40af" },
+      { label: "Persistent", emoji: "💪", color: "#7c3aed" },
+      { label: "Determined", emoji: "🔄", color: "#b45309" },
+      { label: "Never Give Up", emoji: "🌱", color: "#be185d" },
     ],
   };
   return titles[band][Math.min(Math.max(attempts, 1) - 1, 4)];
@@ -103,11 +109,57 @@ export function attemptBadge(
   attemptCount: number,
   best: string | number | null | undefined,
 ): string {
-  if (badge === "not_attempted") return "Not attempted";
+  return attemptBadgePresentation(badge, attemptCount, best).text;
+}
+
+export function attemptBadgePresentation(
+  badge: FeedbackBadge,
+  attemptCount: number,
+  best: string | number | null | undefined,
+): { text: string; color: string | null } {
+  if (badge === "not_attempted") return { text: "Not attempted", color: null };
   const score = scoreNumber(best);
-  if (score === null || badge === "keep_going" || score < 70) return "Keep going";
+  if (score === null || badge === "keep_going" || score < 70) {
+    return { text: "Keep going", color: null };
+  }
   const title = attemptTitle(attemptCount, score);
-  return `${title.emoji} ${title.label}`;
+  return { text: `${title.emoji} ${title.label}`, color: title.color };
+}
+
+/** Mean gain from each topic's first scored attempt to its latest. */
+export function momentumGain(scores: FeedbackAttemptScore[][]): number | null {
+  const gains: number[] = [];
+  for (const series of scores) {
+    const ordered = [...series].sort((left, right) => left.attempt_number - right.attempt_number);
+    if (ordered.length < 2) continue;
+    const first = scoreNumber(ordered[0]?.score_percent);
+    const latest = scoreNumber(ordered[ordered.length - 1]?.score_percent);
+    if (first === null || latest === null) continue;
+    gains.push(latest - first);
+  }
+  if (gains.length === 0) return null;
+  return Math.round(gains.reduce((sum, gain) => sum + gain, 0) / gains.length);
+}
+
+export function goalStatusLabel(
+  goal: Pick<GoalOut, "status" | "target_percent">,
+  best: string | number | null,
+): "Achieved ✓" | "Missed" | "On track" {
+  const latest = scoreNumber(best);
+  const target = scoreNumber(goal.target_percent) ?? 0;
+  const status = latest !== null && latest >= target ? "achieved" : goal.status;
+  switch (status) {
+    case "achieved":
+      return "Achieved ✓";
+    case "missed":
+      return "Missed";
+    case "on_track":
+      return "On track";
+    default: {
+      const unreachable: never = status;
+      return unreachable;
+    }
+  }
 }
 
 export function achievementCopy(

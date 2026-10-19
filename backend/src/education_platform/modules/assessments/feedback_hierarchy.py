@@ -172,6 +172,35 @@ def rollup_topic(attempts: list[ScoredAttempt]) -> TopicRollup:
     return TopicRollup(best, latest, len(ordered), _trend(delta), delta, badge)
 
 
+def count_regressions(rows: list[tuple[int, UUID, bool]]) -> int | None:
+    """Questions correct on the previous topic attempt and wrong on the latest.
+
+    ``None`` when fewer than two attempts have answers, so the card can omit
+    the line instead of showing a zero that was never measured.
+    """
+    by_attempt: dict[int, dict[UUID, bool]] = {}
+    for attempt_number, question_id, correct in rows:
+        by_attempt.setdefault(attempt_number, {})[question_id] = correct
+    if len(by_attempt) < 2:
+        return None
+    ordered = sorted(by_attempt)
+    prior = by_attempt[ordered[-2]]
+    latest = by_attempt[ordered[-1]]
+    return sum(
+        1
+        for question_id, was_correct in prior.items()
+        if was_correct and latest.get(question_id) is False
+    )
+
+
+def class_average(scores: list[Decimal]) -> tuple[Decimal | None, int]:
+    """Mean of classmates' best topic scores, and how many classmates that is."""
+    if not scores:
+        return None, 0
+    mean = _mean(scores)
+    return mean, len(scores)
+
+
 def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup:
     """Mean of attempted topics. Unattempted topics do not pull the mean to 0."""
     attempted = [
@@ -593,7 +622,13 @@ def _topic_score(
     quiz_id: UUID | None,
     has_lesson: bool,
     goal: StudentSubtopicGoal | None,
+    series: list[ScoredAttempt],
+    concepts: list[FeedbackSubtopicStrength],
+    regression_count: int | None,
+    class_avg: tuple[Decimal | None, int],
 ) -> FeedbackTopicScore:
+    ordered = sorted(series, key=lambda attempt: attempt.attempt_number)
+    average, sample_size = class_avg
     return FeedbackTopicScore(
         topic_id=topic.id,
         topic_name=topic.name,
@@ -607,6 +642,17 @@ def _topic_score(
         quiz_id=quiz_id,
         has_lesson=has_lesson,
         goal=goal_out(goal, topic.name, rollup.best_score_percent) if goal is not None else None,
+        attempt_scores=[
+            FeedbackAttemptScore(
+                attempt_number=attempt.attempt_number,
+                score_percent=attempt.score_percent,
+            )
+            for attempt in ordered
+        ],
+        concepts=concepts_weakest_first(concepts),
+        regression_count=regression_count,
+        class_avg_percent=average,
+        class_sample_size=sample_size,
     )
 
 
@@ -734,10 +780,84 @@ async def get_overview(session: AsyncSession, scope: Scope) -> FeedbackOverview:
     )
 
 
+async def _topic_regression_counts(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, int | None]:
+    """Per topic, how many answers flipped from right to wrong on the latest attempt."""
+    if not topic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                CommonMasteryQuiz.topic_id,
+                QuizAttempt.attempt_number,
+                AttemptAnswer.question_version_id,
+                AttemptAnswer.is_correct,
+            )
+            .join(QuizAttempt, QuizAttempt.id == AttemptAnswer.attempt_id)
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
+                CommonMasteryQuiz.topic_id.in_(topic_ids),
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                QuizAttempt.student_id == student_id,
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                AttemptAnswer.is_correct.is_not(None),
+            )
+        )
+    ).all()
+    grouped: dict[UUID, list[tuple[int, UUID, bool]]] = defaultdict(list)
+    for topic_id, attempt_number, question_id, correct in rows:
+        if correct is None:
+            continue
+        grouped[topic_id].append((int(attempt_number), question_id, bool(correct)))
+    return {topic_id: count_regressions(facts) for topic_id, facts in grouped.items()}
+
+
+async def _classmate_best_averages(
+    session: AsyncSession, student_id: UUID, topic_ids: list[UUID]
+) -> dict[UUID, tuple[Decimal | None, int]]:
+    """Mean of other students' best visible topic-quiz scores."""
+    if not topic_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                CommonMasteryQuiz.topic_id,
+                QuizAttempt.student_id,
+                QuizAttempt.score_percent,
+            )
+            .join(QuizVersion, QuizVersion.id == QuizAttempt.quiz_version_id)
+            .join(CommonMasteryQuiz, CommonMasteryQuiz.id == QuizVersion.quiz_id)
+            .where(
+                CommonMasteryQuiz.topic_id.in_(topic_ids),
+                CommonMasteryQuiz.quiz_scope == QuizScope.TOPIC_MASTERY,
+                QuizAttempt.student_id != student_id,
+                QuizAttempt.status != QuizAttemptStatus.ABANDONED,
+                QuizAttempt.status != QuizAttemptStatus.HELD,
+                QuizAttempt.score_percent.is_not(None),
+            )
+        )
+    ).all()
+    bests: dict[tuple[UUID, UUID], Decimal] = {}
+    for topic_id, other_id, score in rows:
+        if score is None:
+            continue
+        key = (topic_id, other_id)
+        current = bests.get(key)
+        if current is None or score > current:
+            bests[key] = score
+    grouped: dict[UUID, list[Decimal]] = defaultdict(list)
+    for (topic_id, _), score in bests.items():
+        grouped[topic_id].append(score)
+    return {topic_id: class_average(scores) for topic_id, scores in grouped.items()}
+
+
 async def get_subject(
     session: AsyncSession, scope: Scope, subject_id: UUID
 ) -> FeedbackSubjectDetail:
-    student_id, offerings, topics, rollups, quiz_ids, lessons, _attempts = await _bundle(
+    student_id, offerings, topics, rollups, quiz_ids, lessons, attempts = await _bundle(
         session, scope
     )
     matched = [offering for offering in offerings if offering.subject_id == subject_id]
@@ -752,6 +872,8 @@ async def get_subject(
     topic_ids = [topic.id for topic in subject_topics]
     by_topic = await _concept_strengths(session, student_id, topic_ids)
     goals = await goals_for_topics(session, student_id, topic_ids)
+    regressions = await _topic_regression_counts(session, student_id, topic_ids)
+    class_averages = await _classmate_best_averages(session, student_id, topic_ids)
     strengths = _subject_concepts(subject_topics, by_topic)
     stored = await _stored_summaries(session, student_id, [subject_id])
     summary = stored.get(subject_id)
@@ -778,6 +900,10 @@ async def get_subject(
                 quiz_ids.get(topic.id),
                 topic.id in lessons,
                 goals.get(topic.id),
+                attempts.get(topic.id, []),
+                by_topic.get(topic.id, []),
+                regressions.get(topic.id),
+                class_averages.get(topic.id, (None, 0)),
             )
             for topic in subject_topics
         ],

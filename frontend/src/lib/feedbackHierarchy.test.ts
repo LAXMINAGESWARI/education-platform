@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { attemptBadge, focusSentence, formatDuration, formatScore, formatTrend } from "./feedbackHierarchy";
+import {
+  attemptBadge,
+  attemptTitle,
+  focusSentence,
+  formatDuration,
+  formatScore,
+  formatTrend,
+  momentumGain,
+} from "./feedbackHierarchy";
 
 describe("feedback hierarchy display", () => {
   it("says not attempted instead of 0%", () => {
@@ -27,7 +35,23 @@ describe("feedback hierarchy display", () => {
 
   it("uses the tiered pass titles and leaves a single miss as keep going", () => {
     expect(attemptBadge("passed", 2, 100)).toBe("💎 Diamond");
+    expect(attemptTitle(2, 100)).toMatchObject({ label: "Diamond", color: "#0e7490" });
+    expect(attemptTitle(3, 100)).toMatchObject({ label: "Tenacious", color: "#7c3aed" });
+    expect(attemptTitle(4, 90)).toMatchObject({ label: "Breakthrough", color: "#b45309" });
     expect(attemptBadge("keep_going", 1, 40)).toBe("Keep going");
     expect(attemptBadge("not_attempted", 0, null)).toBe("Not attempted");
+  });
+
+  it("averages the gain from the first attempt to the latest", () => {
+    expect(
+      momentumGain([
+        [
+          { attempt_number: 1, score_percent: "40" },
+          { attempt_number: 4, score_percent: "90" },
+        ],
+        [{ attempt_number: 1, score_percent: "10" }],
+      ]),
+    ).toBe(50);
+    expect(momentumGain([[{ attempt_number: 1, score_percent: "10" }]])).toBeNull();
   });
 });

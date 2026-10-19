@@ -14,7 +14,9 @@ from education_platform.modules.assessments.feedback_hierarchy import (
     achievement_tier,
     answer_metrics,
     average_score,
+    class_average,
     concepts_weakest_first,
+    count_regressions,
     feedback_concept_label,
     focus_gap,
     group_subtopic_strengths,
@@ -75,6 +77,27 @@ def test_trend_compares_the_latest_attempt_with_the_previous_one() -> None:
     assert rollup.trend_delta == Decimal("-15.00")
     assert rollup.attempt_count == 4
     assert rollup.badge == "passed"
+
+
+def test_regression_count_is_questions_that_flipped_from_right_to_wrong() -> None:
+    question_a = UUID("00000000-0000-0000-0000-000000000001")
+    question_b = UUID("00000000-0000-0000-0000-000000000002")
+    assert count_regressions([(1, question_a, True)]) is None
+    assert (
+        count_regressions(
+            [
+                (1, question_a, True),
+                (1, question_b, False),
+                (2, question_a, False),
+                (2, question_b, True),
+            ]
+        )
+        == 1
+    )
+    assert class_average([]) == (None, 0)
+    average, sample = class_average([Decimal("80"), Decimal("60")])
+    assert average == Decimal("70.00")
+    assert sample == 2
 
 
 def test_subject_score_is_the_mean_of_attempted_topics_only() -> None:
@@ -376,6 +399,15 @@ def test_seeded_topic_quiz_reports_four_attempts_and_an_unattempted_topic(
     assert scored["attempt_count"] == 4
     assert scored["trend"] == "improving"
     assert "declining" not in (scored["trend"] or "")
+    assert [row["attempt_number"] for row in scored["attempt_scores"]] == [1, 2, 3, 4]
+    assert [Decimal(row["score_percent"]) for row in scored["attempt_scores"]] == scores
+    assert any(row["name"] == "Cuboid" for row in scored["concepts"])
+    assert not any(row["name"].upper().startswith("EXERCISE") for row in scored["concepts"])
+    assert scored["regression_count"] is None
+    assert scored["class_avg_percent"] is None
+    assert scored["class_sample_size"] == 0
+    assert mensuration["attempt_scores"] == []
+    assert mensuration["concepts"] == []
 
     topic_view = client.get(
         f"/api/v1/me/feedback/topics/{seeded['topic_id']}",

@@ -244,6 +244,11 @@ export type FeedbackTopicScore = {
   quiz_id: string | null;
   has_lesson: boolean;
   goal: GoalOut | null;
+  attempt_scores: FeedbackAttemptScore[];
+  concepts: FeedbackSubtopicStrength[];
+  regression_count: number | null;
+  class_avg_percent: string | number | null;
+  class_sample_size: number;
 };
 
 export type FeedbackAchievement = "mastery" | "advanced" | "proficient" | "on_track";

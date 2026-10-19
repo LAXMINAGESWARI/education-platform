@@ -1189,6 +1189,10 @@ button.card {
   color: var(--ink-muted);
 }
 
+.badge--title {
+  background: color-mix(in srgb, currentColor 12%, var(--surface));
+}
+
 .progress {
   height: 0.45rem;
   background: var(--surface-2);
@@ -6158,6 +6162,87 @@ a.btn:disabled:hover {
   font-size: 0.95rem;
 }
 
+.feedback-attempt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feedback-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 4.2rem;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: var(--font-body);
+}
+
+.feedback-chip strong {
+  font-size: 0.95rem;
+}
+
+.feedback-chip span {
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+}
+
+.feedback-chip--up {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+.feedback-chip--down {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.feedback-new-best {
+  margin-left: 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0f766e;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  vertical-align: middle;
+}
+
+.feedback-momentum {
+  display: inline-block;
+  margin-top: 0.55rem;
+  font-weight: 600;
+  color: #0f766e;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+}
+
+.feedback-card__details {
+  margin-top: 0.35rem;
+}
+
+.feedback-summary-table {
+  width: 100%;
+  margin-top: 1.25rem;
+  border-collapse: collapse;
+}
+
+.feedback-summary-table th,
+.feedback-summary-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-family: var(--font-body);
+}
+
 .feedback-metrics-section {
   margin-top: 1.5rem;
 }
@@ -6319,6 +6404,11 @@ a.btn:disabled:hover {
 .feedback-view .feedback-achievement,
 .feedback-view .feedback-engagement,
 .feedback-view .feedback-goal,
+.feedback-view .feedback-attempt-chips,
+.feedback-view .feedback-chip,
+.feedback-view .feedback-new-best,
+.feedback-view .feedback-momentum,
+.feedback-view .feedback-summary-table,
 .feedback-view .feedback-metrics,
 .feedback-view .feedback-metrics__subhead,
 .feedback-view .feedback-history,

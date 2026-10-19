@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { getSubjectEngagementRates, type EngagementRate } from "../api/engagement";
 import { getFeedbackSubject } from "../api/feedback";
@@ -7,41 +7,56 @@ import { getSelfEvaluation, recordSelfEvaluation, type ConfidenceLevel } from ".
 import type { FeedbackSubjectDetail, FeedbackTopicScore } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
+import { AttemptBadge, AchievementBanner, FocusLine, Milestone, SubjectEngagement } from "../components/FeedbackExtras";
+import { TopicScoreCard, topicStatusLabel } from "../components/TopicScoreCard";
 import {
-  AchievementBanner,
-  FocusLine,
-  Milestone,
-  SubjectEngagement,
-} from "../components/FeedbackExtras";
-import {
-  attemptBadge,
   calibrationMessage,
   formatScore,
   formatTrend,
+  momentumGain,
   scoreNumber,
 } from "../lib/feedbackHierarchy";
 
-function TopicCard({ subjectId, topic }: { subjectId: string; topic: FeedbackTopicScore }) {
-  const trend = formatTrend(topic.trend, topic.trend_delta);
-  const attempted = topic.badge !== "not_attempted";
+function TopicSummaryTable({
+  topics,
+  label = "Topic summary",
+}: {
+  topics: FeedbackTopicScore[];
+  label?: string;
+}) {
   return (
-    <Link
-      to={`/subjects/${subjectId}/feedback/topics/${topic.topic_id}`}
-      className="card feedback-card"
-    >
-      <div className="meta-row">
-        <h2>{topic.topic_name}</h2>
-        <span className={`badge ${topic.badge === "passed" ? "badge--ok" : "badge--info"}`}>
-          {attemptBadge(topic.badge, topic.attempt_count, topic.best_score_percent)}
-        </span>
-      </div>
-      <p className="feedback-card__score">{formatScore(topic.best_score_percent)}</p>
-      <p className="progress-label">Best score</p>
-      {attempted && (
-        <p className="progress-label">Latest {formatScore(topic.latest_score_percent)}</p>
-      )}
-      {trend && <p className="feedback-card__trend">{trend}</p>}
-    </Link>
+    <div className="table-scroll">
+      <table className="feedback-summary-table" aria-label={label}>
+        <thead>
+          <tr>
+            <th>Topic</th>
+            <th>Best</th>
+            <th>Latest</th>
+            <th>Attempts</th>
+            <th>Badge</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {topics.map((topic) => (
+            <tr key={topic.topic_id}>
+              <td>{topic.topic_name}</td>
+              <td>{formatScore(topic.best_score_percent)}</td>
+              <td>{topic.badge === "not_attempted" ? "—" : formatScore(topic.latest_score_percent)}</td>
+              <td>{topic.attempt_count}</td>
+              <td>
+                <AttemptBadge
+                  badge={topic.badge}
+                  attemptCount={topic.attempt_count}
+                  best={topic.best_score_percent}
+                />
+              </td>
+              <td>{topicStatusLabel(topic)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -140,6 +155,7 @@ export function SubjectFeedbackPage() {
   }
 
   const trend = formatTrend(detail.trend, detail.trend_delta);
+  const gain = momentumGain(detail.topics.map((topic) => topic.attempt_scores));
 
   return (
     <div className="feedback-view">
@@ -172,13 +188,18 @@ export function SubjectFeedbackPage() {
         <div className="feedback-summary__text">
           <p>{detail.summary}</p>
         </div>
+        {gain !== null && gain > 0 && (
+          <p className="feedback-momentum">↑ up {gain}% since you started</p>
+        )}
       </section>
 
       <div className="feedback-grid">
         {detail.topics.map((topic) => (
-          <TopicCard key={topic.topic_id} subjectId={subjectId} topic={topic} />
+          <TopicScoreCard key={topic.topic_id} subjectId={subjectId} topic={topic} />
         ))}
       </div>
+
+      <TopicSummaryTable topics={detail.topics} />
 
       <SelfCheck
         subjectId={subjectId}
@@ -200,26 +221,7 @@ export function SubjectFeedbackPage() {
               </button>
             </div>
             <p className="progress-label">{detail.subject_name}</p>
-            <table>
-              <thead>
-                <tr>
-                  <th>Topic</th>
-                  <th>Best</th>
-                  <th>Attempts</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.topics.map((topic) => (
-                  <tr key={topic.topic_id}>
-                    <td>{topic.topic_name}</td>
-                    <td>{formatScore(topic.best_score_percent)}</td>
-                    <td>{topic.attempt_count}</td>
-                    <td>{attemptBadge(topic.badge, topic.attempt_count, topic.best_score_percent)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <TopicSummaryTable topics={detail.topics} label="Report card topics" />
           </div>
         )}
       </div>

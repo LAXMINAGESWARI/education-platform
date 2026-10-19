@@ -119,7 +119,41 @@ const subject = {
       badge: "passed" as const,
       quiz_id: "quiz-1",
       has_lesson: true,
-      goal: null,
+      goal: {
+        topic_id: "mensuration",
+        topic_name: "Mensuration",
+        target_percent: "80",
+        due_at: "2026-12-01T23:59:59.000Z",
+        current_percent: "90",
+        status: "achieved" as const,
+      },
+      attempt_scores: [
+        { attempt_number: 1, score_percent: "40" },
+        { attempt_number: 2, score_percent: "55" },
+        { attempt_number: 3, score_percent: "70" },
+        { attempt_number: 4, score_percent: "90" },
+      ],
+      concepts: [
+        {
+          subtopic_id: "polygon-1",
+          name: "Area of a polygon",
+          correct_count: 1,
+          answered_count: 4,
+          percent: "25",
+          band: "needs_work" as const,
+        },
+        {
+          subtopic_id: "cuboid-1",
+          name: "Cuboid",
+          correct_count: 3,
+          answered_count: 4,
+          percent: "75",
+          band: "strong" as const,
+        },
+      ],
+      regression_count: 2,
+      class_avg_percent: "62",
+      class_sample_size: 8,
     },
     {
       topic_id: "decimals",
@@ -134,6 +168,11 @@ const subject = {
       quiz_id: "quiz-2",
       has_lesson: true,
       goal: null,
+      attempt_scores: [],
+      concepts: [],
+      regression_count: null,
+      class_avg_percent: null,
+      class_sample_size: 0,
     },
   ],
 };
@@ -279,12 +318,11 @@ describe("feedback hierarchy", () => {
     expect(screen.getByText("Needs attention: Algebra")).toBeInTheDocument();
     const links = screen.getAllByRole("link");
     const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
-    expect(topicLinks.map((link) => link.textContent)).toEqual([
-      expect.stringContaining("Mensuration"),
-      expect.stringContaining("Decimals"),
-    ]);
-    expect(screen.getByRole("link", { name: /Decimals/ })).toHaveTextContent("Not attempted");
-    expect(screen.getByRole("link", { name: /Decimals/ })).not.toHaveTextContent("declining");
+    expect(topicLinks.map((link) => link.textContent)).toEqual(["Mensuration", "Decimals"]);
+    const decimals = screen.getByRole("article", { name: "Decimals" });
+    expect(decimals).toHaveTextContent("Not attempted");
+    expect(decimals).not.toHaveTextContent("declining");
+    expect(decimals).not.toHaveTextContent("0%");
     await user.click(screen.getByRole("link", { name: /Mensuration/ }));
     expect(await screen.findByRole("heading", { name: "Mensuration" })).toBeInTheDocument();
   });
@@ -476,9 +514,34 @@ describe("feedback hierarchy", () => {
     );
 
     expect(await screen.findByText(/50% engaged · Skimmed/)).toBeInTheDocument();
-    expect(screen.getByText("💡 Breakthrough")).toBeInTheDocument();
+    expect(screen.getAllByText("💡 Breakthrough").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Not attempted").length).toBeGreaterThan(0);
     expect(screen.getByText("45% to go to reach your goal on Mensuration.")).toBeInTheDocument();
+    const mensuration = screen.getByRole("article", { name: "Mensuration" });
+    expect(mensuration).toHaveTextContent("↑ New best!");
+    expect(mensuration).toHaveTextContent("Attempt 1");
+    expect(mensuration).toHaveTextContent("Attempt 4");
+    expect(mensuration).toHaveTextContent("+20");
+    expect(mensuration).toHaveTextContent("Class average 62%");
+    expect(mensuration).toHaveTextContent("2 questions you got right before are now wrong.");
+    expect(mensuration).toHaveTextContent("1 strong · 1 needs work");
+    expect(mensuration).toHaveTextContent("Achieved ✓");
+    expect(mensuration.querySelector(".badge--title")).toHaveStyle({ color: "#b45309" });
+    expect(screen.getByText("↑ up 50% since you started")).toBeInTheDocument();
+    const summary = screen.getByRole("table", { name: "Topic summary" });
+    expect(summary).toHaveTextContent("Topic");
+    expect(summary).toHaveTextContent("Best");
+    expect(summary).toHaveTextContent("Latest");
+    expect(summary).toHaveTextContent("Attempts");
+    expect(summary).toHaveTextContent("Badge");
+    expect(summary).toHaveTextContent("Status");
+    expect(summary).toHaveTextContent("Mensuration");
+    expect(summary).toHaveTextContent("💡 Breakthrough");
+    expect(summary).toHaveTextContent("Achieved ✓");
+    await user.click(within(mensuration).getByRole("button", { name: "Show details ▼" }));
+    expect(mensuration).toHaveTextContent("Area of a polygon 25%");
+    expect(mensuration).toHaveTextContent("Cuboid 75%");
+    expect(mensuration).toHaveTextContent("Up 20 points since the previous attempt");
     expect(screen.getByRole("button", { name: "View report card" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confident" }));
     expect(

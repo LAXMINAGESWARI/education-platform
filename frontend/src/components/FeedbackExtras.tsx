@@ -2,9 +2,39 @@ import { useState, type FormEvent } from "react";
 
 import { deleteTopicGoal, setTopicGoal } from "../api/feedback";
 import type { EngagementRate } from "../api/engagement";
-import type { FeedbackAchievement, FeedbackFocus, GoalOut } from "../api/types";
+import type { FeedbackAchievement, FeedbackBadge, FeedbackFocus, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
-import { achievementCopy, focusSentence, scoreNumber } from "../lib/feedbackHierarchy";
+import {
+  achievementCopy,
+  attemptBadgePresentation,
+  focusSentence,
+  goalStatusLabel,
+  scoreNumber,
+} from "../lib/feedbackHierarchy";
+
+export function AttemptBadge({
+  badge,
+  attemptCount,
+  best,
+}: {
+  badge: FeedbackBadge;
+  attemptCount: number;
+  best: string | number | null;
+}) {
+  const presentation = attemptBadgePresentation(badge, attemptCount, best);
+  if (presentation.color === null) {
+    const tone = badge === "not_attempted" ? "badge--info" : "badge--warn";
+    return <span className={`badge ${tone}`}>{presentation.text}</span>;
+  }
+  return (
+    <span
+      className="badge badge--title"
+      style={{ color: presentation.color, borderColor: presentation.color }}
+    >
+      {presentation.text}
+    </span>
+  );
+}
 
 export function Milestone({ mastered, attempted }: { mastered: number; attempted: number }) {
   if (attempted <= 0) return null;
@@ -112,13 +142,14 @@ export function GoalSection({
   }
 
   if (goal) {
-    const latest = scoreNumber(bestScore);
     const target = scoreNumber(goal.target_percent) ?? 0;
-    const status = latest !== null && latest >= target ? "achieved" : goal.status;
+    const statusLabel = goalStatusLabel(goal, bestScore);
     const badgeClass =
-      status === "achieved" ? "badge--ok" : status === "missed" ? "badge--warn" : "badge--info";
-    const statusLabel =
-      status === "achieved" ? "Achieved ✓" : status === "missed" ? "Missed" : "On track";
+      statusLabel === "Achieved ✓"
+        ? "badge--ok"
+        : statusLabel === "Missed"
+          ? "badge--warn"
+          : "badge--info";
     return (
       <div className="feedback-goal">
         <span className={`badge ${badgeClass}`}>{statusLabel}</span>

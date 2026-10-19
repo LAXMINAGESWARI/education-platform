@@ -5,10 +5,10 @@ import { getFeedbackTopic } from "../api/feedback";
 import type { FeedbackTopicDetail, GoalOut } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { GoalSection, Milestone } from "../components/FeedbackExtras";
+import { AttemptBadge, GoalSection, Milestone } from "../components/FeedbackExtras";
 import { PastAttempts } from "../components/PastAttempts";
 import { ScoreMetrics } from "../components/ScoreMetrics";
-import { attemptBadge, formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import { formatScore, formatTrend } from "../lib/feedbackHierarchy";
 import { topicHistoryPath } from "../lib/subjectMaterial";
 
 export function TopicFeedbackPage() {
@@ -66,9 +66,11 @@ export function TopicFeedbackPage() {
         <p className="kicker">{detail.subject_name}</p>
         <h1>{detail.topic_name}</h1>
         <p>
-          <span className={`badge ${detail.badge === "passed" ? "badge--ok" : "badge--info"}`}>
-            {attemptBadge(detail.badge, detail.attempt_count, detail.best_score_percent)}
-          </span>
+          <AttemptBadge
+            badge={detail.badge}
+            attemptCount={detail.attempt_count}
+            best={detail.best_score_percent}
+          />
         </p>
       </header>
 

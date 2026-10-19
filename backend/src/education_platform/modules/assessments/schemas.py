@@ -217,6 +217,11 @@ class FeedbackTopicScore(BaseModel):
     quiz_id: UUID | None
     has_lesson: bool
     goal: GoalOut | None = None
+    attempt_scores: list[FeedbackAttemptScore] = Field(default_factory=list)
+    concepts: list[FeedbackSubtopicStrength] = Field(default_factory=list)
+    regression_count: int | None = None
+    class_avg_percent: Decimal | None = None
+    class_sample_size: int = 0
 
 
 class FeedbackFocus(BaseModel):
