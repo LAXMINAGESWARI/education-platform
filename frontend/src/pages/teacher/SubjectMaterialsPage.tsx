@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 
-import { getSubtopicMaterial, getSubtopicQuiz } from "../../api/materials";
+import { getSubtopicMaterial, getSubtopicQuiz, getTopicMaterial } from "../../api/materials";
 import type { LessonMaterial, QuizMaterial, QuizSummary, TopicNode } from "../../api/types";
 import { Crumbs } from "../../components/Crumbs";
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -10,9 +10,10 @@ import { findClass, useTeacherClasses } from "../../lib/useTeacherClasses";
 
 type Tab = "lessons" | "quizzes";
 
+type OpenTopicLesson = { kind: "topic-lesson"; topicId: string };
 type OpenLesson = { kind: "lesson"; subtopicId: string };
 type OpenQuiz = { kind: "quiz"; subtopicId: string };
-type OpenItem = OpenLesson | OpenQuiz;
+type OpenItem = OpenTopicLesson | OpenLesson | OpenQuiz;
 
 export function SubjectMaterialsPage() {
   const { sectionId = "", subjectId = "" } = useParams();
@@ -59,6 +60,21 @@ export function SubjectMaterialsPage() {
   }
 
   const sectionLabel = `${entry.gradeName} · ${entry.sectionName}`;
+
+  async function openTopicLesson(topicId: string) {
+    setOpenItem({ kind: "topic-lesson", topicId });
+    setPreviewError(null);
+    setQuiz(null);
+    setPreviewLoading(true);
+    try {
+      setLesson(await getTopicMaterial(topicId));
+    } catch (err: unknown) {
+      setLesson(null);
+      setPreviewError(err instanceof Error ? err.message : "Could not load the lesson.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   async function openLesson(subtopicId: string) {
     setOpenItem({ kind: "lesson", subtopicId });
@@ -132,7 +148,7 @@ export function SubjectMaterialsPage() {
           <ul className="teacher-topic-list">
             {subject.topics.map((topic) => {
               const isActive = topic.id === activeTopicId;
-              const lessonCount = topic.subtopics.filter((st) => st.has_lesson).length;
+              const lessonCount = lessonCountFor(topic);
               const quizCount = quizCountFor(topic);
               return (
                 <li key={topic.id}>
@@ -150,7 +166,8 @@ export function SubjectMaterialsPage() {
                   >
                     <span>{topic.title}</span>
                     <span className="teacher-topic-list__meta">
-                      {lessonCount} lessons · {quizCount} quizzes
+                      {countPhrase(lessonCount, "lesson", "lessons")} ·{" "}
+                      {countPhrase(quizCount, "quiz", "quizzes")}
                     </span>
                   </button>
                 </li>
@@ -193,6 +210,7 @@ export function SubjectMaterialsPage() {
                 tab={tab}
                 topic={activeTopic}
                 openItem={openItem}
+                onOpenTopicLesson={(id) => void openTopicLesson(id)}
                 onOpenLesson={(id) => void openLesson(id)}
                 onOpenQuiz={(id) => void openQuiz(id)}
               />
@@ -206,7 +224,9 @@ export function SubjectMaterialsPage() {
                   {previewError}
                 </div>
               )}
-              {lesson && openItem?.kind === "lesson" && <LessonPreview lesson={lesson} />}
+              {lesson && (openItem?.kind === "lesson" || openItem?.kind === "topic-lesson") && (
+                <LessonPreview lesson={lesson} />
+              )}
               {quiz && openItem?.kind === "quiz" && <QuizPreview quiz={quiz} />}
             </>
           ) : (
@@ -218,50 +238,80 @@ export function SubjectMaterialsPage() {
   );
 }
 
+function lessonCountFor(topic: TopicNode): number {
+  const topicLesson = topic.has_topic_lesson ? 1 : 0;
+  const subtopicLessons = topic.subtopics.filter((subtopic) => subtopic.has_lesson).length;
+  return topicLesson + subtopicLessons;
+}
+
 function quizCountFor(topic: TopicNode): number {
   return (
-    topic.subtopics.filter((st) => st.quiz?.available).length +
+    topic.subtopics.filter((subtopic) => subtopic.quiz?.available).length +
     (topic.overall_quiz?.available ? 1 : 0)
   );
+}
+
+function countPhrase(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function TabBody({
   tab,
   topic,
   openItem,
+  onOpenTopicLesson,
   onOpenLesson,
   onOpenQuiz,
 }: {
   tab: Tab;
   topic: TopicNode;
   openItem: OpenItem | null;
+  onOpenTopicLesson: (topicId: string) => void;
   onOpenLesson: (subtopicId: string) => void;
   onOpenQuiz: (subtopicId: string) => void;
 }) {
   switch (tab) {
-    case "lessons":
+    case "lessons": {
+      const publishedSubtopics = topic.subtopics.filter((subtopic) => subtopic.has_lesson);
+      if (!topic.has_topic_lesson && publishedSubtopics.length === 0) {
+        return <p className="muted">No published lesson for this topic.</p>;
+      }
       return (
         <ul className="teacher-item-list">
-          {topic.subtopics.map((subtopic) => {
+          {topic.has_topic_lesson && (
+            <li>
+              <button
+                type="button"
+                className={`teacher-item-list__row${
+                  openItem?.kind === "topic-lesson" && openItem.topicId === topic.id
+                    ? " is-active"
+                    : ""
+                }`}
+                onClick={() => onOpenTopicLesson(topic.id)}
+              >
+                <span>{topic.title} lesson</span>
+                <span className="badge badge--ok">Published</span>
+              </button>
+            </li>
+          )}
+          {publishedSubtopics.map((subtopic) => {
             const selected = openItem?.kind === "lesson" && openItem.subtopicId === subtopic.id;
             return (
               <li key={subtopic.id}>
                 <button
                   type="button"
                   className={`teacher-item-list__row${selected ? " is-active" : ""}`}
-                  disabled={!subtopic.has_lesson}
                   onClick={() => onOpenLesson(subtopic.id)}
                 >
                   <span>{subtopic.title}</span>
-                  <span className={`badge ${subtopic.has_lesson ? "badge--ok" : "badge--warn"}`}>
-                    {subtopic.has_lesson ? "Published" : "Missing"}
-                  </span>
+                  <span className="badge badge--ok">Published</span>
                 </button>
               </li>
             );
           })}
         </ul>
       );
+    }
     case "quizzes":
       return (
         <ul className="teacher-item-list">

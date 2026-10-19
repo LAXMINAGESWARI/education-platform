@@ -53,9 +53,6 @@ export function TeacherShell() {
 
   return (
     <div className="app-frame">
-      <div className="demo-banner" role="status">
-        Teacher workspace · live data, narrowed to your teaching assignments
-      </div>
       <div className={`app ${railCollapsed ? "is-rail-collapsed" : ""}`}>
         <aside
           className={`rail ${railCollapsed ? "is-collapsed" : ""}`}

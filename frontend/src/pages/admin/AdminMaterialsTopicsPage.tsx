@@ -474,9 +474,9 @@ export function AdminMaterialsTopicsPage() {
               onRetry={() => void onRetryRun(topic.id)}
             />
           ))}
-          <section className="school-section school-section--units" aria-labelledby="units-heading">
+          <section className="school-section school-section--units" aria-labelledby="topics-heading">
             <header className="school-section__head">
-              <h2 id="units-heading">Topics</h2>
+              <h2 id="topics-heading">Topics</h2>
               <p>Review each topic lesson and quiz.</p>
             </header>
             {unitCards.length === 0 ? (
