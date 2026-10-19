@@ -246,6 +246,11 @@ describe("TopicLessonPage", () => {
     expect(screen.queryByRole("link", { name: "Start quiz" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Area of the path" })).toBeInTheDocument();
     expect(screen.getByText("Area of the path", { selector: ".slide-nav__section" })).toBeInTheDocument();
+    expect(
+      document.querySelector(".lesson-overview__scroll")?.contains(
+        screen.getByRole("heading", { name: "Area of the path" }),
+      ),
+    ).toBe(false);
     expect(screen.getByRole("heading", { name: "Check" })).toBeInTheDocument();
     expect(screen.getByText(/Slide 1 of 1/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Next slide" })).not.toBeInTheDocument();
@@ -287,11 +292,16 @@ describe("TopicLessonPage", () => {
     expect(next).toBeEnabled();
     expect(screen.getByText("Perimeter", { selector: ".slide-nav__section" })).toBeInTheDocument();
     expect(screen.getByText(/Slide 1 of 2/)).toBeInTheDocument();
+    const scroller = document.querySelector(".lesson-overview__scroll");
+    expect(scroller).toHaveAttribute("data-slide-index", "0");
+    expect(scroller?.contains(next)).toBe(false);
+    expect(scroller?.textContent).not.toMatch(/Slide 1 of 2/);
 
     await user.click(next);
 
     expect(screen.getByText("Area", { selector: ".slide-nav__section" })).toBeInTheDocument();
     expect(screen.getByText(/Slide 2 of 2/)).toBeInTheDocument();
+    expect(document.querySelector(".lesson-overview__scroll")).toHaveAttribute("data-slide-index", "1");
     expect(screen.queryByRole("button", { name: "Next slide" })).not.toBeInTheDocument();
   });
 

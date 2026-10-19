@@ -330,7 +330,9 @@ a.btn--matte:hover:not(:disabled) {
 .app-frame {
   position: relative;
   z-index: 1;
+  min-height: 100vh;
   min-height: 100dvh;
+  height: 100vh;
   height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -1950,20 +1952,27 @@ a.list-item__title:hover {
   text-decoration: underline;
 }
 
-.main:has(.topic-lesson-page),
-.route-motion:has(.topic-lesson-page),
-.route-motion__page:has(.topic-lesson-page),
-.main__inner:has(.topic-lesson-page),
-.topic-lesson-page,
-.topic-lesson-page .lesson-layout,
-.topic-lesson-page .lesson-slides,
-.topic-lesson-page .lesson-overview,
-.topic-lesson-page .lesson-overview__scroll {
+.topic-lesson-page .lesson-stage__bar {
   flex: none;
-  height: auto;
-  min-height: 0;
-  max-height: none;
-  overflow: visible;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  width: min(100%, 48rem);
+  margin: 0 auto 0.55rem;
+}
+
+.topic-lesson-page .slide-nav__progress {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.topic-lesson-page .slide-nav__section {
+  max-width: min(22rem, 46vw);
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+  white-space: normal;
 }
 
 .topic-entries {
@@ -5973,5 +5982,149 @@ a.btn:disabled:hover {
   .answer-row__mark {
     grid-column: 2;
     justify-self: start;
+  }
+}
+
+/* Topic lessons fill the viewport. The shell is 100vh / 100dvh, and only the
+   slide box scrolls. Safe-area padding keeps the nav clear of the PWA chrome. */
+.app__content:has(.topic-lesson-page) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.app__content:has(.topic-lesson-page) .topbar {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  padding-right: max(1rem, env(safe-area-inset-right));
+  padding-left: max(1rem, env(safe-area-inset-left));
+}
+
+.main:has(.topic-lesson-page) {
+  flex: 1 1 auto;
+  height: auto;
+  max-height: 100%;
+  overflow: hidden;
+  min-height: 0;
+  padding: 0.75rem max(1rem, env(safe-area-inset-right)) max(0.75rem, env(safe-area-inset-bottom))
+    max(1rem, env(safe-area-inset-left));
+}
+
+.route-motion:has(.topic-lesson-page),
+.main__inner:has(.topic-lesson-page),
+.route-motion__page:has(.topic-lesson-page),
+.topic-lesson-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  height: auto;
+  max-height: none;
+  overflow: hidden;
+}
+
+.main__inner:has(.topic-lesson-page) .crumbs {
+  flex: none;
+  width: min(100%, 48rem);
+  margin: 0 auto 0.35rem;
+  font-size: 0.92rem;
+}
+
+.topic-lesson-page .lesson-layout,
+.topic-lesson-page .lesson-slides,
+.topic-lesson-page .lesson-overview {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: min(100%, 48rem);
+  max-height: none;
+  height: auto;
+  overflow: hidden;
+  margin-inline: auto;
+}
+
+.topic-lesson-page .lesson-overview__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  max-height: none;
+  overflow: auto;
+  overflow-x: hidden;
+}
+
+.topic-lesson-page .lesson-overview__footer {
+  flex: none;
+}
+
+.topic-lesson-page .lesson-overview__scroll .markdown-content,
+.topic-lesson-page .lesson-overview__scroll .katex-display,
+.topic-lesson-page .lesson-overview__scroll .markdown-table-scroll,
+.topic-lesson-page .lesson-overview__scroll pre {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.topic-lesson-page .lesson-overview__scroll .katex-display,
+.topic-lesson-page .lesson-overview__scroll .markdown-table-scroll,
+.topic-lesson-page .lesson-overview__scroll pre {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+@media (max-width: 860px) {
+  .topic-lesson-page .lesson-stage__bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topic-lesson-page .slide-nav__progress {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .topic-lesson-page .slide-nav__section {
+    max-width: none;
+  }
+}
+
+@media (max-height: 520px) {
+  .app__content:has(.topic-lesson-page) .topbar {
+    padding-top: max(0.3rem, env(safe-area-inset-top));
+    padding-bottom: 0.3rem;
+  }
+
+  .main:has(.topic-lesson-page) {
+    padding-top: 0.35rem;
+    padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+  }
+
+  .main__inner:has(.topic-lesson-page) .crumbs {
+    margin-bottom: 0.15rem;
+    font-size: 0.78rem;
+  }
+
+  .topic-lesson-page .lesson-stage__bar {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 0.25rem;
+  }
+
+  .topic-lesson-page .slide-nav__progress {
+    align-items: flex-end;
+    text-align: right;
+  }
+
+  .topic-lesson-page .lesson-overview__scroll {
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
+  }
+
+  .topic-lesson-page .lesson-overview__footer {
+    padding: 0.4rem 0.75rem;
   }
 }
