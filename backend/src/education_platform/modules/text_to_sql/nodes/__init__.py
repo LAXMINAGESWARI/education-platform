@@ -29,6 +29,9 @@ from education_platform.modules.text_to_sql.nodes.load_schema import load_schema
 from education_platform.modules.text_to_sql.nodes.question_validator import (
     question_validator as question_validator,
 )
+from education_platform.modules.text_to_sql.nodes.resolve_at_risk import (
+    resolve_at_risk as resolve_at_risk,
+)
 from education_platform.modules.text_to_sql.nodes.sanity_check import (
     sanity_check as sanity_check,
 )
@@ -48,6 +51,7 @@ __all__ = [
     "link_schema",
     "load_schema",
     "question_validator",
+    "resolve_at_risk",
     "sanity_check",
     "validate_sql",
 ]

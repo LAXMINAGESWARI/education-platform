@@ -363,6 +363,27 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
         return _free_form(state, decision)
 
     template, parameters = selected
+    criterion = template.get("criterion")
+    if template.get("service") == "at_risk_students":
+        # No SQL. The graph calls the at-risk service so the answer is the same
+        # student set as GET /at-risk/flags for this viewer.
+        return {
+            **state,
+            "intent_route": "template",
+            "intent": template["name"],
+            "intent_confidence": decision.confidence,
+            "intent_parameters": parameters,
+            "query_source": "service",
+            "generated_sql": None,
+            "answer_criterion": criterion
+            if isinstance(criterion, str) and criterion.strip()
+            else None,
+            "zero_result_is_valid": bool(template.get("zero_is_valid")),
+            "empty_answer": _empty_answer(template, parameters, criterion),
+            "zero_probe_sql": {},
+            "zero_probe_results": None,
+            "error": None,
+        }
     shape = parameters.get("shape")
     sql_key = f"sql_{shape}" if shape else "sql"
     sql = template.get(sql_key)

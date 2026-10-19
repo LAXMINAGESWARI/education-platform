@@ -61,6 +61,73 @@ class FlagRow:
     dismissal_note: str | None
 
 
+# Labels the assistant and the flag page both use. Order is fixed so a student
+# with several drivers reads the same way every time.
+REASON_ORDER: tuple[str, ...] = ("low attendance", "low mastery", "declining trend")
+_REASON_BY_METRIC: dict[str, str] = {
+    "attendance_percent": "low attendance",
+    "mastery_percent": "low mastery",
+    "mastery_trend": "declining trend",
+}
+
+
+def reasons_from_drivers(drivers: list[dict[str, object]]) -> tuple[str, ...]:
+    """Map engine driver metrics onto the three reasons a person can be at risk."""
+    found: set[str] = set()
+    unknown: list[str] = []
+    for driver in drivers:
+        metric = driver.get("metric")
+        if not isinstance(metric, str):
+            continue
+        label = _REASON_BY_METRIC.get(metric)
+        if label is None:
+            if metric not in unknown:
+                unknown.append(metric)
+        else:
+            found.add(label)
+    ordered = tuple(reason for reason in REASON_ORDER if reason in found)
+    return ordered + tuple(unknown)
+
+
+@dataclass(frozen=True, slots=True)
+class AtRiskStudent:
+    """One student behind one or more active flags the viewer is allowed to see."""
+
+    student_id: UUID
+    student_name: str
+    reasons: tuple[str, ...]
+
+
+async def list_at_risk_students(
+    session: AsyncSession, scope: Scope, *, limit: int = 200
+) -> list[AtRiskStudent]:
+    """Distinct students from `list_flags` — the same rows the at-risk page shows.
+
+    A teacher and an administrator therefore see the same students here as on
+    their own flag list, including the Section 7.2 rule that an attendance-only
+    flag (no subject offering) is visible to administrators only.
+    """
+    flags = await list_flags(session, scope, limit=limit)
+    names: dict[UUID, str] = {}
+    labels_by_student: dict[UUID, set[str]] = {}
+    for flag in flags:
+        names.setdefault(flag.student_id, flag.student_name)
+        labels_by_student.setdefault(flag.student_id, set()).update(
+            reasons_from_drivers(flag.drivers)
+        )
+    students = [
+        AtRiskStudent(
+            student_id=student_id,
+            student_name=names[student_id],
+            reasons=tuple(reason for reason in REASON_ORDER if reason in labels)
+            + tuple(sorted(labels - set(REASON_ORDER))),
+        )
+        for student_id, labels in labels_by_student.items()
+    ]
+    students.sort(key=lambda student: (student.student_name.casefold(), str(student.student_id)))
+    return students
+
+
 async def list_flags(session: AsyncSession, scope: Scope, *, limit: int = 200) -> list[FlagRow]:
     """Active flags in scope. Students are blocked at the router (`require_role`)."""
     flags = (

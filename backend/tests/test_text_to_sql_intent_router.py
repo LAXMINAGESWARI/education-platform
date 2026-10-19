@@ -67,16 +67,9 @@ async def test_approved_formerly_signoff_gated_templates_now_route_successfully(
     monkeypatch: pytest.MonkeyPatch,
     intent: str,
 ) -> None:
-    """`students_meeting_performance_bar` ("doing well") and `students_needing_support`
-    ("struggling") were both `requires_signoff: true` — permanently unselectable — until
-    the client approved their thresholds (mastery >= 85 AND quizzes_passed >= 1 for the
-    former; mastery < 60 OR attendance < 80, matching at_risk.engine.DEFAULT_THRESHOLDS,
-    for the latter). This is the mirror of the removed case in
-    test_invalid_or_ambiguous_decisions_fall_back_to_free_form — before approval, an
-    otherwise-perfect decision for either intent still fell back to free_form solely
-    because of the signoff flag; now it must route to template like any other approved
-    one, proving `requires_signoff: false` actually re-enables selection rather than
-    just silencing the flag.
+    """Both intents used to be permanently unselectable (`requires_signoff: true`).
+    They must still route. `students_needing_support` is answered by the at-risk
+    service, so it carries no SQL; the performance-bar template still does.
     """
     operation = "count" if intent == "students_meeting_performance_bar" else "list"
     parameters = {} if intent == "students_meeting_performance_bar" else {"shape": "list"}
@@ -89,20 +82,20 @@ async def test_approved_formerly_signoff_gated_templates_now_route_successfully(
 
     assert result["intent_route"] == "template"
     assert result["intent"] == intent
-    assert result["query_source"] == "template"
-    assert result["generated_sql"]
+    if intent == "students_needing_support":
+        assert result["query_source"] == "service"
+        assert result["generated_sql"] is None
+    else:
+        assert result["query_source"] == "template"
+        assert result["generated_sql"]
 
 
 @pytest.mark.asyncio
 async def test_at_risk_count_question_routes_to_students_needing_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ "At risk" is treated as a synonym for students_needing_support's approved
-    "struggling" definition (mastery < 60 OR attendance < 80), not a separate template —
-    see that template's description. "How many students are at risk?" is a count
-    question, so this also covers the template's sql_count/shape="count" path (the
-    template was list-only before; this is the mirror of
-    test_question_grounded_attendance_match_still_routes_to_template for this intent).
+    """ "At risk" routes to students_needing_support, which the at-risk service
+    answers. The count shape is carried in parameters; there is no SQL to count with.
     """
     _mock_classifier(
         monkeypatch,
@@ -118,9 +111,15 @@ async def test_at_risk_count_question_routes_to_students_needing_support(
 
     assert result["intent_route"] == "template"
     assert result["intent"] == "students_needing_support"
-    assert result["query_source"] == "template"
-    assert "COUNT" in (result["generated_sql"] or "")
-    assert result["answer_criterion"] == "mastery below 60% or attendance below 80%"
+    assert result["query_source"] == "service"
+    assert result["generated_sql"] is None
+    assert result["intent_parameters"]["shape"] == "count"
+    assert result["answer_criterion"] == (
+        "using the at-risk definition for your classes, the same students as the at-risk "
+        "flags. A flag is low mastery (below 60%), a mastery decline of more than 15 points, "
+        "or low attendance (below 80%) when that flag is visible to you. Attendance-only "
+        "flags are an administrator view and are not included for a teacher"
+    )
 
 
 async def test_free_form_route_has_no_answer_criterion(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -736,7 +735,11 @@ async def test_support_template_empty_answer_includes_its_criterion(
     result = await _MODULE.intent_router(_state("Show me the struggling students."))
 
     assert result["empty_answer"] == (
-        "None of your students currently need support (mastery below 60% or attendance below 80%)."
+        "None of your students are on the at-risk list for your classes "
+        "(using the at-risk definition for your classes, the same students as the at-risk "
+        "flags. A flag is low mastery (below 60%), a mastery decline of more than 15 points, "
+        "or low attendance (below 80%) when that flag is visible to you. Attendance-only "
+        "flags are an administrator view and are not included for a teacher)."
     )
 
 

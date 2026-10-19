@@ -7,6 +7,7 @@ needed to exercise the routing decision itself.
 from __future__ import annotations
 
 from education_platform.modules.text_to_sql.graph import (
+    _route_after_intent_router,
     _route_after_load_schema,
     _route_after_validate,
 )
@@ -16,6 +17,15 @@ from education_platform.modules.text_to_sql.state import (
     VALIDATION_ERROR,
     format_error,
 )
+
+
+def test_at_risk_template_routes_to_the_service_not_sql() -> None:
+    assert _route_after_intent_router({"intent_route": "template", "query_source": "service"}) == (
+        "service"
+    )
+    assert _route_after_intent_router({"intent_route": "template", "query_source": "template"}) == (
+        "template"
+    )
 
 
 def test_route_after_validate_valid_sql_goes_to_apply_role_scope() -> None:
