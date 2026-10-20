@@ -13,8 +13,14 @@ from dataclasses import dataclass
 
 from education_platform.modules.judge.checks import LessonTarget
 from education_platform.modules.judge.evaluate import Evaluation, evaluate_lesson
-from education_platform.modules.judge.policy import DECISION_ERROR, DECISION_REJECT, DECISION_REVIEW
+from education_platform.modules.judge.policy import (
+    DECISION_ERROR,
+    DECISION_REJECT,
+    DECISION_REVIEW,
+    HOLD_CHECK_ID,
+)
 from education_platform.modules.judge.protocol import Judge
+from education_platform.modules.judge.types import CheckResult
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +53,17 @@ def lesson_hold(reasons: tuple[str, ...], *, model: str | None) -> Evaluation:
         gate_decision=DECISION_REVIEW,
         reasons=reasons,
         gate_reasons=reasons,
-        checks=(),
+        checks=(
+            CheckResult(
+                check_id=HOLD_CHECK_ID,
+                kind="marker",
+                decision=DECISION_REVIEW,
+                summary="hold",
+                reasons=(),
+                probabilities={},
+                drives_gate=False,
+            ),
+        ),
         model=model,
         provider=None,
         request_id=None,
@@ -88,7 +104,9 @@ def review_lesson_sections(
                 current = revised
                 regenerated = True
                 evaluation = _safe_lesson(current, judge, include_claims=True)
-                if evaluation is None or source_rejected(evaluation):
+                # An unexpected failure is already logged. Jev being down falls
+                # open to the section that was just written.
+                if evaluation is not None and source_rejected(evaluation):
                     held = True
         reviews.append(SectionReview(current, evaluation, regenerated))
     return tuple(reviews), held

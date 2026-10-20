@@ -109,6 +109,9 @@ markers = [
 ]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "regression: multi-step journeys replayed against fixtures",
+]
 
 [tool.coverage.run]
 branch = true

@@ -199,7 +199,7 @@ def store_evaluation(
             subject_kind=evaluation.subject_kind,
             subject_key=subject_key,
             label=evaluation.label[:200],
-            mode=mode if mode in {"off", "shadow", "enforce"} else "enforce",
+            mode=mode if mode in {"off", "shadow", "enforce"} else "shadow",
             decision=evaluation.decision
             if evaluation.decision in {"accept", "needs_review", "reject", "error"}
             else "error",
