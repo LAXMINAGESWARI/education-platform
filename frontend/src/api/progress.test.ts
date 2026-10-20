@@ -908,6 +908,62 @@ describe("progress SSE client", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("recovers when a healthy stream stalls and the resume waits out one heartbeat", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const quiet = controllableFrames();
+    const onSnapshot = vi.fn();
+    vi.mocked(apiStream)
+      .mockResolvedValueOnce(quiet.response)
+      .mockImplementationOnce(
+        (_path, options) =>
+          new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              resolve(
+                streamResponse([
+                  ": heartbeat\n\n",
+                  snapshotFrame("indexing", "run-1:resumed"),
+                  'event: close\ndata: {"reason":"terminal"}\n\n',
+                ]),
+              );
+            }, 15_000);
+            options?.signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(new DOMException("Aborted", "AbortError"));
+              },
+              { once: true },
+            );
+          }),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot,
+      }),
+    );
+
+    quiet.send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+    quiet.send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+    quiet.send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_STALL_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(apiStream).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("gives up on headers-then-silence within the outage budget", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
