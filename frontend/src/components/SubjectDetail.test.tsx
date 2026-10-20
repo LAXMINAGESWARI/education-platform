@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -211,7 +212,9 @@ describe("SubjectDetail", () => {
 });
 
 describe("SubjectRouteStatus", () => {
-  it("renders loading, error, and missing states", () => {
+  it("renders loading, error, and missing states", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
     const { rerender } = render(
       <MemoryRouter>
         <SubjectRouteStatus kind="loading" />
@@ -221,10 +224,13 @@ describe("SubjectRouteStatus", () => {
 
     rerender(
       <MemoryRouter>
-        <SubjectRouteStatus kind="error" message="Could not load subjects." />
+        <SubjectRouteStatus kind="error" message="Could not load subjects." onRetry={onRetry} />
       </MemoryRouter>,
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load subjects.");
+    expect(screen.getByRole("link", { name: "Back to subjects" })).toHaveAttribute("href", "/");
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetry).toHaveBeenCalledOnce();
 
     rerender(
       <MemoryRouter>

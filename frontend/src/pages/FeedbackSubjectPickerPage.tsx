@@ -117,7 +117,10 @@ export function FeedbackSubjectPickerPage() {
             <button
               type="button"
               className="btn btn--sm btn--outline"
-              onClick={() => setAttempt((value) => value + 1)}
+              onClick={() => {
+                setError(null);
+                setAttempt((value) => value + 1);
+              }}
             >
               Try again
             </button>
@@ -198,8 +201,8 @@ export function FeedbackSubjectPickerPage() {
                 </h2>
                 <p>
                   {visibleDue.length === 0
-                    ? "No lessons are due for review in this subject."
-                    : `${visibleDue.length} ${visibleDue.length === 1 ? "lesson is" : "lessons are"} past the review interval.`}
+                    ? "No subtopics are due for review in this subject."
+                    : `${visibleDue.length} ${visibleDue.length === 1 ? "subtopic is" : "subtopics are"} past the review interval.`}
                 </p>
               </header>
               {visibleDue.length > 0 ? <DueReviewsTable rows={visibleDue} /> : null}

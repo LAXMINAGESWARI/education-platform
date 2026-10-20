@@ -405,6 +405,7 @@ describe("feedback hierarchy", () => {
 
     const due = await screen.findByRole("region", { name: "Due for review" });
     expect(due).toHaveAttribute("id", "feedback-due");
+    expect(due).toHaveTextContent("1 subtopic is past the review interval.");
     expect(due).toHaveTextContent("Fractions practice");
     expect(due).not.toHaveTextContent("Forces practice");
   });

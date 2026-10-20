@@ -18,9 +18,11 @@ import { SchoolMaterialPanel } from "./SchoolMaterialPanel";
 function SubjectRouteBody({
   kind,
   message,
+  onRetry,
 }: {
   kind: "loading" | "error" | "missing";
   message?: string;
+  onRetry?: () => void;
 }) {
   switch (kind) {
     case "loading":
@@ -31,9 +33,17 @@ function SubjectRouteBody({
       );
     case "error":
       return (
-        <p className="form__error" role="alert">
-          {message ?? "Could not load this subject."}
-        </p>
+        <div className="subject-status">
+          <p className="form__error" role="alert">
+            {message ?? "Could not load this subject."}
+          </p>
+          <button type="button" className="btn btn--sm" onClick={() => onRetry?.()}>
+            Try again
+          </button>
+          <Link className="btn btn--sm btn--outline" to="/">
+            Back to subjects
+          </Link>
+        </div>
       );
     case "missing":
       return (
@@ -56,9 +66,11 @@ function SubjectRouteBody({
 export function SubjectRouteStatus({
   kind,
   message,
+  onRetry,
 }: {
   kind: "loading" | "error" | "missing";
   message?: string;
+  onRetry?: () => void;
 }) {
   return (
     <div className="subject-view">
@@ -68,7 +80,7 @@ export function SubjectRouteStatus({
           { label: "Subject" },
         ]}
       />
-      <SubjectRouteBody kind={kind} message={message} />
+      <SubjectRouteBody kind={kind} message={message} onRetry={onRetry} />
     </div>
   );
 }
@@ -130,7 +142,7 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
             </>
           ) : (
             <>
-              <div className="progress-label" id="subject-progress-label">
+              <div className="progress-label">
                 {done}/{total} topics complete · {pct}%
               </div>
               <div

@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import type { TopicNode } from "../api/types";
+import type { SubjectNode, TopicNode } from "../api/types";
 import {
   hasPublishedTopicLesson,
   overallQuizCopy,
   overallQuizGate,
+  subjectCardCounts,
+  subjectResumeTarget,
+  subjectStudyStatus,
   subjectTopicLessonTopics,
   subjectUnitEntries,
-  topicLessonEntry,
   topicHistoryPath,
+  topicLessonEntry,
   topicLessonPath,
   topicLessonResumePath,
-  subjectResumeTarget,
   topicPagePath,
   topicQuizEntry,
 } from "./subjectMaterial";
@@ -40,6 +42,78 @@ const baseTopic: TopicNode = {
     recent_attempts: [],
   },
 };
+
+function subject(overrides: Partial<SubjectNode> = {}): SubjectNode {
+  return {
+    id: "math-1",
+    code: "MATH",
+    name: "Mathematics",
+    grade_name: "Grade 8",
+    academic_period_name: "2026-27",
+    progress_percent: 0,
+    topics: [],
+    ...overrides,
+  };
+}
+
+describe("subjectStudyStatus and subjectCardCounts", () => {
+  it("marks an empty subject as coming soon and a finished one as complete", () => {
+    expect(subjectStudyStatus(subject())).toBe("coming_soon");
+    expect(subjectStudyStatus(subject({ topics: [{ ...baseTopic, progress_percent: 0 }] }))).toBe(
+      "not_started",
+    );
+    expect(subjectStudyStatus(subject({ topics: [baseTopic] }))).toBe("in_progress");
+    expect(
+      subjectStudyStatus(
+        subject({
+          progress_percent: 100,
+          topics: [{ ...baseTopic, complete: true, progress_percent: 100 }],
+        }),
+      ),
+    ).toBe("complete");
+    expect(
+      subjectStudyStatus(
+        subject({
+          done: 2,
+          total: 2,
+          progress_percent: 100,
+          topics: [baseTopic],
+        }),
+      ),
+    ).toBe("complete");
+  });
+
+  it("counts published lessons and available quizzes", () => {
+    expect(subjectCardCounts([])).toEqual({
+      lessonsDone: 0,
+      lessonsTotal: 0,
+      quizzesPassed: 0,
+      quizzesAvailable: 0,
+    });
+    expect(
+      subjectCardCounts([
+        {
+          ...baseTopic,
+          has_topic_lesson: true,
+          topic_lesson_completed: true,
+          overall_quiz: { ...baseTopic.overall_quiz!, available: true, passed: true },
+        },
+        {
+          ...baseTopic,
+          id: "topic-2",
+          has_topic_lesson: true,
+          topic_lesson_completed: false,
+          overall_quiz: { ...baseTopic.overall_quiz!, available: false, passed: false },
+        },
+      ]),
+    ).toEqual({
+      lessonsDone: 1,
+      lessonsTotal: 2,
+      quizzesPassed: 1,
+      quizzesAvailable: 1,
+    });
+  });
+});
 
 describe("subjectMaterial topic lesson helpers", () => {
   it("lists published subtopic lessons as units and keeps a parent topic lesson separate", () => {

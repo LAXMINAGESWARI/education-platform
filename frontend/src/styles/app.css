@@ -366,71 +366,6 @@ a.btn--matte:hover:not(:disabled) {
   background-size: 40px 40px;
 }
 
-.ambient-backdrop__chrome {
-  position: fixed;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 0.35rem 0.5rem;
-  pointer-events: none;
-  box-sizing: border-box;
-}
-
-.ambient-backdrop__chrome-progress {
-  width: 100%;
-}
-
-.ambient-backdrop__chrome-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.35rem 0.75rem;
-  margin-bottom: 0.35rem;
-}
-
-.ambient-backdrop__chrome-label {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  color: var(--ink);
-}
-
-.ambient-backdrop__chrome-badge {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.2rem 0.65rem;
-  border-radius: var(--radius-pill);
-  background: var(--warning-bg);
-  color: var(--warning);
-}
-
-.ambient-backdrop__chrome-badge--ok {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.ambient-backdrop__chrome-track {
-  height: 8px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  overflow: hidden;
-}
-
-.ambient-backdrop__chrome-track > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--warning) 72%, transparent);
-}
-
-.ambient-backdrop__chrome-progress:has(.ambient-backdrop__chrome-badge--ok)
-  .ambient-backdrop__chrome-track
-  > span {
-  background: color-mix(in srgb, var(--success) 75%, transparent);
-}
-
 /* Layered glass highlights (Calm Humanist moodboard: yellow → blue → red). */
 a:hover,
 button:hover:not(:disabled),
@@ -6935,13 +6870,6 @@ a.btn:disabled:hover {
   gap: 0.35rem;
 }
 
-.catalog-subject__name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
-
 a.catalog-subject__link {
   color: inherit;
   text-decoration: none;
@@ -6965,16 +6893,6 @@ a.catalog-subject__link {
   align-items: flex-start;
 }
 
-.catalog-progress {
-  display: grid;
-  gap: 0.3rem;
-  min-width: 6.5rem;
-}
-
-.catalog-progress .progress {
-  height: 0.55rem;
-}
-
 .catalog-table .feedback-focus {
   margin: 0;
 }
@@ -6991,6 +6909,57 @@ a.catalog-subject__link {
     display: inline-flex;
     align-items: center;
     min-height: 2.75rem;
+  }
+
+  .catalog-table.data-table--cards thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .catalog-table.data-table--cards,
+  .catalog-table.data-table--cards tbody,
+  .catalog-table.data-table--cards tr,
+  .catalog-table.data-table--cards td {
+    display: block;
+    width: auto;
+  }
+
+  .catalog-table.data-table--cards tr {
+    margin: 0 0 0.75rem;
+    padding: 0.35rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+  }
+
+  .catalog-table.data-table--cards td {
+    border: 0;
+    white-space: normal;
+    max-width: none;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(5.75rem, 36%) minmax(0, 1fr);
+    gap: 0.35rem 0.75rem;
+    align-items: start;
+    padding: 0.45rem 0;
+  }
+
+  .catalog-table.data-table--cards td::before {
+    content: attr(data-label);
+    font-weight: 650;
+    color: var(--ink-muted);
+    font-size: 0.78rem;
+  }
+
+  .table-scroll:has(.catalog-table.data-table--cards) {
+    overflow: visible;
   }
 
   .stat-kpis {
