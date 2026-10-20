@@ -6,6 +6,7 @@ blind solver still runs as well: an item is kept only when both pass.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -23,7 +24,12 @@ DECISION_ACCEPT = "accept"
 DECISION_REVIEW = "needs_review"
 DECISION_REJECT = "reject"
 DECISION_ERROR = "error"
+HOLD_CHECK_ID = "hold"
+_VALID_MODES = frozenset({"off", "shadow", "enforce"})
 _RANK = {DECISION_ACCEPT: 0, DECISION_REVIEW: 1, DECISION_REJECT: 2, DECISION_ERROR: 3}
+
+logger = logging.getLogger(__name__)
+_judge_mode_warned = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +64,53 @@ class PolicyOutcome:
 
 
 def judge_mode(settings: Settings | None = None) -> str:
-    value = (settings or get_settings()).jev_judge_mode.strip().lower()
-    if value in {"off", "shadow", "enforce"}:
-        return value
-    return "enforce"
+    """Resolve the judge mode. ``enforce`` is only an explicit ``JEV_JUDGE_MODE`` opt-in.
+
+    Unset, unknown, and legacy values (including ``augment`` and ``JEV_MODE=enforce``)
+    resolve to ``shadow``. ``JEV_MODE`` still supplies ``off`` or ``shadow`` when the
+    new name is unset.
+    """
+    cfg = settings or get_settings()
+    explicit = (cfg.jev_judge_mode or "").strip().lower()
+    if explicit:
+        return explicit if explicit in _VALID_MODES else "shadow"
+    legacy = (cfg.jev_mode or "").strip().lower()
+    if legacy in {"off", "shadow"}:
+        return legacy
+    return "shadow"
+
+
+def judge_mode_warning(settings: Settings | None = None) -> str | None:
+    """One startup warning when the configured mode is invalid or legacy."""
+    cfg = settings or get_settings()
+    explicit = (cfg.jev_judge_mode or "").strip()
+    if explicit:
+        if explicit.lower() not in _VALID_MODES:
+            return (
+                f"JEV_JUDGE_MODE={explicit!r} is not a known judge mode. Using shadow. "
+                "Set JEV_JUDGE_MODE to off, shadow, or enforce."
+            )
+        return None
+    legacy = (cfg.jev_mode or "").strip()
+    if not legacy:
+        return None
+    resolved = legacy.lower() if legacy.lower() in {"off", "shadow"} else "shadow"
+    return (
+        f"JEV_MODE={legacy!r} is a legacy setting. Using {resolved}. "
+        "Set JEV_JUDGE_MODE to off, shadow, or enforce."
+    )
+
+
+def warn_judge_mode_at_startup(settings: Settings | None = None) -> None:
+    """Log the invalid-or-legacy warning once per process."""
+    global _judge_mode_warned
+    if _judge_mode_warned:
+        return
+    message = judge_mode_warning(settings)
+    if message is None:
+        return
+    _judge_mode_warned = True
+    logger.warning("%s", message)
 
 
 def apply_policy(

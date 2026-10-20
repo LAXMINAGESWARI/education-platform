@@ -982,8 +982,20 @@ def _apply_lesson_judge(
     *,
     writer: TopicLessonWriter | None,
     job_id: UUID | None,
+    only_section_keys: frozenset[UUID] | None = None,
 ) -> tuple[str, tuple[LessonSection, ...]]:
-    """Judge sections, rewrite a source reject once, and return stitched markdown."""
+    """Judge sections, rewrite a source reject once, and return stitched markdown.
+
+    ``only_section_keys`` limits judging to a repair. The full lesson is still
+    stitched. A partial repair does not call the whole-lesson judge and does
+    not write a lesson row unless enforce actually holds the repaired section.
+    """
+    paired = tuple(zip(nodes, sections, strict=True))
+    judged = tuple(
+        (node, section)
+        for node, section in paired
+        if only_section_keys is None or node.id in only_section_keys
+    )
     targets = tuple(
         LessonTarget(
             heading=section.heading,
@@ -993,7 +1005,7 @@ def _apply_lesson_judge(
             markdown=section.markdown,
             kind="lesson_section",
         )
-        for node, section in zip(nodes, sections, strict=True)
+        for node, section in judged
     )
     judge = _open_item_judge()
     mode = judge_mode()
@@ -1003,12 +1015,21 @@ def _apply_lesson_judge(
         mode=mode,
         rewrite=_section_rewriter(writer, job_id=job_id) if mode == "enforce" else None,
     )
-    updated = tuple(
-        replace(section, heading=review.target.heading, markdown=review.target.markdown)
-        for section, review in zip(sections, reviews, strict=True)
-    )
+    review_by_node = {
+        node.id: review for (node, _section), review in zip(judged, reviews, strict=True)
+    }
+    updated_sections: list[LessonSection] = []
+    for node, section in paired:
+        review = review_by_node.get(node.id)
+        if review is None:
+            updated_sections.append(section)
+            continue
+        updated_sections.append(
+            replace(section, heading=review.target.heading, markdown=review.target.markdown)
+        )
+    updated = tuple(updated_sections)
     markdown = stitch_sections(StitchRequest(grade_voice=grade_voice, sections=updated))
-    for node, review in zip(nodes, reviews, strict=True):
+    for (node, _section), review in zip(judged, reviews, strict=True):
         _store_lesson_evaluation(
             session,
             run,
@@ -1017,17 +1038,19 @@ def _apply_lesson_judge(
             job_id=job_id,
             mode=mode,
         )
-    whole = _whole_lesson_evaluation(
-        run,
-        judge,
-        grade_voice=grade_voice,
-        markdown=markdown,
-        reviews=reviews,
-        mode=mode,
-    )
-    if whole is not None and source_rejected(whole):
-        held = True
-    if held:
+    whole = None
+    if only_section_keys is None:
+        whole = _whole_lesson_evaluation(
+            run,
+            judge,
+            grade_voice=grade_voice,
+            markdown=markdown,
+            reviews=reviews,
+            mode=mode,
+        )
+        if mode == "enforce" and whole is not None and source_rejected(whole):
+            held = True
+    if held and mode == "enforce":
         reasons = tuple(
             reason
             for review in reviews
@@ -1047,7 +1070,7 @@ def _apply_lesson_judge(
             job_id=job_id,
             mode=mode,
         )
-    else:
+    elif only_section_keys is None:
         _store_lesson_evaluation(session, run, whole, subject_key=run.id, job_id=job_id, mode=mode)
     return markdown, updated
 
@@ -1059,6 +1082,7 @@ def _record_repaired_lesson(
     texts_by_node: Mapping[UUID, tuple[str, ...]],
     grade_voice: str,
     writer: TopicLessonWriter | None,
+    section_keys: frozenset[UUID],
 ) -> None:
     if _open_item_judge() is None or judge_mode() == "off":
         return
@@ -1094,6 +1118,7 @@ def _record_repaired_lesson(
         grade_voice,
         writer=writer,
         job_id=None,
+        only_section_keys=section_keys,
     )
     replace_run_lesson_sections(
         session,
@@ -1222,6 +1247,8 @@ def _persist_produced(
     mode = judge_mode()
     tracker = _item_tracker(judge, request, grade_voice, mode)
     for item in produced:
+        if tracker is not None:
+            tracker.begin_item()
         gated = gate_generated_item(
             item,
             solve=_solver_for(solver) if solver is not None else None,
@@ -1717,7 +1744,9 @@ def _repair_lesson_sections(
     run.draft_lesson_markdown = stitch_sections(
         StitchRequest(grade_voice=grade_voice, sections=tuple(stitch_sections_in))
     )
-    _record_repaired_lesson(session, run, snapshots, texts_by_node, grade_voice, writer)
+    _record_repaired_lesson(
+        session, run, snapshots, texts_by_node, grade_voice, writer, section_keys
+    )
     return True
 
 
@@ -1835,6 +1864,8 @@ def _replace_selected_items(
         taken = _topic_prompts(session, run.topic_id)
         mode = judge_mode()
         tracker = _item_tracker(judge, request, grade_voice, mode)
+        if tracker is not None:
+            tracker.begin_item()
         gated = gate_generated_item(
             produced[0],
             solve=_solver_for(solver) if solver is not None else None,

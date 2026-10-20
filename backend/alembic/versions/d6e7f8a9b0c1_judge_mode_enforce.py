@@ -4,7 +4,7 @@ Revision ID: d6e7f8a9b0c1
 Revises: c5d6e7f8a9b0
 Create Date: 2026-10-19 21:10:00.000000
 
-Replaces augment/replace with enforce. Existing shadow and off rows stay valid.
+Replaces augment/replace with shadow. Existing shadow and off rows stay valid.
 """
 
 from collections.abc import Sequence
@@ -19,6 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.drop_constraint("ck_judge_evaluations_mode", "judge_evaluations", type_="check")
+    op.execute("UPDATE judge_evaluations SET mode = 'shadow' WHERE mode IN ('augment', 'replace')")
     op.create_check_constraint(
         "ck_judge_evaluations_mode",
         "judge_evaluations",
@@ -28,6 +29,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint("ck_judge_evaluations_mode", "judge_evaluations", type_="check")
+    op.execute("UPDATE judge_evaluations SET mode = 'shadow' WHERE mode = 'enforce'")
     op.create_check_constraint(
         "ck_judge_evaluations_mode",
         "judge_evaluations",
