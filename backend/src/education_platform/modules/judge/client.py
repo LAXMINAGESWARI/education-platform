@@ -19,8 +19,10 @@ not prefixed onto this path.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Mapping
+from typing import Any
 
 import httpx
 
@@ -201,8 +203,11 @@ def _parse_answer(key: str, value: Mapping[str, object]) -> Answer:
         score = value.get("score")
         if isinstance(score, bool) or not isinstance(score, int | float):
             raise JudgeResponseError(f"Jev score answer {key} did not include a score.")
+        score_value = float(score)
+        if math.isnan(score_value):
+            raise JudgeResponseError(f"Jev score answer {key} was NaN.")
         return ScoreAnswer(
-            score=float(score),
+            score=score_value,
             probabilities=_probability_map(value.get("probabilities")),
             confidence=_optional_unit(value.get("confidence")),
             legend=_legend(value.get("legend")),
@@ -248,10 +253,10 @@ def _optional_unit(raw: object) -> float | None:
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         raise JudgeResponseError("Jev returned a probability that is not a number.")
     value = float(raw)
-    if value < 0.0:
-        return 0.0
-    if value > 1.0:
-        return 1.0
+    if math.isnan(value):
+        raise JudgeResponseError("Jev returned a NaN probability.")
+    if math.isinf(value) or value < 0.0 or value > 1.0:
+        raise JudgeResponseError("Jev returned a probability outside 0-1.")
     return value
 
 
@@ -265,3 +270,116 @@ def _nonneg_int(raw: object) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         return 0
     return max(0, int(raw))
+
+
+_GUARD_NO_RETRY = frozenset({400, 401, 402, 403, 404, 422})
+
+
+class _GuardHttpError(JudgeError):
+    """HTTP failure from the chat-guard Decisions call. Carries the status for retry."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def decisions_endpoint(settings: Settings) -> str:
+    """Decisions URL for the chat guard.
+
+    ``OPENROUTER_BASE_URL`` ends in ``/api/v1``. The Decisions route does not.
+    ``jev_decisions_url`` replaces that derivation when it is set. The lesson
+    judge keeps ``OPENROUTER_DECISIONS_URL``.
+    """
+    override = settings.jev_decisions_url.strip()
+    if override:
+        return override
+    base = settings.openrouter_base_url.rstrip("/")
+    suffix = "/api/v1"
+    origin = base[: -len(suffix)] if base.endswith(suffix) else base
+    return f"{origin}/api/alpha/decisions"
+
+
+def _redacted_snippet(body: str) -> str:
+    text = " ".join(body.split())
+    if "Bearer " in text or "sk-or-" in text:
+        return "redacted"
+    return _snippet(text)
+
+
+async def _post_guard_once(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+) -> DecisionResult:
+    started = time.perf_counter()
+    try:
+        response = await client.post(url, json=body, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise JudgeError("Jev request timed out") from exc
+    except httpx.HTTPError as exc:
+        raise JudgeError("Jev request failed") from exc
+    if response.status_code == 402:
+        raise JudgePaymentRequired(
+            "OpenRouter returned HTTP 402 Payment Required. "
+            "Jev credits are exhausted or the account cannot be billed."
+        )
+    if response.status_code >= 400:
+        raise _GuardHttpError(
+            f"OpenRouter decisions HTTP {response.status_code}: {_redacted_snippet(response.text)}",
+            status_code=response.status_code,
+        )
+    try:
+        payload: object = response.json()
+    except ValueError as exc:
+        raise JudgeError("Decisions response was not JSON") from exc
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return _parse_result(payload, latency_ms=max(elapsed_ms, 0))
+
+
+async def post_decisions(
+    *,
+    state: str | dict[str, Any] | list[Any],
+    questions: dict[str, Any],
+    settings: Settings | None = None,
+    client: httpx.AsyncClient | None = None,
+    model: str | None = None,
+) -> DecisionResult:
+    """One chat-guard Decisions call. Uses the guard timeout and retries once.
+
+    HTTP 402 is not retried. A missing key raises ``JudgeError`` before any
+    socket is opened. The posted model is ``model``, else
+    ``resolved_guard_jev_model``.
+    """
+    cfg = settings or get_settings()
+    if not cfg.openrouter_configured or not cfg.openrouter_api_key:
+        raise JudgeError("OPENROUTER_API_KEY is not configured")
+    api_key = cfg.openrouter_api_key.strip()
+    url = decisions_endpoint(cfg)
+    body: dict[str, Any] = {
+        "model": model or cfg.resolved_guard_jev_model,
+        "state": state,
+        "questions": questions,
+    }
+    headers = dict(_OPENROUTER_HEADERS)
+    headers["Authorization"] = f"Bearer {api_key}"
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=httpx.Timeout(cfg.jev_guard_timeout_seconds))
+    try:
+        last: JudgeError | None = None
+        for attempt in range(2):
+            try:
+                return await _post_guard_once(http, url=url, body=body, headers=headers)
+            except JudgePaymentRequired:
+                raise
+            except JudgeError as exc:
+                last = exc
+                status = exc.status_code if isinstance(exc, _GuardHttpError) else None
+                if status in _GUARD_NO_RETRY or attempt == 1:
+                    raise
+        assert last is not None
+        raise last
+    finally:
+        if owns_client:
+            await http.aclose()
