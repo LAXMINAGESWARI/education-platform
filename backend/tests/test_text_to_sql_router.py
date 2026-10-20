@@ -103,6 +103,11 @@ def _pass_question_validator(monkeypatch: pytest.MonkeyPatch) -> None:
         "classify_noul",
         AsyncMock(return_value=0.0),
     )
+    monkeypatch.setattr(
+        _QUESTION_VALIDATOR_MODULE,
+        "legacy_gpt_flag",
+        AsyncMock(return_value=False),
+    )
 
 
 @pytest.fixture()

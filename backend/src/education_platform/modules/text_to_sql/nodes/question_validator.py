@@ -48,11 +48,16 @@ quality."
 
 **No heuristic stage, unlike `injection_guard`.** There is no zero-cost regex equivalent
 for "is this on topic" the way there is for adversarial phrasing tells — every question
-that reaches this node pays for one classifier call. Same fail-open/fail-closed asymmetry
-as `injection_guard`: unconfigured means an off-topic question simply isn't caught
-(degrades to the prior, no-check-at-all behavior, not an outage); a classifier error fails
-closed, except HTTP 402, which falls back to this node's pre-Jev GPT classifier. If that
-GPT call also fails, the node fails closed. A missing key cannot call GPT. The refusal
+that reaches this node pays for one classifier call. A Jev probability under the block
+threshold also asks the pre-Jev GPT off-topic classifier, through the same helper HTTP
+402 uses, and either flag blocks. Same fail-open/fail-closed asymmetry as
+`injection_guard`: unconfigured means an off-topic question simply isn't caught
+(degrades to the prior, no-check-at-all behavior, not an outage); a Jev error fails
+closed and does not call GPT. HTTP 402, and a Jev score under the threshold, use that
+GPT helper. If the GPT call fails, the node fails closed. A missing key cannot call
+GPT. When this node refuses, `guard_stage` names the classifier that refused. When it
+allows, or when Jev errors before a probability, the injection stage already on the
+audit entry stays. The refusal
 reuses `injection_guard`'s own "safety check unavailable" wording, since the user-facing
 fact is the same, but keeps the category this node's own — an infra failure here has nothing to do
 with injection, and tagging it `INJECTION_BLOCKED` would misrepresent the audit trail for
@@ -61,7 +66,7 @@ a node that never touches that check at all.
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.modules.guard.classifier import (
@@ -119,11 +124,15 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
     if is_positive(probability, settings):
         return {
             **state,
-            "audit_entry": audit,
+            "audit_entry": {**audit, "guard_stage": "jev"},
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
 
-    return {**state, "audit_entry": audit}
+    return await _gpt_off_topic_fallback(
+        cast(TextToSQLState, {**state, "audit_entry": audit}),
+        question,
+        settings,
+    )
 
 
 async def _gpt_off_topic_fallback(
@@ -139,13 +148,18 @@ async def _gpt_off_topic_fallback(
             field="off_topic",
         )
     except JudgeError:
+        audit = {**(state.get("audit_entry") or {}), "guard_stage": "gpt_error"}
         return {
             **state,
+            "audit_entry": audit,
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
         }
     if flagged:
+        audit = {**(state.get("audit_entry") or {}), "guard_stage": "gpt"}
         return {
             **state,
+            "audit_entry": audit,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
+    # GPT allowed the question. Leave the injection stage that is already recorded.
     return {**state}

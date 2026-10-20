@@ -12,6 +12,7 @@ from typing import Protocol, cast
 import pytest
 
 from education_platform.core.config import Settings
+from education_platform.modules.guard.classifier import DATA_GPT_OFF_TOPIC
 from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.nodes.question_validator import question_validator
 from education_platform.modules.text_to_sql.state import (
@@ -25,6 +26,8 @@ class _QuestionValidatorModule(Protocol):
     async def classify_noul(
         self, *, state: object, question: object, settings: Settings
     ) -> float: ...
+
+    async def legacy_gpt_flag(self, **kwargs: object) -> bool: ...
 
     def get_settings(self) -> Settings: ...
 
@@ -48,6 +51,16 @@ def _openrouter_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _MODULE, "get_settings", lambda: Settings(openrouter_api_key="test-key-not-a-real-key")
     )
+
+
+@pytest.fixture(autouse=True)
+def _gpt_allows_unless_a_test_overrides_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Jev probability under the threshold now consults GPT. Default that to allow."""
+
+    async def _allow(**_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _allow)
 
 
 def _state(question: str, **overrides: object) -> TextToSQLState:
@@ -143,14 +156,22 @@ async def test_openrouter_not_configured_fails_open(monkeypatch: pytest.MonkeyPa
 
 
 async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpt_calls: list[object] = []
+
     async def _raising(*args: object, **kwargs: object) -> float:
         raise JudgeError("network blew up")
 
+    async def _gpt(**kwargs: object) -> bool:
+        gpt_calls.append(kwargs)
+        return False
+
     monkeypatch.setattr(_MODULE, "classify_noul", _raising)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
 
     result = await question_validator(_state("How many students do I teach in total?"))
 
     assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert gpt_calls == []
 
 
 async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,4 +247,89 @@ async def test_off_topic_402_uses_gpt_and_keeps_the_injection_stage(
     )
 
     assert error_category(refused["error"]) == OFF_TOPIC_REJECTED
-    assert refused["audit_entry"]["guard_stage"] == "jev"
+    assert refused["audit_entry"]["guard_stage"] == "gpt"
+
+
+async def test_jev_off_topic_blocks_without_asking_gpt(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpt_calls: list[object] = []
+
+    async def _gpt(**kwargs: object) -> bool:
+        gpt_calls.append(kwargs)
+        return False
+
+    fake, _ = _fake_classifier(0.95)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "gpt", "injection_probability": None}
+
+    result = await question_validator(
+        _state("What's the weather like tomorrow?", audit_entry=prior)
+    )
+
+    assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert gpt_calls == []
+    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["off_topic_probability"] == 0.95
+
+
+async def test_gpt_off_topic_blocks_when_jev_allows(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake, calls = _fake_classifier(0.1)
+
+    async def _gpt(**kwargs: object) -> bool:
+        assert kwargs["field"] == "off_topic"
+        assert kwargs["system"] == DATA_GPT_OFF_TOPIC
+        return True
+
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "jev", "injection_probability": 0.2}
+
+    result = await question_validator(
+        _state("What's the weather like tomorrow?", audit_entry=prior)
+    )
+
+    assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert len(calls) == 1
+    assert result["audit_entry"]["guard_stage"] == "gpt"
+    assert result["audit_entry"]["injection_probability"] == 0.2
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
+
+
+async def test_question_passes_when_neither_off_topic_check_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake, _ = _fake_classifier(0.1)
+
+    async def _gpt(**_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "jev", "injection_probability": 0.2}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert result["error"] is None
+    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
+
+
+async def test_gpt_off_topic_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake, _ = _fake_classifier(0.1)
+
+    async def _gpt(**_kwargs: object) -> bool:
+        raise JudgeError("GPT classifier failed")
+
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "jev", "injection_probability": 0.2}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert result["audit_entry"]["guard_stage"] == "gpt_error"
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
