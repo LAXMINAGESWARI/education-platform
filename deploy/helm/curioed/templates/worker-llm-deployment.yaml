@@ -1,0 +1,59 @@
+{{- if .Values.workers.llm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curioed.workerLlmName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker-llm
+spec:
+  replicas: {{ .Values.workers.llm.replicas }}
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "worker-llm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker-llm
+        curioed.io/uploads: "true"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.workers.llm.terminationGracePeriodSeconds }}
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      affinity:
+        {{- include "curioed.uploadsAffinity" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "curioed.imageRef" .Values.api.image }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          args:
+            - python
+            - -m
+            - education_platform.workers
+          env:
+            {{- include "curioed.appEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.workers.llm.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["python", "/app/deploy/db_ping.py"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["python", "/app/deploy/db_ping.py"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+      volumes:
+        {{- include "curioed.dataVolumes" . | nindent 8 }}
+{{- end }}

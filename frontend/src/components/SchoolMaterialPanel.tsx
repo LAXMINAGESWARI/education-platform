@@ -83,6 +83,18 @@ function UnitQuizMeta({
   );
 }
 
+function TopicProgress({ percent }: { percent: number }) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  return (
+    <div
+      className={`progress topic-card__progress ${pct >= 100 ? "progress--complete" : "progress--in-progress"}`}
+      aria-hidden="true"
+    >
+      <span style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
 function TopicCard({
   subjectId,
   topic,
@@ -100,6 +112,7 @@ function TopicCard({
     ? { label: passedLabel, cls: "badge--ok" }
     : unitStatus(lessonDone, quiz, null, topic.progress_percent);
   const topicPath = topicPagePath(subjectId, topic.id);
+  const percentLabel = `${Math.round(topic.progress_percent)}% complete`;
 
   if (topic.has_topic_lesson) {
     return (
@@ -110,7 +123,8 @@ function TopicCard({
             <Link to={topicPath} className="list-item__title">
               {topic.title}
             </Link>
-            <p className="list-item__meta">{Math.round(topic.progress_percent)}% complete</p>
+            <p className="list-item__meta">{percentLabel}</p>
+            <TopicProgress percent={topic.progress_percent} />
           </div>
         </div>
         <TopicEntries subjectId={subjectId} topic={topic} />
@@ -124,7 +138,8 @@ function TopicCard({
         <div className="list-item__num">{String(index + 1).padStart(2, "0")}</div>
         <div>
           <p className="list-item__title">{topic.title}</p>
-          <p className="list-item__meta">{Math.round(topic.progress_percent)}% complete</p>
+          <p className="list-item__meta">{percentLabel}</p>
+          <TopicProgress percent={topic.progress_percent} />
         </div>
         <div className="subtopic-card__quiz-col">
           <span className={`badge ${status.cls}`}>{status.label}</span>
@@ -147,16 +162,20 @@ export function SchoolMaterialPanel({
   topics,
 }: {
   subjectId: string;
-  subjectName: string;
   topics: TopicNode[];
 }) {
+  const topicCount = topics.length === 1 ? "1 topic" : `${topics.length} topics`;
+
   return (
     <div className="topic-layout">
       <div className="topic-layout__main">
         <section className="school-section school-section--units" aria-labelledby="topics-heading">
           <header className="school-section__head">
-            <h2 id="topics-heading">Topics</h2>
-            <p>Choose the lesson or the quiz for a topic.</p>
+            <div>
+              <h2 id="topics-heading">Topics</h2>
+              <p>Choose the lesson or the quiz for a topic.</p>
+            </div>
+            {topics.length > 0 ? <p className="school-section__count">{topicCount}</p> : null}
           </header>
           {topics.length === 0 ? (
             <p className="muted">No topics published for this subject yet.</p>
