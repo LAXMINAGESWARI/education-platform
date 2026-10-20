@@ -133,6 +133,7 @@ def test_compose_prod_runs_the_curriculum_seed_after_migrate() -> None:
     assert seed["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert "profiles" not in seed
     assert services["api"]["depends_on"]["seed"]["condition"] == "service_completed_successfully"
+    assert services["worker"]["depends_on"]["seed"]["condition"] == "service_completed_successfully"
 
     for name in ("deploy.sh", "selfhost.sh"):
         text = (_REPO / "deploy" / name).read_text(encoding="utf-8")
