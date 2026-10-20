@@ -23,6 +23,7 @@ from education_platform.modules.authoring.router import router as authoring_rout
 from education_platform.modules.engagement.router import router as engagement_router
 from education_platform.modules.generation.router import router as generation_router
 from education_platform.modules.insights.router import router as insights_router
+from education_platform.modules.judge.policy import warn_judge_mode_at_startup
 from education_platform.modules.materials.router import router as materials_router
 from education_platform.modules.materials.seed import seed_approved_materials
 from education_platform.modules.progress.router import router as progress_router
@@ -47,6 +48,7 @@ def _seed_if_empty() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    warn_judge_mode_at_startup()
     try:
         _seed_if_empty()
     except Exception:

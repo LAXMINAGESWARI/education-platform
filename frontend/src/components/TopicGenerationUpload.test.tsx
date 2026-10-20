@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -553,7 +553,10 @@ describe("TopicGenerationUpload", () => {
       }),
     );
 
-    expect(await screen.findByText("Sequence 1: Fractions")).toBeInTheDocument();
+    await waitFor(() => expect(getGenerationReview).toHaveBeenCalledWith("run-1"));
+    expect(
+      await screen.findByText("Sequence 1: Fractions", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Accept current outline" })).toBeInTheDocument();
   });
 

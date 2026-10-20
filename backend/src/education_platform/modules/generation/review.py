@@ -78,6 +78,7 @@ from education_platform.modules.generation.types import (
     TeacherDecisionCommand,
     TeacherRoundNumber,
 )
+from education_platform.modules.judge.publish_gate import lesson_publish_blocked
 from education_platform.modules.progress.types import run_subject
 from education_platform.modules.progress.wake import publish_wake_async
 
@@ -508,6 +509,17 @@ def _assert_revision_command(
 async def seal_open_round_for_publish(
     session: AsyncSession, run_id: UUID, principal: Principal
 ) -> None:
+    """Seal an open QA round as accepted, unless a Jev lesson hold is still open.
+
+    Publish auto-accepts a quiet round. That seal is not an admin approval, so
+    it must not clear a lesson that still needs review. An earlier
+    ``accept_current`` close is the approval that lets this return.
+    """
+    if await lesson_publish_blocked(session, run_id):
+        raise GenerationError(
+            "This lesson needs review. Accept it in QA review before publishing.",
+            status_code=409,
+        )
     round_row = await _open_round(session, run_id)
     if round_row is None:
         return

@@ -232,6 +232,7 @@ class LessonStepOut(BaseModel):
     markdown: str | None
     published_lesson_version_id: UUID | None
     judge: list[JudgeReadoutOut] = Field(default_factory=list)
+    needs_review: bool = False
 
     @classmethod
     def from_domain(cls, detail: LessonDetail) -> LessonStepOut:
@@ -239,6 +240,7 @@ class LessonStepOut(BaseModel):
             markdown=detail.markdown,
             published_lesson_version_id=detail.published_lesson_version_id,
             judge=[JudgeReadoutOut.from_domain(item) for item in detail.judge],
+            needs_review=detail.needs_review,
         )
 
 
