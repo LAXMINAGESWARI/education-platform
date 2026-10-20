@@ -188,7 +188,7 @@ export function QuizPage() {
             mark {passMark}%
           </p>
 
-          <article ref={setQuizLockNode} className="panel quiz-lock">
+          <article key={question.number} ref={setQuizLockNode} className="panel quiz-lock">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
               <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>

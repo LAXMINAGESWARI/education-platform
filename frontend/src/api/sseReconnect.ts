@@ -330,7 +330,7 @@ export async function subscribeSse(options: {
       }
       let connectionHealthy = false;
       for await (const item of readSse(res.body, options.signal, () =>
-        clampedWait(PROGRESS_STALL_TIMEOUT_MS),
+        connectionHealthy ? PROGRESS_STALL_TIMEOUT_MS : clampedWait(PROGRESS_STALL_TIMEOUT_MS),
       )) {
         if (!connectionHealthy) {
           // Headers alone are not healthy. The first frame ends the outage.
@@ -348,8 +348,9 @@ export async function subscribeSse(options: {
             throw new SseCallbackError(error);
           }
         }
-        // Later heartbeats keep the clock clear too. A quiet read starts a
-        // fresh budget, so one late beat still gets the full stall window.
+        // This socket has delivered a frame. Quiet time after that is not an
+        // outage: the next read keeps the full stall window and does not start
+        // the budget. The clock starts again only once the socket drops.
         outageStartedAt = null;
         if (options.resetsBackoff?.(item) === true) {
           attempt = 0;

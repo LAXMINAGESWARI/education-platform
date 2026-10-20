@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router-dom";
 import { AmbientBackdrop } from "./components/AmbientBackdrop";
 import { App } from "./App";
 import { AuthProvider } from "./auth/AuthContext";
-import { PwaPrompts } from "./components/PwaPrompts";
+import { PwaPromptRegistry, PwaPrompts } from "./components/PwaPrompts";
 import { installHapticFeedback } from "./lib/haptics";
 import { ensureInstallPromptListener } from "./pwa/installPrompt";
 import "./styles/tokens.css";
@@ -27,8 +27,10 @@ createRoot(root).render(
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AmbientBackdrop />
         <AuthProvider>
-          <PwaPrompts />
-          <App />
+          <PwaPromptRegistry>
+            <PwaPrompts />
+            <App />
+          </PwaPromptRegistry>
         </AuthProvider>
       </BrowserRouter>
     </MotionConfig>

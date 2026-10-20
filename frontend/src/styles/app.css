@@ -893,14 +893,15 @@ button:hover:not(:disabled),
   animation: route-page-in 0.5s ease-out both;
 }
 
-.route-motion__page:not(:has(.lesson-view, .subject-view, .topic-view, .policy-chat, .assistant-chat, .admin-unit)) {
+.route-motion__page:not(:has(.lesson-view, .topic-view, .policy-chat, .assistant-chat, .admin-unit)) {
   max-width: var(--page-max);
   width: 100%;
 }
 
-/* The analytics dashboard is a grid of cards and charts, not prose — let it use the
-   full content width instead of the article-width cap above. */
-.route-motion__page:has(.analytics-view) {
+/* Dashboards and catalog tables are grids, not prose — let them use the full content
+   width instead of the article-width cap above. */
+.route-motion__page:has(.analytics-view),
+.route-motion__page:has(.feedback-view) {
   max-width: none;
   width: 100%;
 }
@@ -916,9 +917,9 @@ button:hover:not(:disabled),
 
    `.teacher-roster` sets `overflow: hidden`, for the rounded corners. So it alone was
    compressible, and it compressed: 24 rows rendered, four visible, and no scrollbar
-   anywhere to suggest there was more. The full-height app views (lesson, subject, topic,
+   anywhere to suggest there was more. The full-height app views (lesson, topic,
    policy chat) manage their own scrolling and are excluded, exactly as above. */
-.route-motion__page:not(:has(.lesson-view, .subject-view, .topic-view, .policy-chat, .assistant-chat)) > * {
+.route-motion__page:not(:has(.lesson-view, .topic-view, .policy-chat, .assistant-chat)) > * {
   flex-shrink: 0;
 }
 
@@ -1189,6 +1190,12 @@ button.card {
   color: var(--ink-muted);
 }
 
+.badge--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
 .badge--title {
   background: color-mix(in srgb, currentColor 12%, var(--surface));
 }
@@ -1422,6 +1429,18 @@ a.list-item__title:hover {
   margin: 0;
   color: var(--ink-muted);
   font-size: 0.9rem;
+}
+
+.school-section__head h2 + p {
+  margin-top: 0.2rem;
+}
+
+.school-section__head .school-section__count {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .school-section__eyebrow {
@@ -1789,36 +1808,81 @@ a.list-item__title:hover {
 }
 
 /* —— Subject material panes —— */
-.main:has(.subject-view) {
-  padding-right: 0;
-}
-
-.main__inner:has(.subject-view) {
-  max-width: none;
-  width: 100%;
-}
-
 .subject-view {
   width: 100%;
 }
 
 .subject-view__head {
-  margin-bottom: 0.75rem;
+  margin-bottom: 1.35rem;
 }
 
 .main:has(.subject-view) .crumbs-host .crumbs {
   margin-bottom: 0.85rem;
 }
 
-.subject-view__chrome-slot {
-  min-height: 3.25rem;
-  margin: 0 0 0.85rem;
+.subject-summary {
+  cursor: default;
+  gap: 0.55rem;
 }
 
-@media (max-width: 640px) {
-  .subject-view__chrome-slot {
-    min-height: 3.75rem;
-  }
+.subject-summary:hover {
+  transform: none;
+  border-color: var(--border);
+  box-shadow:
+    var(--shadow-md),
+    inset 0 1px 0 rgb(255 255 255 / 0.75);
+}
+
+.subject-summary .kicker {
+  margin: 0;
+}
+
+.subject-summary h1 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2vw + 0.9rem, 1.9rem);
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+}
+
+.card.subject-summary .subject-summary__meta {
+  margin: 0;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.subject-summary .alert {
+  margin: 0.2rem 0 0;
+}
+
+.subject-summary__facts {
+  list-style: none;
+  margin: 0.15rem 0 0;
+  padding: 0;
+}
+
+.subject-status {
+  display: grid;
+  gap: 0.85rem;
+  justify-items: start;
+}
+
+.subject-status .alert {
+  margin: 0;
+  width: 100%;
+}
+
+.topic-card__progress {
+  margin-top: 0.45rem;
+  max-width: 14rem;
+}
+
+.subject-view .list {
+  gap: 0.85rem;
+}
+
+.subject-view .school-section__head {
+  align-items: flex-start;
+  margin-bottom: 1rem;
 }
 
 /* —— Topic —— */
@@ -2890,6 +2954,14 @@ a.topic-entry:hover {
     justify-self: end;
   }
 
+  .subtopic-card__quiz-meta {
+    white-space: normal;
+  }
+
+  .topic-card__progress {
+    max-width: none;
+  }
+
   .action-boxes,
   .topic-entries {
     grid-template-columns: 1fr;
@@ -3891,9 +3963,8 @@ button.admin-published-row {
   flex: none;
 }
 
-.progress-reconnect__placeholder {
-  display: block;
-  height: 2rem;
+.progress-reconnect__live {
+  margin: 0;
 }
 
 .progress-reconnect__pill {
@@ -6807,4 +6878,163 @@ a.btn:disabled:hover {
   text-align: left;
   border-bottom: 1px solid var(--border);
   font-family: var(--font-body);
+}
+
+/* Subject and feedback catalogs */
+.alert__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+}
+
+.alert__row p {
+  margin: 0;
+}
+
+.panel--static:hover {
+  transform: none;
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 rgb(255 255 255 / 0.7);
+}
+
+.stat-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 0.75rem;
+  margin: 0.35rem 0 1rem;
+}
+
+.stat-kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 0.2rem;
+  align-content: start;
+}
+
+.stat-kpi .stat-kpi__value {
+  margin: 0.1rem 0;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  line-height: 1.15;
+}
+
+.stat-kpi__of {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.stat-kpi p:not(.kicker):not(.stat-kpi__value) {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.catalog-panel {
+  margin-bottom: 1rem;
+}
+
+.catalog-panel__head h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+
+.catalog-panel__head p {
+  margin: 0 0 0.85rem;
+  color: var(--ink-muted);
+  max-width: 62ch;
+}
+
+.catalog-table td {
+  vertical-align: middle;
+}
+
+.catalog-table td.catalog-wrap {
+  white-space: normal;
+}
+
+.catalog-subject {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.catalog-subject__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+a.catalog-subject__link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-pill);
+}
+
+.catalog-meta {
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.catalog-stack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+}
+
+.catalog-stack--rows {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.catalog-progress {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 6.5rem;
+}
+
+.catalog-progress .progress {
+  height: 0.55rem;
+}
+
+.catalog-table .feedback-focus {
+  margin: 0;
+}
+
+@media (min-width: 861px) {
+  .catalog-table td.catalog-wrap {
+    min-width: 9rem;
+    max-width: 22rem;
+  }
+}
+
+@media (max-width: 860px) {
+  a.catalog-subject__link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+
+  .stat-kpis {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
+  .stat-kpis {
+    grid-template-columns: 1fr;
+  }
 }

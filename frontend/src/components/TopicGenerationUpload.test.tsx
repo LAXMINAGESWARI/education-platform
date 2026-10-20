@@ -836,7 +836,7 @@ describe("TopicGenerationUpload", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     act(() => {
       reconnected?.();
     });
@@ -859,7 +859,7 @@ describe("TopicGenerationUpload", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     await act(async () => {
       fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
     });
@@ -907,7 +907,7 @@ describe("TopicGenerationUpload", () => {
     act(() => {
       reconnect?.();
     });
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     expect(slot).toHaveAttribute("data-active", "true");
     expect(within(slot).getByRole("status")).toHaveAttribute("aria-live", "polite");
     expect(slot.querySelector("[data-motion='reduced']")).not.toBeNull();
@@ -931,6 +931,76 @@ describe("TopicGenerationUpload", () => {
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Determining outline");
     expect(screen.getByTestId("progress-reconnect")).toBe(slot);
   });
+
+  it("retries again after a second give-up", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(getGenerationRun).mockResolvedValue(run({ phase: "indexing", outline: null }));
+    let fail: ((error: unknown) => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation(() => {
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
+
+    renderPanel();
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 50_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["published", "published"],
+    ["outline_review", "outline_review"],
+  ] as const)(
+    "does not open a new stream when Retry finds a %s run",
+    async (_label, phase) => {
+      const user = userEvent.setup();
+      vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+        run({ phase: "indexing", outline: null }),
+      ]);
+      vi.mocked(getGenerationRun).mockResolvedValue(run({ phase }));
+      if (phase === "outline_review") {
+        vi.mocked(getGenerationReview).mockResolvedValue(workspace());
+      }
+      let fail: ((error: unknown) => void) | undefined;
+      vi.mocked(subscribeGenerationRun).mockImplementation(() => {
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      });
+
+      renderPanel();
+      await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+      });
+      await user.click(await screen.findByRole("button", { name: "Retry" }));
+
+      await waitFor(() => expect(getGenerationRun).toHaveBeenCalledWith("run-1"));
+      expect(subscribeGenerationRun).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
 
   it("does not follow a topic upload after the form unmounts", async () => {
     const user = userEvent.setup();

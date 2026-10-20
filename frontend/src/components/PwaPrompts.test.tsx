@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +11,7 @@ import {
   INSTALL_BANNER_KEY,
   INSTALL_BANNER_SNOOZE_MS,
 } from "../pwa/installState";
-import { PwaPrompts } from "./PwaPrompts";
+import { PwaPromptHost, PwaPromptRegistry, PwaPrompts } from "./PwaPrompts";
 
 const sw = vi.hoisted(() => ({
   needRefresh: false,
@@ -140,14 +141,16 @@ describe("PwaPrompts", () => {
     setUserAgent(IOS_SAFARI);
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <div className="app__content">
-          <div id="pwa-prompt-host" />
-          <header className="page-head">
-            <nav aria-label="Breadcrumb">Mathematics</nav>
-            <h1>Topic generation</h1>
-          </header>
-        </div>
-        <PwaPrompts />
+        <PwaPromptRegistry>
+          <div className="app__content">
+            <PwaPromptHost />
+            <header className="page-head">
+              <nav aria-label="Breadcrumb">Mathematics</nav>
+              <h1>Topic generation</h1>
+            </header>
+          </div>
+          <PwaPrompts />
+        </PwaPromptRegistry>
       </MemoryRouter>,
     );
 
@@ -162,6 +165,52 @@ describe("PwaPrompts", () => {
     expect(banner.closest(".app__content")).toBe(title.closest(".app__content"));
     expect(banner.compareDocumentPosition(crumbs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(banner.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("moves the banner into the host when the shell mounts after auth without a route change", async () => {
+    setUserAgent(IOS_SAFARI);
+    function ShellAfterAuth() {
+      const [ready, setReady] = useState(false);
+      if (!ready) {
+        return (
+          <button type="button" onClick={() => setReady(true)}>
+            Finish auth
+          </button>
+        );
+      }
+      return (
+        <div className="app__content">
+          <PwaPromptHost />
+          <nav aria-label="Breadcrumb">Mathematics</nav>
+        </div>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter
+        initialEntries={["/teacher/topics/topic-1/generate"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <PwaPromptRegistry>
+          <PwaPrompts />
+          <ShellAfterAuth />
+        </PwaPromptRegistry>
+      </MemoryRouter>,
+    );
+
+    const banner = await screen.findByRole("region", { name: "Install CurioEd" });
+    expect(banner.closest("#pwa-prompt-host")).toBeNull();
+    expect(screen.getByRole("button", { name: "Finish auth" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Finish auth" }));
+    await waitFor(() => {
+      expect(document.getElementById("pwa-prompt-host")).toContainElement(
+        screen.getByRole("region", { name: "Install CurioEd" }),
+      );
+    });
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Mathematics");
+    expect(screen.queryByRole("button", { name: "Finish auth" })).not.toBeInTheDocument();
   });
 
   it("reloads as soon as a new service worker activates outside a quiz", () => {

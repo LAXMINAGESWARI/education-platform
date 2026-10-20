@@ -1,13 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { fetchLearningDirectory } from "../api/materials";
 import type { LearningDirectory, SubjectNode } from "../api/types";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { SchoolMaterialPanel } from "../components/SchoolMaterialPanel";
-import { BACKDROP_CHROME_ANCHOR, setBackdropChrome } from "../lib/backdropChrome";
-import { subjectProgress } from "../lib/subjectMaterial";
+import { SubjectDetail, SubjectRouteStatus } from "../components/SubjectDetail";
+import { subjectBlurb, subjectProgress } from "../lib/subjectMaterial";
 
 let directoryCache: LearningDirectory | null = null;
 
@@ -36,80 +35,6 @@ const PLACEHOLDER_SUBJECTS = [
   },
 ] as const;
 
-const SUBJECT_BLURBS: Record<string, string> = {
-  Mathematics: "Number sense, algebra foundations, and geometry basics.",
-  MATH: "Number sense, algebra foundations, and geometry basics.",
-};
-
-function subjectBlurb(subject: SubjectNode): string {
-  return (
-    SUBJECT_BLURBS[subject.name] ??
-    SUBJECT_BLURBS[subject.code] ??
-    `${subject.grade_name} · ${subject.academic_period_name}`
-  );
-}
-
-function SubjectMaterialView({
-  subjectId,
-  subjectName,
-  subject,
-}: {
-  subjectId: string;
-  subjectName: string;
-  subject: SubjectNode;
-}) {
-  const topics = subject.topics;
-  const { done, total, pct } = subjectProgress(subject);
-
-  useEffect(() => {
-    if (topics.length === 0) {
-      setBackdropChrome(null);
-      return;
-    }
-
-    setBackdropChrome({
-      progressPercent: pct,
-      progressLabel: `Subject completion · ${pct}% · ${done}/${total} topics`,
-      statusLabel: done === total && total > 0 ? "Complete" : "In progress",
-      complete: done === total && total > 0,
-    });
-
-    return () => setBackdropChrome(null);
-  }, [done, pct, topics.length, total]);
-
-  const progressSr =
-    topics.length > 0
-      ? `Subject completion · ${pct}% · ${done}/${total} topics`
-      : null;
-
-  return (
-    <div className="subject-view">
-      <header className="subject-view__head">
-        <Crumbs
-          parts={[
-            { label: "Subjects", to: "/" },
-            { label: subjectName },
-          ]}
-        />
-        <div className="subject-view__chrome-slot" {...{ [BACKDROP_CHROME_ANCHOR]: "" }}>
-          <h1 id="school-material-heading" className="sr-only">
-            School material
-          </h1>
-          {progressSr && <p className="sr-only">{progressSr}</p>}
-        </div>
-      </header>
-
-      <section className="material-pane material-pane--school" aria-labelledby="school-material-heading">
-        {topics.length === 0 ? (
-          <div className="alert alert--info">No school material published yet.</div>
-        ) : (
-          <SchoolMaterialPanel subjectId={subjectId} subjectName={subjectName} topics={topics} />
-        )}
-      </section>
-    </div>
-  );
-}
-
 export function HomePage() {
   const { subjectId } = useParams();
   const [directory, setDirectory] = useState<LearningDirectory | null>(directoryCache);
@@ -136,22 +61,25 @@ export function HomePage() {
   }, []);
 
   const subjects = directory?.subjects ?? [];
-  const selected = useMemo(() => {
-    if (!subjectId) return null;
-    return subjects.find((item) => item.id === subjectId) ?? null;
-  }, [subjects, subjectId]);
+  const selected =
+    subjectId && directory
+      ? (directory.subjects.find((item) => item.id === subjectId) ?? null)
+      : null;
 
   const knownNames = new Set(subjects.map((s) => s.name.toLowerCase()));
   const placeholders = PLACEHOLDER_SUBJECTS.filter((p) => !knownNames.has(p.name.toLowerCase()));
 
-  if (selected) {
-    return (
-      <SubjectMaterialView
-        subjectId={selected.id}
-        subjectName={selected.name}
-        subject={selected}
-      />
-    );
+  if (subjectId) {
+    if (!directory && !error) {
+      return <SubjectRouteStatus kind="loading" />;
+    }
+    if (!directory && error) {
+      return <SubjectRouteStatus kind="error" message={error} />;
+    }
+    if (!selected) {
+      return <SubjectRouteStatus kind="missing" />;
+    }
+    return <SubjectDetail subject={selected} />;
   }
 
   return (
@@ -185,40 +113,9 @@ export function HomePage() {
 
       {(subjects.length > 0 || placeholders.length > 0) && (
         <div className="grid grid--2">
-          {subjects.map((subject) => {
-            const prog = subjectProgress(subject);
-            const empty = subject.topics.length === 0;
-            if (empty) {
-              return (
-                <div key={subject.id} className="card is-locked">
-                  <h2>{subject.name}</h2>
-                  <p>{subjectBlurb(subject)}</p>
-                  <div className="progress-label">Coming soon</div>
-                  <div className="meta-row">
-                    <span className="badge badge--locked">Locked</span>
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <Link key={subject.id} to={`/subjects/${subject.id}`} className="card">
-                <h2>{subject.name}</h2>
-                <p>{subjectBlurb(subject)}</p>
-                <div className="progress-label">
-                  {prog.done}/{prog.total} topics complete · {prog.pct}%
-                </div>
-                <div
-                  className={`progress ${prog.pct >= 100 ? "progress--complete" : "progress--in-progress"}`}
-                  aria-hidden="true"
-                >
-                  <span style={{ width: `${prog.pct}%` }} />
-                </div>
-                <div className="meta-row">
-                  <span className="badge badge--info">School material</span>
-                </div>
-              </Link>
-            );
-          })}
+          {subjects.map((subject) => (
+            <SubjectCard key={subject.id} subject={subject} />
+          ))}
           {placeholders.map((item) => (
             <div key={item.key} className="card is-locked" aria-disabled="true">
               <h2>{item.name}</h2>
@@ -232,5 +129,39 @@ export function HomePage() {
         </div>
       )}
     </>
+  );
+}
+
+function SubjectCard({ subject }: { subject: SubjectNode }) {
+  const prog = subjectProgress(subject);
+  if (subject.topics.length === 0) {
+    return (
+      <div className="card is-locked">
+        <h2>{subject.name}</h2>
+        <p>{subjectBlurb(subject)}</p>
+        <div className="progress-label">Coming soon</div>
+        <div className="meta-row">
+          <span className="badge badge--locked">Locked</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <Link to={`/subjects/${subject.id}`} className="card">
+      <h2>{subject.name}</h2>
+      <p>{subjectBlurb(subject)}</p>
+      <div className="progress-label">
+        {prog.done}/{prog.total} topics complete · {prog.pct}%
+      </div>
+      <div
+        className={`progress ${prog.pct >= 100 ? "progress--complete" : "progress--in-progress"}`}
+        aria-hidden="true"
+      >
+        <span style={{ width: `${prog.pct}%` }} />
+      </div>
+      <div className="meta-row">
+        <span className="badge badge--info">School material</span>
+      </div>
+    </Link>
   );
 }
