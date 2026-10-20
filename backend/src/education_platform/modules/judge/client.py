@@ -19,6 +19,7 @@ not prefixed onto this path.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from collections.abc import Callable, Mapping
@@ -89,7 +90,7 @@ class HttpJudge:
         client = self._client or httpx.Client(timeout=settings.jev_timeout_seconds)
         attempts = max(0, settings.jev_max_retries) + 1
         try:
-            return self._send(client, OPENROUTER_DECISIONS_URL, payload, headers, attempts)
+            return self._send(client, decisions_endpoint(settings), payload, headers, attempts)
         finally:
             if owns_client:
                 client.close()
@@ -136,7 +137,7 @@ class HttpJudge:
                 raise JudgeError(
                     f"Jev request failed with HTTP {status}: {_snippet(response.text)}"
                 )
-            return _parse_result(response.json(), latency_ms=max(elapsed_ms, 0))
+            return _parse_result(response.json(), latency_ms=max(elapsed_ms, 0), strict_units=False)
         raise JudgeError(f"Jev request failed with HTTP {last_status}.")
 
 
@@ -300,11 +301,12 @@ class _GuardHttpError(JudgeError):
 
 
 def decisions_endpoint(settings: Settings) -> str:
-    """Decisions URL for the chat guard.
+    """Decisions URL shared by the lesson judge and the chat guard.
 
     ``OPENROUTER_BASE_URL`` ends in ``/api/v1``. The Decisions route does not.
-    ``jev_decisions_url`` replaces that derivation when it is set. The lesson
-    judge keeps ``OPENROUTER_DECISIONS_URL``.
+    ``JEV_DECISIONS_URL`` (``settings.jev_decisions_url``) replaces that
+    derivation when it is set. With the default base URL and no override, this
+    is ``OPENROUTER_DECISIONS_URL``.
     """
     override = settings.jev_decisions_url.strip()
     if override:
@@ -394,6 +396,8 @@ async def post_decisions(
                 status = exc.status_code if isinstance(exc, _GuardHttpError) else None
                 if status in _GUARD_NO_RETRY or attempt == 1:
                     raise
+                if status == 429:
+                    await asyncio.sleep(_backoff(attempt))
         assert last is not None
         raise last
     finally:

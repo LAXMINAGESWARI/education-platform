@@ -10,7 +10,11 @@ import pytest
 
 from education_platform.core.config import Settings
 from education_platform.core.llm import _OPENROUTER_HEADERS
-from education_platform.modules.judge.client import OPENROUTER_DECISIONS_URL, HttpJudge
+from education_platform.modules.judge.client import (
+    OPENROUTER_DECISIONS_URL,
+    HttpJudge,
+    decisions_endpoint,
+)
 from education_platform.modules.judge.errors import (
     JudgeError,
     JudgePaymentRequired,
@@ -241,6 +245,25 @@ def test_judge_clamps_a_finite_probability_and_rejects_infinity() -> None:
     infinite('{"answers": {"is_bug": {"type": "noul", "noul": Infinity}}}')
     infinite('{"answers": {"is_bug": {"type": "noul", "noul": -Infinity}}}')
     infinite('{"answers": {"urgency": {"type": "score", "score": Infinity}}}')
+
+
+def test_judge_posts_the_shared_decisions_url() -> None:
+    assert decisions_endpoint(_settings()) == OPENROUTER_DECISIONS_URL
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": 0.2}}}')
+
+    settings = _settings(jev_decisions_url="https://decisions.example/api/alpha/decisions")
+    judge = HttpJudge(
+        settings,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _seconds: None,
+    )
+    judge.decide(_request())
+    assert seen["url"] == "https://decisions.example/api/alpha/decisions"
+    assert decisions_endpoint(settings) == seen["url"]
 
 
 def test_nan_noul_and_score_are_rejected() -> None:
