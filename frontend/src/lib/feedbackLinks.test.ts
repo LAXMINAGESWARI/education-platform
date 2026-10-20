@@ -34,6 +34,42 @@ describe("feedbackLinks", () => {
     expect(weakTopicsPath("math-1")).toBe("/subjects/math-1/feedback#needs-attention");
   });
 
+  it("does not mark the same topic name due in another subject", () => {
+    const verbForms = {
+      id: "ar-verb",
+      title: "Verb forms",
+      slug: "verb-forms",
+      sequence: 1,
+      has_lesson: false,
+      lesson_completed: false,
+      progress_percent: 0,
+      quiz: null,
+    };
+    const english = {
+      ...topic,
+      id: "en-grammar",
+      title: "Grammar",
+      subtopics: [{ ...verbForms, id: "en-verb", title: "Verb forms" }],
+    };
+    const arabic = {
+      ...topic,
+      id: "ar-grammar",
+      title: "Grammar",
+      subtopics: [verbForms],
+    };
+    const arabicDue = {
+      subtopic_id: "ar-verb",
+      subtopic_name: "Verb forms",
+      topic_name: "Grammar",
+      days_since_last_attempt: 12,
+      due_interval_days: 7,
+      remediation: null,
+    };
+
+    expect(dueTopicIds([english, arabic], [arabicDue])).toEqual(["ar-grammar"]);
+    expect(dueTopicIds([english], [arabicDue])).toEqual([]);
+  });
+
   it("marks a topic due from a subtopic review nudge", () => {
     expect(
       dueTopicIds(
