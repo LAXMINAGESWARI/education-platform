@@ -158,8 +158,7 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_API_KEY` | unset | Required for live LLM stages (Policy assistant, ADK generation) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
-| `JEV_GUARD_MODEL` | `typesafe/jev-1.14` | Decisions model for the chat guard classifiers |
-| `JEV_GUARD_TIMEOUT_SECONDS` | `5` | Chat-guard Decisions API timeout |
+| `JEV_GUARD_TIMEOUT_SECONDS` | `5` | Chat-guard Decisions API timeout. The guard uses `JEV_MODEL` and does not inherit `JEV_TIMEOUT_SECONDS` |
 | `JEV_BLOCK_THRESHOLD` | `0.85` | Noul probability treated as the old classifier's `true` |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |

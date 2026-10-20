@@ -55,9 +55,9 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
-    # Chat-guard Decisions API. Names are not JEV_MODEL / JEV_TIMEOUT_SECONDS:
-    # those belong to the lesson and item judge, which uses a longer budget.
-    jev_guard_model: str = "typesafe/jev-1.14"
+    # Chat-guard Decisions API. The model is jev_model, shared with the lesson
+    # judge. The guard keeps its own 5s budget so it does not inherit
+    # jev_timeout_seconds (30s).
     jev_decisions_url: str = ""
     jev_guard_timeout_seconds: float = 5.0
     # Noul probability that replaces the old classifier's boolean ``true``.

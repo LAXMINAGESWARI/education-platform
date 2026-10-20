@@ -142,7 +142,7 @@ async def post_decisions(
         raise JevError("OPENROUTER_API_KEY is not configured")
     url = decisions_endpoint(cfg)
     body: dict[str, Any] = {
-        "model": cfg.jev_guard_model,
+        "model": cfg.jev_model,
         "state": state,
         "questions": questions,
     }
