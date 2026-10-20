@@ -212,9 +212,9 @@ export function HomePage() {
               )}
             </p>
             <p>
-              {summary.averageProgress === null
-                ? "No topic progress yet"
-                : `Average topic progress ${summary.averageProgress}%`}
+              {summary.quizzesAvailable === 0
+                ? "No quizzes available yet"
+                : `${summary.quizzesPassed} of ${summary.quizzesAvailable} available quizzes passed`}
             </p>
           </article>
         </section>

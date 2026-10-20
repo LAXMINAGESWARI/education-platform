@@ -58,9 +58,10 @@ describe("Feedback and Subjects empty states", () => {
 
     expect(await screen.findByRole("heading", { name: "Feedback" })).toBeInTheDocument();
     expect(await screen.findByText("No enrolled subjects yet.")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Across all subjects" })).toHaveTextContent(
-      "Not attempted",
-    );
+    const summary = screen.getByRole("region", { name: "Across all subjects" });
+    expect(summary).toHaveTextContent("Not attempted");
+    expect(summary).toHaveTextContent("Concepts mastered out of those you've tried");
+    expect(summary).not.toHaveTextContent("Concepts you have already tried");
     expect(screen.getByRole("region", { name: "Across all subjects" })).not.toHaveTextContent("0%");
     expect(screen.queryByRole("table", { name: "Feedback by subject" })).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Due for review" })).not.toBeInTheDocument();

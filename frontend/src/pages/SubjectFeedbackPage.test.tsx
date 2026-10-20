@@ -283,7 +283,10 @@ describe("feedback hierarchy", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("region", { name: "Across all subjects" })).toHaveTextContent("75%");
+    const summary = await screen.findByRole("region", { name: "Across all subjects" });
+    expect(summary).toHaveTextContent("75%");
+    expect(summary).toHaveTextContent("2 mastered out of 4 you've tried");
+    expect(summary).not.toHaveTextContent("Concepts you have already tried");
     const table = screen.getByRole("table", { name: "Feedback by subject" });
     const math = within(table).getByRole("row", { name: /Mathematics/ });
     expect(math).toHaveTextContent("Strongest topic: Mensuration");

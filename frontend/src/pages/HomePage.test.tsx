@@ -119,6 +119,10 @@ describe("HomePage", () => {
     expect(within(math).getByText("In progress")).toHaveClass("badge", "badge--warn");
     expect(math).toHaveTextContent("Grade 8");
     expect(math).toHaveTextContent("1 of 1 done");
+    const overview = screen.getByRole("region", { name: "Subject overview" });
+    expect(within(overview).getByText("Quizzes passed")).toBeInTheDocument();
+    expect(overview).toHaveTextContent("0 of 2 available quizzes passed");
+    expect(overview).not.toHaveTextContent("Average topic progress");
     expect(screen.getByRole("heading", { name: "Science" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Coming soon" })).toBeInTheDocument();
     expect(screen.queryByText(/1\.0 Enroll/)).not.toBeInTheDocument();

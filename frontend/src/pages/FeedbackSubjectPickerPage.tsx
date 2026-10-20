@@ -147,7 +147,11 @@ export function FeedbackSubjectPickerPage() {
                   {concepts === 0 ? "—" : mastered}
                   {concepts > 0 && <span className="stat-kpi__of">/{concepts}</span>}
                 </p>
-                <p>Concepts you have already tried</p>
+                <p>
+                  {concepts === 0
+                    ? "Concepts mastered out of those you've tried"
+                    : `${mastered} mastered out of ${concepts} you've tried`}
+                </p>
               </article>
             </div>
           </section>
