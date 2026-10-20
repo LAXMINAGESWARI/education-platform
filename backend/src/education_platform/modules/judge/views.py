@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.modules.judge.models import JudgeEvaluation
+from education_platform.modules.judge.policy import HOLD_CHECK_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,8 @@ def _checks(raw: object) -> list[JudgeCheckView]:
         decision = item.get("decision")
         summary = item.get("summary")
         if not all(isinstance(value, str) for value in (check_id, kind, decision, summary)):
+            continue
+        if check_id == HOLD_CHECK_ID:
             continue
         probabilities: dict[str, float] = {}
         raw_probs = item.get("probabilities")

@@ -62,13 +62,16 @@ class Settings(BaseSettings):
     # check is not grading items in the same voice that wrote them. Override with
     # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
     blind_solver_model: str = "openai/gpt-4o"
-    # Shadow records Jev scores and leaves the blind-solve gate in charge.
-    # augment also drops items Jev rejects. replace lets Jev override a
-    # blind-solve drop, except keyed-answer checks on computational items.
+    # enforce: a Jev reject fails the item gate and can hold a lesson for QA.
+    # shadow stores scores and changes nothing. off skips the call.
     jev_model: str = "typesafe/jev-1.14"
     jev_timeout_seconds: float = 30.0
     jev_max_retries: int = 2
-    jev_mode: str = "shadow"
+    # JEV_JUDGE_MODE wins when it is set. Unset, unknown, and legacy values resolve
+    # to shadow. enforce is an explicit JEV_JUDGE_MODE=enforce opt-in. JEV_MODE is
+    # the previous name and applies only for off or shadow when JEV_JUDGE_MODE is unset.
+    jev_judge_mode: str | None = None
+    jev_mode: str | None = None
     jev_noul_accept: float = 0.80
     jev_noul_reject: float = 0.35
     jev_confidence_accept: float = 0.55

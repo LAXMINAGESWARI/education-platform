@@ -43,6 +43,7 @@ from education_platform.modules.generation.types import (
     ReviewStage,
     RunPhase,
 )
+from education_platform.modules.judge.publish_gate import lesson_publish_blocked
 from education_platform.modules.judge.views import JudgeReadout, load_judge_readouts
 from education_platform.modules.materials.models import SourceChunk, SourceMaterialVersion
 from education_platform.modules.rag.models import IngestJob, IngestJobStatus
@@ -168,6 +169,7 @@ class LessonDetail:
     markdown: str | None
     published_lesson_version_id: UUID | None
     judge: tuple[JudgeReadout, ...] = ()
+    needs_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +262,7 @@ async def get_step_detail(
                 judge=tuple(
                     item for item in readouts if item.subject_kind in {"lesson", "lesson_section"}
                 ),
+                needs_review=await lesson_publish_blocked(session, facts.row.id),
             ),
         )
     if step_id == "items":
