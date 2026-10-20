@@ -17,7 +17,7 @@ import {
   scoreNumber,
   topicsNeedingAttention,
 } from "../lib/feedbackHierarchy";
-import { revealElementById } from "../lib/hashFocus";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 function TopicSummaryTable({
   topics,
@@ -146,7 +146,7 @@ export function SubjectFeedbackPage() {
     if (!detail || location.hash !== "#needs-attention") return;
     const names = topicsNeedingAttention(detail);
     if (!names || names.length === 0) return;
-    revealElementById("needs-attention");
+    return revealElementByIdWhenSettled("needs-attention");
   }, [detail, location.hash]);
 
   if (!detail && !error) {

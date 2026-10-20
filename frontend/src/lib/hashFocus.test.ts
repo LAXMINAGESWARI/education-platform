@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { revealElementById } from "./hashFocus";
+import { HASH_FOCUS_CLASS, revealElementById } from "./hashFocus";
 
 describe("revealElementById", () => {
   it("scrolls a section and focuses the heading inside it", () => {
@@ -17,6 +17,7 @@ describe("revealElementById", () => {
     expect(section.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
     expect(heading).toHaveAttribute("tabindex", "-1");
     expect(heading).toHaveFocus();
+    expect(heading).toHaveClass(HASH_FOCUS_CLASS);
   });
 
   it("focuses a heading that is the hash target", () => {
@@ -28,6 +29,9 @@ describe("revealElementById", () => {
     expect(revealElementById("needs-attention")).toBe(true);
     expect(heading.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
     expect(heading).toHaveFocus();
+    expect(heading).toHaveClass(HASH_FOCUS_CLASS);
+    heading.blur();
+    expect(heading).not.toHaveClass(HASH_FOCUS_CLASS);
   });
 
   it("does nothing when the target is not in the document yet", () => {

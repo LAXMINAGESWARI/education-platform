@@ -70,6 +70,60 @@ describe("feedbackLinks", () => {
     expect(dueTopicIds([english], [arabicDue])).toEqual([]);
   });
 
+  it("matches due topics by subtopic id when titles are shared or similar", () => {
+    const subtopic = (id: string, title: string) => ({
+      id,
+      title,
+      slug: id,
+      sequence: 1,
+      has_lesson: false,
+      lesson_completed: false,
+      progress_percent: 0,
+      quiz: null,
+    });
+    const named = (id: string, title: string, subtopics: TopicNode["subtopics"]): TopicNode => ({
+      ...topic,
+      id,
+      title,
+      subtopics,
+    });
+    const nudge = (subtopicId: string, subtopicName: string, topicName: string) => ({
+      subtopic_id: subtopicId,
+      subtopic_name: subtopicName,
+      topic_name: topicName,
+      days_since_last_attempt: 21,
+      due_interval_days: 7,
+      remediation: null,
+    });
+
+    const english = [
+      named("en-comprehension", "Comprehension", [subtopic("en-main", "Main idea")]),
+      named("en-persuasive", "Persuasive Writing", [subtopic("en-tone", "Audience and tone")]),
+      named("en-grammar", "Grammar", [subtopic("en-sentence", "Sentence structure")]),
+    ];
+    const arabic = [
+      named("ar-comprehension", "Comprehension", [subtopic("ar-main", "Main idea")]),
+      named("ar-persuasive", "Persuasive writing", [subtopic("ar-tone", "Audience and tone")]),
+      named("ar-grammar", "Grammar", [subtopic("ar-verb", "Verb forms")]),
+    ];
+    const foreignDue = [
+      nudge("ar-main", "Main idea", "Comprehension"),
+      nudge("ar-tone", "Audience and tone", "Persuasive writing"),
+      nudge("ar-verb", "Verb forms", "Grammar"),
+      nudge("ar-extra", "Close reading", "Comprehension skills"),
+    ];
+
+    expect(dueTopicIds(english, foreignDue)).toEqual([]);
+    expect(dueTopicIds([...english, ...arabic], foreignDue)).toEqual([
+      "ar-comprehension",
+      "ar-persuasive",
+      "ar-grammar",
+    ]);
+    expect(
+      dueTopicIds(english, [...foreignDue, nudge("en-sentence", "Sentence structure", "Grammar")]),
+    ).toEqual(["en-grammar"]);
+  });
+
   it("marks a topic due from a subtopic review nudge", () => {
     expect(
       dueTopicIds(

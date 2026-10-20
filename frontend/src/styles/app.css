@@ -41,6 +41,18 @@ a:hover {
   outline-offset: 2px;
 }
 
+/* Script focus on a hash heading does not match :focus-visible in every browser. */
+.hash-focus-ring:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+#needs-attention,
+#feedback-due,
+#feedback-due-heading {
+  scroll-margin-top: var(--anchor-scroll-margin);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
