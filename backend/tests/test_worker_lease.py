@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -29,6 +30,7 @@ from education_platform.workers.lease import (
     heartbeat,
     release_lease,
 )
+from education_platform.workers.shutdown import WorkerShutdown
 from test_generation import SEEDED_SLUG
 
 
@@ -163,6 +165,90 @@ def test_heartbeat_extends_locked_until(
     assert after is not None and after.locked_until is not None
     assert after.locked_until > started
     get_settings.cache_clear()
+
+
+def test_release_after_reclaim_leaves_the_new_lease_unchanged(seeded_db: Session) -> None:
+    _run, job = _generation_job(
+        seeded_db,
+        status=GenerationJobStatus.QUEUED,
+        attempts=0,
+        locked_until=None,
+    )
+    first = claim(seeded_db, GenerationJob)
+    assert isinstance(first, Claimed)
+    first_lease = OwnedLease.from_claimed(GenerationJob, first)
+    stored = seeded_db.get(GenerationJob, job.id)
+    assert stored is not None
+    stored.locked_until = datetime.now(UTC) - timedelta(minutes=5)
+    seeded_db.commit()
+
+    second = claim(seeded_db, GenerationJob)
+    assert isinstance(second, Claimed)
+    assert second.attempts == 2
+    seeded_db.expire_all()
+    owned = seeded_db.get(GenerationJob, job.id)
+    assert owned is not None
+    snapshot = (owned.status, owned.attempts, owned.locked_until)
+
+    assert release_lease(first_lease) is False
+    seeded_db.expire_all()
+    after = seeded_db.get(GenerationJob, job.id)
+    assert after is not None
+    assert (after.status, after.attempts, after.locked_until) == snapshot
+    assert after.status is GenerationJobStatus.RUNNING
+    assert after.attempts == 2
+
+
+def test_three_sigterm_cycles_keep_attempts_at_or_under_max(seeded_db: Session) -> None:
+    """Three graceful shutdowns must not burn the remaining attempt."""
+    _run, job = _generation_job(
+        seeded_db,
+        status=GenerationJobStatus.QUEUED,
+        attempts=2,
+        locked_until=None,
+        max_attempts=3,
+    )
+    for _cycle in range(3):
+        result = claim(seeded_db, GenerationJob)
+        assert isinstance(result, Claimed)
+        assert result.attempts == 3
+        state = WorkerShutdown(grace_seconds=0, clock=lambda: 0.0)
+        lease = OwnedLease.from_claimed(GenerationJob, result)
+        assert state.begin_job(lease) is True
+        state.note_signal(signal.SIGTERM, None)
+        state.watch()
+        seeded_db.expire_all()
+        refreshed = seeded_db.get(GenerationJob, job.id)
+        assert refreshed is not None
+        assert refreshed.status is GenerationJobStatus.QUEUED
+        assert refreshed.locked_until is None
+        assert refreshed.attempts == 2
+        assert refreshed.attempts <= refreshed.max_attempts
+    again = claim(seeded_db, GenerationJob)
+    assert isinstance(again, Claimed)
+    assert again.attempts == 3
+
+
+def test_claim_returns_exhausted_at_the_cap(seeded_db: Session) -> None:
+    _run, queued = _generation_job(
+        seeded_db,
+        status=GenerationJobStatus.QUEUED,
+        attempts=3,
+        locked_until=None,
+        max_attempts=3,
+    )
+    result = claim(seeded_db, GenerationJob)
+    assert isinstance(result, Exhausted)
+    assert result.job_id == queued.id
+    assert queued.attempts == 3
+    assert queued.status is GenerationJobStatus.QUEUED
+    seeded_db.rollback()
+    seeded_db.expire_all()
+    refreshed = seeded_db.get(GenerationJob, queued.id)
+    assert refreshed is not None
+    assert refreshed.status is GenerationJobStatus.QUEUED
+    assert refreshed.attempts == 3
+    assert refreshed.locked_until is None
 
 
 class _QueuedJob:
