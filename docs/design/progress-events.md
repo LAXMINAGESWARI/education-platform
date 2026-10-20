@@ -171,10 +171,18 @@ writes stay in one transaction.
 A stage boundary always writes, except embedding does not force a `0 of N`
 write before the first batch. Inside a stage, a write happens when the overall
 percent has moved by at least 5 points, or at least 1 second has passed since the
-previous write. Each persisted write increments `seq`. A skipped write leaves a
-gap, which clients tolerate because every event is the full state. The write
-also sets `updated_at` and fires the existing Postgres wake. The 15-second
+previous write. The worker checks that throttle on the stage it already holds
+before taking a row lock. Each persisted write increments `seq`. A skipped write
+leaves a gap, which clients tolerate because every event is the full state. The
+write also sets `updated_at` and fires the existing Postgres wake. The 15-second
 heartbeat is unchanged.
+
+A worker stage write is conditional in that same transaction. It lands only when
+the job row is `running` and `attempts` equals the attempt that worker claimed.
+A mismatch is logged and skipped, so a worker whose lease was reclaimed cannot
+replace the new owner's stage. `locked_until` on that claim is the lease token:
+when the caller passes it, the row must carry the same timestamp. Callers leave
+it unset until that token is wired.
 
 ## Stale stages
 
@@ -218,7 +226,8 @@ call it, or it would clear the stage another worker is writing. Until that call
 exists, a refunded first attempt (`queued`, `attempts == 0`, `locked_until`
 null) looks like a first queue, so the status API and the stream leave its
 stage in place. Subscribe audits are one row per principal, subject, and
-10-minute bucket. The next bucket records another row.
+10-minute bucket, including a fresh open that does not send `Last-Event-ID`.
+A different actor or tenant gets its own row. The next bucket records another row.
 
 ## Generation stages
 

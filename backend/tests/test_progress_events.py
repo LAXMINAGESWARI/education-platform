@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -11,12 +12,13 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from tests.progress_http import open_progress_server
 
@@ -26,8 +28,9 @@ from education_platform.modules.audit.models import AuditEvent
 from education_platform.modules.audit.service import (
     SUBSCRIBE_AUDIT_WINDOW,
     progress_subscribe_dedupe_key,
+    record_event_within_window,
 )
-from education_platform.modules.auth.models import User
+from education_platform.modules.auth.models import User, UserStatus
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.materials.models import (
@@ -45,8 +48,10 @@ from education_platform.modules.progress.events import (
 )
 from education_platform.modules.progress.sse import iter_sse
 from education_platform.modules.progress.stage_store import (
+    StageClaim,
     persist_upload_stage,
     reset_stage_on_requeue,
+    stage_claim_matches_job,
 )
 from education_platform.modules.progress.subscribe import subscribe
 from education_platform.modules.progress.types import (
@@ -286,6 +291,55 @@ def test_stage_writes_throttle_inside_one_second_unless_percent_moves() -> None:
     )
 
 
+def test_stage_claim_matches_attempts_and_optional_lease_token() -> None:
+    locked = _NOW
+    assert (
+        stage_claim_matches_job(
+            job_status="running",
+            job_attempts=2,
+            job_locked_until=locked,
+            claim=StageClaim(attempts=2),
+        )
+        is True
+    )
+    assert (
+        stage_claim_matches_job(
+            job_status="running",
+            job_attempts=2,
+            job_locked_until=locked,
+            claim=StageClaim(attempts=1),
+        )
+        is False
+    )
+    assert (
+        stage_claim_matches_job(
+            job_status="queued",
+            job_attempts=2,
+            job_locked_until=None,
+            claim=StageClaim(attempts=2),
+        )
+        is False
+    )
+    assert (
+        stage_claim_matches_job(
+            job_status="running",
+            job_attempts=2,
+            job_locked_until=locked,
+            claim=StageClaim(attempts=2, locked_until=locked),
+        )
+        is True
+    )
+    assert (
+        stage_claim_matches_job(
+            job_status="running",
+            job_attempts=2,
+            job_locked_until=locked,
+            claim=StageClaim(attempts=2, locked_until=locked + timedelta(seconds=1)),
+        )
+        is False
+    )
+
+
 def test_friendly_failure_hides_paths() -> None:
     reason = "embed failed at /var/secret/lesson.pdf"
     message = friendly_failure_message("embedding", reason)
@@ -299,10 +353,17 @@ def test_persist_skips_sub_five_percent_inside_one_second(
 ) -> None:
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     get_settings.cache_clear()
-    version, job = _store_version(seeded_db, subtopic_id=seeded_subtopic_id)
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        status=IngestJobStatus.RUNNING,
+        attempts=1,
+    )
+    claim = StageClaim(attempts=1)
     first = persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage="embedding",
         message="Embedding 0 of 100 chunks.",
         current=0,
@@ -313,6 +374,7 @@ def test_persist_skips_sub_five_percent_inside_one_second(
     skipped = persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage="embedding",
         message="Embedding 1 of 100 chunks.",
         current=1,
@@ -322,6 +384,7 @@ def test_persist_skips_sub_five_percent_inside_one_second(
     written = persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage="embedding",
         message="Embedding 13 of 100 chunks.",
         current=13,
@@ -359,6 +422,7 @@ def test_successful_ingest_emits_monotonic_stages(
         version: SourceMaterialVersion,
         job: IngestJob,
         *,
+        claim: StageClaim,
         stage: str,
         message: str | None,
         current: int | None = None,
@@ -369,6 +433,7 @@ def test_successful_ingest_emits_monotonic_stages(
         seq = real(
             version,
             job,
+            claim=claim,
             stage=stage,
             message=message,
             current=current,
@@ -830,11 +895,19 @@ def test_two_quick_stage_writes_show_the_latest_state(
 ) -> None:
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     get_settings.cache_clear()
-    version, job = _store_version(seeded_db, subtopic_id=seeded_subtopic_id)
     now = datetime.now(UTC)
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        status=IngestJobStatus.RUNNING,
+        attempts=1,
+        locked_until=now + timedelta(minutes=5),
+    )
+    claim = StageClaim(attempts=1)
     first = persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage="chunking",
         message="Splitting the document into 4 sections.",
         current=4,
@@ -845,6 +918,7 @@ def test_two_quick_stage_writes_show_the_latest_state(
     second = persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage="embedding",
         message="Embedding 1 of 4 chunks.",
         current=1,
@@ -873,6 +947,142 @@ def test_two_quick_stage_writes_show_the_latest_state(
     assert payloads[0]["current"] == 1
     assert payloads[0]["seq"] != first
     get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_stale_worker_stage_write_leaves_reclaimed_stage(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Worker A keeps its claimed attempts. After B reclaims, A's stage write is a no-op."""
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        stage="embedding",
+        stage_seq=5,
+        stage_current=16,
+        stage_total=100,
+        stage_message="Embedding 16 of 100 chunks.",
+        attempts=0,
+        status=IngestJobStatus.QUEUED,
+    )
+    claimed = claim(seeded_db, IngestJob)
+    assert isinstance(claimed, Claimed)
+    assert claimed.job_id == job.id
+    seeded_db.expire_all()
+    owned = seeded_db.get(IngestJob, job.id)
+    assert owned is not None
+    assert owned.attempts == 1
+    a_claim = StageClaim(attempts=owned.attempts)
+    owned.locked_until = datetime.now(UTC) - timedelta(minutes=5)
+    seeded_db.commit()
+
+    reclaimed = claim(seeded_db, IngestJob)
+    assert isinstance(reclaimed, Claimed)
+    assert reclaimed.job_id == job.id
+    seeded_db.expire_all()
+    stored = seeded_db.get(SourceMaterialVersion, version.id)
+    running = seeded_db.get(IngestJob, job.id)
+    assert stored is not None and running is not None
+    assert running.attempts == 2
+    assert stored.stage == "received"
+    assert stored.stage_message == RESTART_MESSAGE
+    kept_seq = stored.stage_seq
+
+    with caplog.at_level(logging.INFO):
+        skipped = persist_upload_stage(
+            stored,
+            running,
+            claim=a_claim,
+            stage="embedding",
+            message="Embedding 32 of 100 chunks.",
+            current=32,
+            total=100,
+            force=True,
+        )
+    assert skipped is None
+    assert "Skipped stage write" in caplog.text
+
+    seeded_db.expire_all()
+    after = seeded_db.get(SourceMaterialVersion, version.id)
+    assert after is not None
+    assert after.stage == "received"
+    assert after.stage_message == RESTART_MESSAGE
+    assert after.stage_current is None
+    assert after.stage_seq == kept_seq
+
+    status = client.get(f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers)
+    assert status.status_code == 200, status.text
+    body = status.json()
+    assert body["stage"] == "received"
+    assert body["stage_message"] == RESTART_MESSAGE
+    assert body["stage_seq"] == kept_seq
+
+    url = f"/api/v1/progress/versions/{version.id}"
+    with (
+        open_progress_server() as base,
+        httpx.Client(base_url=base, timeout=5) as http,
+        http.stream("GET", url, headers=admin_headers) as response,
+    ):
+        assert response.status_code == 200
+        raw = bytearray()
+        for chunk in response.iter_bytes():
+            raw.extend(chunk)
+            if b"event: progress" in raw:
+                break
+    payloads = _progress_payloads(raw.decode())
+    assert len(payloads) == 1
+    assert payloads[0]["stage"] == "received"
+    assert payloads[0]["message"] == RESTART_MESSAGE
+    assert payloads[0]["seq"] == kept_seq
+    get_settings.cache_clear()
+
+
+@pytest.mark.regression
+async def test_subscribe_audits_are_one_row_per_actor(
+    seeded_db: Session,
+    async_db_session: AsyncSession,
+) -> None:
+    """A second actor in the same window gets a row. The same actor does not."""
+    admin = seeded_db.scalar(select(User).where(User.email == get_settings().demo_admin_email))
+    assert admin is not None
+    other = User(
+        institution_id=admin.institution_id,
+        email=f"other-{uuid4().hex[:8]}@demo.school",
+        full_name="Other Admin",
+        password_hash="not-used",
+        status=UserStatus.ACTIVE,
+    )
+    seeded_db.add(other)
+    seeded_db.commit()
+    detail = f"version:{uuid4()}"
+    payload = {"detail": detail}
+
+    async def _record(actor_id: UUID) -> object:
+        return await record_event_within_window(
+            async_db_session,
+            window=SUBSCRIBE_AUDIT_WINDOW,
+            institution_id=admin.institution_id,
+            actor_user_id=actor_id,
+            event_type="data.scoped_read",
+            entity_type="progress.version",
+            match_payload={"detail": detail},
+            payload=payload,
+        )
+
+    first = await _record(admin.id)
+    second = await _record(other.id)
+    third = await _record(admin.id)
+    assert first is not None
+    assert second is not None
+    assert third is None
 
 
 def _failed_version_for_audit(

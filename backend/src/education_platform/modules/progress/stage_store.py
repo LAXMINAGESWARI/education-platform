@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from education_platform.db.session import sync_session
 from education_platform.modules.generation.models import ContentGenerationRun
@@ -35,6 +37,43 @@ from education_platform.modules.rag.models import (
 
 type VersionRow = SourceMaterialVersion | KnowledgeDocumentVersion
 _RESTART_STAGE = "received"
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class StageClaim:
+    """Claim identity a stage write must still match.
+
+    ``attempts`` is the value ``claim()`` stored for this worker. ``locked_until``
+    is the lease token. Leave it unset until that token is passed in. When it is
+    set, the job row's ``locked_until`` must be the same instant.
+    """
+
+    attempts: int
+    locked_until: datetime | None = None
+
+
+def stage_claim_matches_job(
+    *,
+    job_status: str | None,
+    job_attempts: int,
+    job_locked_until: datetime | None,
+    claim: StageClaim,
+) -> bool:
+    """True when this worker still owns the running job.
+
+    The ``locked_until`` comparison is the slot for the #200 lease token. A
+    claim with no token checks status and attempts only.
+    """
+    if job_status != IngestJobStatus.RUNNING.value:
+        return False
+    if int(job_attempts) != claim.attempts:
+        return False
+    if claim.locked_until is None:
+        return True
+    if job_locked_until is None:
+        return False
+    return _as_utc(job_locked_until) == _as_utc(claim.locked_until)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,10 +88,82 @@ class EffectiveIngestStage:
     stage_updated_at: datetime | None
 
 
+def _memory_says_skip(
+    version: VersionRow,
+    *,
+    stage: str,
+    message: str | None,
+    current: int | None,
+    total: int | None,
+    now: datetime,
+    force: bool,
+) -> bool:
+    return _row_says_skip(
+        version,
+        stage=stage,
+        message=message,
+        current=current,
+        total=total,
+        now=now,
+        force=force,
+    )
+
+
+def _row_says_skip(
+    row: VersionRow,
+    *,
+    stage: str,
+    message: str | None,
+    current: int | None,
+    total: int | None,
+    now: datetime,
+    force: bool,
+) -> bool:
+    if same_stage_state(
+        previous_stage=row.stage,
+        previous_current=row.stage_current,
+        previous_total=row.stage_total,
+        previous_message=row.stage_message,
+        stage=stage,
+        current=current,
+        total=total,
+        message=message,
+    ):
+        return True
+    if force:
+        return False
+    return not should_persist_stage(
+        previous_stage=row.stage,
+        previous_current=row.stage_current,
+        previous_total=row.stage_total,
+        previous_updated_at=row.stage_updated_at,
+        stage=stage,
+        current=current,
+        total=total,
+        now=now,
+    )
+
+
+def _remember_stage(version: VersionRow, row: VersionRow) -> None:
+    """Copy the committed stage onto the caller's object without marking it dirty."""
+    set_committed_value(version, "stage", row.stage)
+    set_committed_value(version, "stage_current", row.stage_current)
+    set_committed_value(version, "stage_total", row.stage_total)
+    set_committed_value(version, "stage_message", row.stage_message)
+    set_committed_value(version, "stage_updated_at", row.stage_updated_at)
+    set_committed_value(version, "stage_seq", row.stage_seq)
+
+
+def _job_status_value(status: Any) -> str:
+    value = status.value if isinstance(status, IngestJobStatus) else status
+    return str(value)
+
+
 def persist_upload_stage(
     version: VersionRow,
     job: IngestJob,
     *,
+    claim: StageClaim,
     stage: str,
     message: str | None,
     current: int | None = None,
@@ -60,38 +171,64 @@ def persist_upload_stage(
     now: datetime | None = None,
     force: bool = False,
 ) -> int | None:
-    """Commit one stage on its own session. Returns the new seq, or None when throttled.
+    """Commit one stage on its own session. Returns the new seq, or None when skipped.
+
+    The write lands only while the job row is ``running`` and ``attempts`` equals
+    ``claim.attempts``. A mismatch is logged and skipped, so a worker that lost
+    the lease cannot replace the stage of the worker that reclaimed it. Pass
+    ``claim.locked_until`` to require that token as well.
 
     Chunk and vector writes stay on the caller's session. Identical state is not
-    written again, so a forced boundary does not burn a seq.
+    written again, so a forced boundary does not burn a seq. The throttle is
+    checked on the in-memory version before a row lock.
     """
     moment = now or datetime.now(UTC)
+    if _memory_says_skip(
+        version,
+        stage=stage,
+        message=message,
+        current=current,
+        total=total,
+        now=moment,
+        force=force,
+    ):
+        return None
     own = sync_session()
     try:
+        job_row = own.get(IngestJob, job.id, with_for_update={"read": True})
+        if job_row is None or not stage_claim_matches_job(
+            job_status=_job_status_value(job_row.status),
+            job_attempts=int(job_row.attempts or 0),
+            job_locked_until=job_row.locked_until,
+            claim=claim,
+        ):
+            logger.info(
+                "Skipped stage write for ingest job %s: claim attempts=%s locked_until=%s; "
+                "row status=%s attempts=%s locked_until=%s",
+                job.id,
+                claim.attempts,
+                claim.locked_until,
+                None if job_row is None else _job_status_value(job_row.status),
+                None if job_row is None else job_row.attempts,
+                None if job_row is None else job_row.locked_until,
+            )
+            own.rollback()
+            return None
         row = _lock_version(own, version)
         if row is None:
+            own.rollback()
             return None
-        if same_stage_state(
-            previous_stage=row.stage,
-            previous_current=row.stage_current,
-            previous_total=row.stage_total,
-            previous_message=row.stage_message,
+        if _row_says_skip(
+            row,
             stage=stage,
-            current=current,
-            total=total,
             message=message,
-        ):
-            return None
-        if not force and not should_persist_stage(
-            previous_stage=row.stage,
-            previous_current=row.stage_current,
-            previous_total=row.stage_total,
-            previous_updated_at=row.stage_updated_at,
-            stage=stage,
             current=current,
             total=total,
             now=moment,
+            force=force,
         ):
+            _remember_stage(version, row)
+            own.rollback()
             return None
         row.stage = stage
         row.stage_current = current
@@ -102,6 +239,7 @@ def persist_upload_stage(
         seq = int(row.stage_seq)
         publish_wake(own, *_subjects_sync(own, job))
         own.commit()
+        _remember_stage(version, row)
         return seq
     except Exception:
         own.rollback()

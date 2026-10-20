@@ -46,6 +46,7 @@ from education_platform.modules.progress.events import (
     friendly_failure_message,
 )
 from education_platform.modules.progress.stage_store import (
+    StageClaim,
     commit_upload_terminal,
     persist_upload_stage,
 )
@@ -484,6 +485,7 @@ def _fail_job(session: Session, job: IngestJob, reason: str) -> None:
 def _note_stage(
     version: _VersionRow,
     job: IngestJob,
+    claim: StageClaim,
     *,
     stage: str,
     message: str,
@@ -494,6 +496,7 @@ def _note_stage(
     persist_upload_stage(
         version,
         job,
+        claim=claim,
         stage=stage,
         message=message,
         current=current,
@@ -629,6 +632,8 @@ def process_ingest_job_sync(
         if job is None:
             logger.error("Ingest job %s not found", ingest_job_id)
             return
+        # Captured once. A later reclaim bumps attempts; stage writes keep this value.
+        stage_claim = StageClaim(attempts=int(job.attempts or 0))
 
         try:
             claim = IngestJobClaim.model_validate(job)
@@ -644,9 +649,9 @@ def process_ingest_job_sync(
 
         try:
             if claim.source_material_version_id is not None:
-                _process_source_material(session, job, parse)
+                _process_source_material(session, job, parse, stage_claim)
             elif claim.knowledge_document_version_id is not None:
-                _process_knowledge_document(session, job, parse)
+                _process_knowledge_document(session, job, parse, stage_claim)
             else:
                 _fail_job(session, job, "Ingest job has no target set")
         except Exception as exc:
@@ -674,7 +679,9 @@ def process_ingest_job_sync(
         session.close()
 
 
-def _embed_texts(version: _VersionRow, job: IngestJob, texts: list[str]) -> list[list[float]]:
+def _embed_texts(
+    version: _VersionRow, job: IngestJob, texts: list[str], claim: StageClaim
+) -> list[list[float]]:
     """Embed in batches so chunk counts can move without committing chunk rows.
 
     The first report is the first finished batch. A forced ``0 of N`` write
@@ -691,6 +698,7 @@ def _embed_texts(version: _VersionRow, job: IngestJob, texts: list[str]) -> list
         _note_stage(
             version,
             job,
+            claim,
             stage="embedding",
             message=embedding_message(done, total),
             current=done,
@@ -704,13 +712,14 @@ def _parsed_chunks(
     job: IngestJob,
     version: _VersionRow,
     parse: ParsePdfFn,
+    claim: StageClaim,
 ) -> tuple[list[TextChunk], list[list[float]]] | None:
     """Walk the upload stages through extracting_topics. None means the job was failed."""
-    _note_stage(version, job, stage="received", message=RECEIVED_MESSAGE, force=True)
+    _note_stage(version, job, claim, stage="received", message=RECEIVED_MESSAGE, force=True)
     if not version.blob_object_key:
         _fail_version(session, job, version, "Missing blob object key")
         return None
-    _note_stage(version, job, stage="parsing", message=PARSING_MESSAGE, force=True)
+    _note_stage(version, job, claim, stage="parsing", message=PARSING_MESSAGE, force=True)
     chunks = parse(storage.resolve_blob_path(version.blob_object_key))
     if not chunks:
         _fail_version(session, job, version, "No extractable text")
@@ -719,17 +728,19 @@ def _parsed_chunks(
     _note_stage(
         version,
         job,
+        claim,
         stage="chunking",
         message=chunking_message(count),
         current=count,
         total=count,
         force=True,
     )
-    embeddings = _embed_texts(version, job, [chunk.text for chunk in chunks])
+    embeddings = _embed_texts(version, job, [chunk.text for chunk in chunks], claim)
     headed = sum(1 for chunk in chunks if chunk.section_heading)
     _note_stage(
         version,
         job,
+        claim,
         stage="extracting_topics",
         message=EXTRACTING_MESSAGE,
         current=headed,
@@ -762,7 +773,9 @@ def _finish_ready(
     )
 
 
-def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
+def _process_source_material(
+    session: Session, job: IngestJob, parse: ParsePdfFn, claim: StageClaim
+) -> None:
     version = session.get(SourceMaterialVersion, job.source_material_version_id)
     if version is None:
         _fail_job(session, job, "Source material version not found")
@@ -773,7 +786,7 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
     _wake_ingest(session, job)
     session.commit()
 
-    prepared = _parsed_chunks(session, job, version, parse)
+    prepared = _parsed_chunks(session, job, version, parse, claim)
     if prepared is None:
         return
     chunks, embeddings = prepared
@@ -831,7 +844,9 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
     )
 
 
-def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
+def _process_knowledge_document(
+    session: Session, job: IngestJob, parse: ParsePdfFn, claim: StageClaim
+) -> None:
     version = session.get(KnowledgeDocumentVersion, job.knowledge_document_version_id)
     if version is None:
         _fail_job(session, job, "Knowledge document version not found")
@@ -842,7 +857,7 @@ def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePd
     _wake_ingest(session, job)
     session.commit()
 
-    prepared = _parsed_chunks(session, job, version, parse)
+    prepared = _parsed_chunks(session, job, version, parse, claim)
     if prepared is None:
         return
     chunks, embeddings = prepared
