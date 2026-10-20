@@ -3,8 +3,8 @@
 Jev is stubbed at ``judge.client``'s httpx transport, so ``post_decisions`` and
 ``classify_noul`` run. Probabilities come from the paid replay file. GPT is stubbed
 at the completion function those callers already use, so ``chat_completion_json`` and
-``legacy_gpt_flag`` run. On this branch a Jev pass does not also call GPT. After
-the text-to-SQL OR change, the allow paths below that name GPT must expect that call.
+``legacy_gpt_flag`` run. A Jev pass on a data question also calls GPT. When both
+allow, the audit stage is ``jev_gpt``. An HTTP 402 allow stays ``gpt``.
 """
 
 from __future__ import annotations
@@ -424,7 +424,7 @@ def test_data_chat_refuses_injection_and_answers_a_benign_question(
     seeded_db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Item 1. Jev blocks di-01. ok-attendance clears both Jev checks without GPT."""
+    """Item 1. Jev blocks di-01. ok-attendance clears Jev and both GPT checks."""
     _arm(monkeypatch)
     jev, gpt = _Jev(), _Gpt()
     _install(monkeypatch, jev, gpt)
@@ -449,10 +449,10 @@ def test_data_chat_refuses_injection_and_answers_a_benign_question(
     assert answered["natural_answer"] != _DATA_INJECTION_ANSWER
     assert answered["natural_answer"] != _DATA_OFF_TOPIC_ANSWER
     assert set(answered) == {"natural_answer", "confidence", "provenance"}
-    assert "data_injection" not in gpt.calls
-    assert "data_off_topic" not in gpt.calls
+    assert gpt.calls.count("data_injection") == 1
+    assert gpt.calls.count("data_off_topic") == 1
     allowed = _data_rows(seeded_db)[-1].payload
-    assert allowed["guard_stage"] == "jev"
+    assert allowed["guard_stage"] == "jev_gpt"
     assert allowed["outcome"] == "answered"
     assert allowed["injection_probability"] == _noul("data.jev_injection", "ok-attendance")
     assert allowed["off_topic_probability"] == _noul("data.jev_off_topic", "ok-attendance")
@@ -471,7 +471,7 @@ def test_data_chat_refuses_an_off_topic_question(
 
     refused = _ask(alnoor, question)
     assert refused["natural_answer"] == _DATA_OFF_TOPIC_ANSWER
-    assert "data_injection" not in gpt.calls
+    assert gpt.calls.count("data_injection") == 1
     assert "data_off_topic" not in gpt.calls
     payload = _data_rows(seeded_db)[-1].payload
     assert payload["guard_stage"] == "jev"
@@ -560,8 +560,8 @@ def test_policy_and_data_402_falls_back_to_gpt(
     answered = _ask(alnoor, _ROW_TEXT["ok-attendance"])
     assert answered["natural_answer"] not in {_DATA_INJECTION_ANSWER, _DATA_OFF_TOPIC_ANSWER}
     assert jev.statuses == [402, 200]
-    assert "data_injection" in gpt.calls
-    assert "data_off_topic" not in gpt.calls
+    assert gpt.calls.count("data_injection") == 1
+    assert gpt.calls.count("data_off_topic") == 1
     payload = _data_rows(seeded_db)[-1].payload
     assert payload["guard_stage"] == "gpt"
     assert payload["outcome"] == "answered"
