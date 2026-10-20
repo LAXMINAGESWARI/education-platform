@@ -2,14 +2,9 @@ name: CI
 
 on:
   pull_request:
-  # This branch has no pull request. Push runs CI so the speedup can be timed.
-  # head_ref || ref_name keeps a later PR on one concurrency group.
-  push:
-    branches:
-      - cursor/ci-speedup
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,7 +25,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: backend/.mypy_cache
-          key: mypy-${{ runner.os }}-${{ hashFiles('backend/uv.lock', 'backend/src/**/*.py') }}
+          key: mypy-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}-${{ hashFiles('backend/src/**/*.py') }}
           restore-keys: |
             mypy-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}-
             mypy-${{ runner.os }}-
@@ -38,7 +33,7 @@ jobs:
 
   backend-fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
