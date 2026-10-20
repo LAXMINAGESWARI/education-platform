@@ -4,6 +4,7 @@ import {
   watchMaterialVersionStatus,
   uploadSubtopicMaterial,
 } from "../api/adminIngest";
+import { ProgressReconnectError } from "../api/progress";
 import { ApiError, type MaterialVersionStatus } from "../api/types";
 import { IngestStatusBadge } from "./IngestStatusBadge";
 import { PushButton } from "./PushButton";
@@ -34,6 +35,7 @@ export function CurriculumMaterialUpload({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [status, setStatus] = useState<MaterialVersionStatus | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
 
@@ -59,6 +61,7 @@ export function CurriculumMaterialUpload({
     const resolvedTitle = title.trim() || file.name.replace(/\.pdf$/i, "");
     setBusy(true);
     setError(null);
+    setReconnecting(false);
     setStatus(null);
 
     pollAbortRef.current?.abort();
@@ -67,6 +70,7 @@ export function CurriculumMaterialUpload({
 
     try {
       const accepted = await uploadSubtopicMaterial(targetSubtopic, file, resolvedTitle);
+      if (abort.signal.aborted) return;
       setStatus({
         id: accepted.version_id,
         source_material_id: accepted.source_material_id,
@@ -78,7 +82,15 @@ export function CurriculumMaterialUpload({
       });
       const settled = await watchMaterialVersionStatus(accepted.version_id, {
         signal: abort.signal,
+        onReconnecting: () => {
+          if (!abort.signal.aborted) setReconnecting(true);
+        },
+        onReconnected: () => {
+          if (!abort.signal.aborted) setReconnecting(false);
+        },
       });
+      if (abort.signal.aborted) return;
+      setReconnecting(false);
       setStatus(settled);
       onSettled?.(settled);
       if (settled.failure_reason) {
@@ -86,10 +98,15 @@ export function CurriculumMaterialUpload({
       }
       setFile(null);
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(err instanceof ApiError ? err.message : "Upload failed. Try again.");
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+      setReconnecting(false);
+      const message =
+        err instanceof ProgressReconnectError || err instanceof ApiError
+          ? err.message
+          : "Upload failed. Try again.";
+      setError(message);
     } finally {
-      setBusy(false);
+      if (!abort.signal.aborted) setBusy(false);
     }
   }
 
@@ -152,6 +169,11 @@ export function CurriculumMaterialUpload({
       {error && (
         <p className="form__error" role="alert">
           {error}
+        </p>
+      )}
+      {reconnecting && (
+        <p className="admin-upload__status" role="status">
+          Reconnecting…
         </p>
       )}
       {status && (
