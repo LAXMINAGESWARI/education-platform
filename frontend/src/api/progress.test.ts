@@ -158,6 +158,14 @@ function controllableFrames(): { response: Response; send: (frame: string) => vo
   };
 }
 
+function silentStream(): Response {
+  const body = new ReadableStream<Uint8Array>();
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 function hangUntilAbort(signal: AbortSignal | undefined): Promise<Response> {
   return new Promise((_resolve, reject) => {
     if (signal?.aborted) {
@@ -897,6 +905,70 @@ describe("progress SSE client", () => {
       expect(failure.elapsedMs).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
       expect(failure.cause).toBeInstanceOf(ApiError);
     }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives up on headers-then-silence within the outage budget", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const started = Date.now();
+    vi.mocked(apiStream).mockImplementation(async () => silentStream());
+    let settled = false;
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), { onSnapshot: vi.fn() }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+
+    expect(Date.now() - started).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(ProgressReconnectError);
+      const failure = result.error as ProgressReconnectError;
+      expect(failure.elapsedMs).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+      expect(failure.elapsedMs).toBeGreaterThan(PROGRESS_STALL_TIMEOUT_MS);
+      expect(failure.message).toBe("Lost the connection to progress updates. Try again.");
+    }
+    expect(vi.mocked(apiStream).mock.calls.length).toBeGreaterThan(1);
+    expect(vi.mocked(apiStream).mock.calls.length).toBeLessThan(PROGRESS_RECONNECT_MAX_ATTEMPTS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives up on a hung connect within the outage budget", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const started = Date.now();
+    vi.mocked(apiStream).mockImplementation((_path, options) => hangUntilAbort(options?.signal));
+    let settled = false;
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), { onSnapshot: vi.fn() }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+
+    expect(Date.now() - started).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(ProgressReconnectError);
+      const failure = result.error as ProgressReconnectError;
+      expect(failure.elapsedMs).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+      expect(failure.elapsedMs).toBeGreaterThan(PROGRESS_CONNECT_TIMEOUT_MS);
+      expect(failure.message).toBe("Lost the connection to progress updates. Try again.");
+    }
+    expect(vi.mocked(apiStream).mock.calls.length).toBeGreaterThan(1);
+    expect(vi.mocked(apiStream).mock.calls.length).toBeLessThan(PROGRESS_RECONNECT_MAX_ATTEMPTS);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -25,7 +25,11 @@ export const PROGRESS_RECONNECT_FACTOR = 2;
 /** Failed tries since the last healthy frame before the subscription rejects. */
 export const PROGRESS_RECONNECT_MAX_ATTEMPTS = 8;
 
-/** Reject when the next wait would push this outage past one minute. */
+/**
+ * Reject once this outage has lasted one minute.
+ * Connect waits, stall watches, and backoff delays all spend the same budget.
+ * An in-flight wait is clamped so it cannot run past the deadline.
+ */
 export const PROGRESS_RECONNECT_MAX_ELAPSED_MS = 60_000;
 
 /**
@@ -207,13 +211,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function readWithStall(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
   const pending = reader.read();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new ProgressStallError());
       void reader.cancel().catch(() => undefined);
-    }, PROGRESS_STALL_TIMEOUT_MS);
+    }, timeoutMs);
     pending.then(
       (value) => {
         clearTimeout(timer);
@@ -229,7 +234,8 @@ function readWithStall(
 
 async function* readSse(
   body: ReadableStream<Uint8Array>,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  stallTimeoutMs: () => number,
 ): AsyncGenerator<SseEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -239,7 +245,7 @@ async function* readSse(
       if (signal?.aborted) {
         throw abortError();
       }
-      const { done, value } = await readWithStall(reader);
+      const { done, value } = await readWithStall(reader, stallTimeoutMs());
       if (done) {
         break;
       }
@@ -324,7 +330,7 @@ function notifyReconnected(onReconnected: (() => void) | undefined): void {
   }
 }
 
-function progressAttempt(parent: AbortSignal | undefined): {
+function progressAttempt(parent: AbortSignal | undefined, timeoutMs: number): {
   signal: AbortSignal;
   connected: () => void;
   finish: () => void;
@@ -339,7 +345,7 @@ function progressAttempt(parent: AbortSignal | undefined): {
     if (!open) {
       controller.abort();
     }
-  }, PROGRESS_CONNECT_TIMEOUT_MS);
+  }, timeoutMs);
 
   function onParentAbort(): void {
     controller.abort();
@@ -385,11 +391,27 @@ export async function subscribeProgress(
   let attempt = 0;
   let failures = 0;
   let outageStartedAt: number | null = null;
+  let disconnected: unknown;
+
+  // The clock starts when a wait begins, and a healthy frame clears it.
+  // Clamping each wait to the remainder is what keeps a silent body inside
+  // the minute: the stall watchdog would otherwise run its full 45s.
+  function clampedWait(capMs: number): number {
+    const started = outageStartedAt ?? Date.now();
+    outageStartedAt = started;
+    const remaining = PROGRESS_RECONNECT_MAX_ELAPSED_MS - (Date.now() - started);
+    return Math.max(0, Math.min(capMs, remaining));
+  }
 
   while (!options.signal?.aborted) {
-    let disconnected: unknown;
+    if (
+      outageStartedAt !== null &&
+      Date.now() - outageStartedAt >= PROGRESS_RECONNECT_MAX_ELAPSED_MS
+    ) {
+      throw new ProgressReconnectError(failures, Date.now() - outageStartedAt, disconnected);
+    }
     let healthyReset: ReturnType<typeof setTimeout> | undefined;
-    const attemptSignal = progressAttempt(options.signal);
+    const attemptSignal = progressAttempt(options.signal, clampedWait(PROGRESS_CONNECT_TIMEOUT_MS));
     try {
       let res: Response;
       try {
@@ -411,20 +433,24 @@ export async function subscribeProgress(
         throw new ApiError("Progress stream had no body", 502, null);
       }
       let connectionHealthy = false;
-      for await (const item of readSse(res.body, options.signal)) {
+      for await (const item of readSse(res.body, options.signal, () =>
+        clampedWait(PROGRESS_STALL_TIMEOUT_MS),
+      )) {
         if (!connectionHealthy) {
           // Headers alone are not healthy. The first frame ends the outage and
           // clears the reconnecting banner. The backoff exponent waits out
           // PROGRESS_HEALTHY_BACKOFF_RESET_MS so a one-frame proxy cannot spin.
           connectionHealthy = true;
           failures = 0;
-          outageStartedAt = null;
           healthyReset = setTimeout(() => {
             healthyReset = undefined;
             attempt = 0;
           }, PROGRESS_HEALTHY_BACKOFF_RESET_MS);
           notifyReconnected(options.onReconnected);
         }
+        // Later heartbeats keep the clock clear too. A quiet read starts a
+        // fresh budget, so one late beat still gets the full stall window.
+        outageStartedAt = null;
         switch (item.event) {
           case "heartbeat":
             break;
@@ -485,6 +511,7 @@ export async function subscribeProgress(
     const waitMs = progressReconnectDelayMs(attempt, Math.random());
     if (
       failures >= PROGRESS_RECONNECT_MAX_ATTEMPTS ||
+      elapsedMs >= PROGRESS_RECONNECT_MAX_ELAPSED_MS ||
       elapsedMs + waitMs > PROGRESS_RECONNECT_MAX_ELAPSED_MS
     ) {
       throw new ProgressReconnectError(failures, elapsedMs, disconnected);
