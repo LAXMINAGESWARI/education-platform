@@ -47,7 +47,8 @@ tests:
           content:
             limits.memory: 16Gi
             requests.memory: 9Gi
-            limits.cpu: "8"
+            requests.cpu: "6"
+            limits.cpu: "16"
   - it: prod postgres uses the trixie image and both roles
     values:
       - ../values-prod.yaml
@@ -92,7 +93,53 @@ tests:
           content:
             limits.memory: 12Gi
             requests.memory: 6Gi
-            limits.cpu: "8"
+            requests.cpu: "5"
+            limits.cpu: "14"
+  - it: prod api max stays at 4 until the pool image lands
+    values:
+      - ../values-prod.yaml
+    template: api-hpa.yaml
+    asserts:
+      - equal:
+          path: spec.maxReplicas
+          value: 4
+  - it: prod does not run a second worker
+    values:
+      - ../values-prod.yaml
+    template: worker-llm-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: prod docling worker drains every queue at 3Gi
+    values:
+      - ../values-prod.yaml
+    template: worker-docling-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 600
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: education_platform.workers
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_SHUTDOWN_GRACE_SECONDS
+            value: "570"
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 3Gi
+      - greaterOrEqual:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 575
+  - it: loadtest api max stays at 4 until the pool image lands
+    values:
+      - ../values-loadtest.yaml
+    template: api-hpa.yaml
+    asserts:
+      - equal:
+          path: spec.maxReplicas
+          value: 4
   - it: loadtest turns the lesson judge off
     values:
       - ../values-loadtest.yaml

@@ -229,7 +229,7 @@ envFrom:
 {{- end }}
 {{- if .worker }}
 - name: WORKER_SHUTDOWN_GRACE_SECONDS
-  value: {{ .pool.shutdownGraceSeconds | quote }}
+  value: {{ (.shutdownGrace | default .pool.shutdownGraceSeconds) | quote }}
 {{- end }}
 {{- end }}
 

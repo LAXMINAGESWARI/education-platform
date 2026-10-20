@@ -46,6 +46,20 @@ tests:
           path: spec.template.spec.containers[0].args
           content: "200"
       - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value:
+            - sleep
+            - "5"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--timeout-graceful-shutdown"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "20"
+      - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: false
       - equal:
@@ -104,8 +118,12 @@ tests:
       - isNull:
           path: spec.template.spec.securityContext.runAsUser
       - equal:
-          path: spec.template.spec.containers[0].securityContext.capabilities.add[0]
-          value: NET_BIND_SERVICE
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          value:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - NET_BIND_SERVICE
       - equal:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/aushakanuj/curioed-web:ci

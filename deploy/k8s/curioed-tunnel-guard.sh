@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# If the k8s tunnel has replicas, stop the Compose cloudflared containers.
-# Never starts or scales anything. If kubectl fails, docker is not touched.
+# Stop Compose cloudflared only when the k8s tunnel has a Ready pod.
+# Never starts or scales anything. If kubectl fails or nothing is Ready,
+# docker is not touched.
 set -euo pipefail
 set +x
 
@@ -51,8 +52,8 @@ kube() {
 }
 
 if ! deploy_json="$(kube get deploy "${deployment}" --namespace "${namespace}" -o json)"; then
-  log "kubectl failed; compose was not touched"
-  exit 1
+  log "WARNING: kubectl failed; compose was not touched"
+  exit 0
 fi
 
 parsed="$(
@@ -69,9 +70,14 @@ desired="${parsed%%$'\n'*}"
 ready="${parsed#*$'\n'}"
 log "k8s ${namespace}/${deployment} desired=${desired} ready=${ready}"
 
+if [[ "${ready}" -lt 1 ]]; then
+  log "WARNING: k8s cloudflared is not Ready (ready=${ready}); compose was not touched"
+  exit 0
+fi
+
 if ! names="$(docker ps --filter status=running --format '{{.Names}}')"; then
-  log "docker ps failed after k8s state was known; no stop was issued"
-  exit 1
+  log "WARNING: docker ps failed; no stop was issued"
+  exit 0
 fi
 
 while IFS= read -r name; do
@@ -79,13 +85,11 @@ while IFS= read -r name; do
   case "${name}" in
     "${prefix}"*)
       log "compose running ${name}"
-      if [[ "${desired}" -gt 0 || "${ready}" -gt 0 ]]; then
-        if [[ "${dry_run}" -eq 1 ]]; then
-          log "dry-run would docker stop ${name}"
-        else
-          docker stop "${name}" >/dev/null
-          log "stopped ${name}"
-        fi
+      if [[ "${dry_run}" -eq 1 ]]; then
+        log "dry-run would docker stop ${name}"
+      else
+        docker stop "${name}" >/dev/null
+        log "stopped ${name}"
       fi
       ;;
   esac

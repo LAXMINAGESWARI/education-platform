@@ -69,14 +69,14 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: WORKER_SHUTDOWN_GRACE_SECONDS
-            value: "25"
+            value: "570"
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: TEXT_TO_SQL_DB_POOL_SIZE
       - greaterOrEqual:
           path: spec.template.spec.terminationGracePeriodSeconds
-          value: 30
+          value: 575
   - it: puts the same worker pool on the llm worker
     template: worker-llm-deployment.yaml
     set:
@@ -89,4 +89,4 @@ tests:
             value: "25"
       - greaterOrEqual:
           path: spec.template.spec.terminationGracePeriodSeconds
-          value: 30
+          value: 40

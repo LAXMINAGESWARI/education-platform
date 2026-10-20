@@ -42,7 +42,9 @@ api:
   autoscaling:
     enabled: true
     minReplicas: 1
-    maxReplicas: 6
+    # 6b7553c uses default pools, about 45 connections per pod.
+    # Raise maxReplicas to 6 after PR #200 is in the deployed image.
+    maxReplicas: 4
     targetCPUUtilizationPercentage: 60
 
 web:
@@ -66,10 +68,16 @@ web:
 workerDocling:
   enabled: true
   replicas: 1
+  # The only prod worker. Same command as compose `worker`
+  # (python -m education_platform.workers), 3Gi, grace 600.
+  # 570 is that grace minus 30.
+  terminationGracePeriodSeconds: 600
+  shutdownGraceSeconds: 570
 
 workers:
+  # Off until WORKER_QUEUES exists. Docling already drains every queue.
   llm:
-    enabled: true
+    enabled: false
     replicas: 1
 
 migrate:
@@ -109,13 +117,15 @@ keda:
   api:
     enabled: false
 
-# Limits overcommit on purpose. collect.sh aborting below 3Gi MemAvailable
-# is the real guard. Prod and loadtest never run at the same time: loadtest
-# is deleted before prod comes up.
+# CPU limits only throttle, and the host has 12 threads. Limits overcommit
+# on purpose. collect.sh aborting below 3Gi MemAvailable is the real guard.
+# Prod and loadtest never run at the same time: loadtest is deleted before
+# prod comes up.
 quota:
   requestsMemory: 9Gi
   limitsMemory: 16Gi
-  limitsCpu: "8"
+  requestsCpu: "6"
+  limitsCpu: "16"
 
 caddyAlias:
   enabled: true

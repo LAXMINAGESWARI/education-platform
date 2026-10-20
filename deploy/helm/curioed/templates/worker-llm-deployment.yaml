@@ -47,7 +47,7 @@ spec:
           {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
-            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.worker "worker" true) | nindent 12 }}
+            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.worker "worker" true "shutdownGrace" .Values.workers.llm.shutdownGraceSeconds) | nindent 12 }}
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
           resources:

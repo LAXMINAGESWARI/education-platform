@@ -8,6 +8,9 @@ spec:
   hard:
     requests.memory: {{ .Values.quota.requestsMemory }}
     limits.memory: {{ .Values.quota.limitsMemory }}
+    {{- with .Values.quota.requestsCpu }}
+    requests.cpu: {{ . | quote }}
+    {{- end }}
     {{- with .Values.quota.limitsCpu }}
     limits.cpu: {{ . | quote }}
     {{- end }}

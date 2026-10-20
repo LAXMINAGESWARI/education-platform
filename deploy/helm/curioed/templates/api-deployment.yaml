@@ -29,7 +29,7 @@ spec:
         curioed.io/uploads: "true"
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.api.securityContext) | nindent 6 }}
       {{- with include "curioed.priorityClassName" (dict "root" . "tier" "api") }}
       priorityClassName: {{ . }}
@@ -60,6 +60,15 @@ spec:
             - --forwarded-allow-ips=*
             - --limit-concurrency
             - {{ .Values.api.limitConcurrency | quote }}
+            - --timeout-graceful-shutdown
+            - {{ .Values.api.gracefulShutdownSeconds | quote }}
+          # Traefik drops the pod from endpoints during this sleep. Uvicorn
+          # then closes SSE streams. Clients reconnect with Last-Event-ID.
+          # Pod grace stays above the sleep plus the graceful shutdown.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.api.preStopSleepSeconds | quote }}]
           ports:
             - name: http
               containerPort: {{ .Values.api.service.port }}
