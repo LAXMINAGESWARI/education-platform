@@ -10,7 +10,8 @@ import pytest
 
 from education_platform.core.config import Settings
 from education_platform.modules.guard.classifier import DATA_INJECTION
-from education_platform.modules.guard.jev_client import JevError, post_decisions
+from education_platform.modules.judge.client import post_decisions
+from education_platform.modules.judge.errors import JudgeError
 
 _CONFIG = Path(__file__).resolve().parents[1] / "src" / "education_platform" / "core" / "config.py"
 
@@ -26,7 +27,18 @@ def test_settings_has_no_duplicate_fields() -> None:
                 names.append(statement.target.id)
     assert names
     assert len(names) == len(set(names))
-    assert Settings(_env_file=None).jev_guard_timeout_seconds == 5.0
+    settings = Settings(_env_file=None)
+    assert settings.jev_guard_timeout_seconds == 5.0
+    assert settings.jev_block_threshold == 0.85
+    assert settings.guard_jev_model == ""
+    assert settings.guard_audit_store_preview is False
+    assert settings.resolved_guard_jev_model == settings.jev_model
+    override = Settings(
+        _env_file=None,
+        jev_model="typesafe/jev-1.14",
+        guard_jev_model="typesafe/jev-1.13",
+    )
+    assert override.resolved_guard_jev_model == "typesafe/jev-1.13"
 
 
 @pytest.mark.asyncio
@@ -40,7 +52,7 @@ async def test_post_decisions_never_runs_without_key() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        with pytest.raises(JevError, match="not configured"):
+        with pytest.raises(JudgeError, match="not configured"):
             await post_decisions(
                 state="What subject do I teach?",
                 questions={"decision": DATA_INJECTION},

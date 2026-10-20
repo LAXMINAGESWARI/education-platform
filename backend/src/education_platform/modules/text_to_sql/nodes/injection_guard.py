@@ -36,12 +36,16 @@ shared, module-agnostic utility, not something specific to the assistant pipelin
 happens to live in.
 
 **Fail-open when unconfigured, fail-closed when erroring — same asymmetry as the
-original, kept deliberately rather than "simplified" away.** If `OPENROUTER_API_KEY`
+original, kept deliberately rather than "simplified" away.** HTTP 402 is the
+exception: Jev credits can be exhausted while chat completions still work, so a
+402 falls back to the regex result plus the GPT classifier this node used before
+Jev. If that GPT call fails, the node fails closed. A missing key still cannot
+call GPT, so it stays fail-open after the regex. If `OPENROUTER_API_KEY`
 isn't set at all, this is a known, permanent deployment state, not a live problem — the
 heuristic regex still ran, and refusing every question outright because the *second*
 stage can't run would make this cost/UX layer into an availability outage, for a check
 that was never the security boundary to begin with. If OpenRouter *is* configured but the
-call itself fails (network, rate limit, malformed response), that's a live, transient
+call itself fails (network, timeout, 5xx, malformed response), that's a live, transient
 signal worth being cautious about — refusing this one question and asking the user to
 retry costs far less than silently skipping a check that was specifically requested to
 run. Both branches still leave `apply_role_scope` as the only thing anyone should trust
@@ -70,14 +74,16 @@ from __future__ import annotations
 import re
 from typing import Any, Final
 
-from education_platform.core.config import get_settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.modules.guard.classifier import (
+    DATA_GPT_INJECTION,
     DATA_INJECTION,
     classify_noul,
     guard_state,
     is_positive,
+    legacy_gpt_flag,
 )
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
     TextToSQLState,
@@ -88,6 +94,8 @@ from education_platform.modules.text_to_sql.state import (
 # docstring for why the same list applies here despite the two pipelines being otherwise
 # unrelated: these are tells about how someone is addressing the model, not about what
 # the model is being asked to do.
+# Known false positives ("jailbreak school tablets", "developer mode setting") stay
+# until the shared-guards change.
 _INJECTION_PATTERNS: Final[re.Pattern[str]] = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instructions|"
     r"forget\s+(all\s+)?(the\s+)?((previous|prior)\s+)?(instructions|commands)|"
@@ -138,7 +146,9 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
             question=DATA_INJECTION,
             settings=settings,
         )
-    except JevError:
+    except JudgePaymentRequired:
+        return await _gpt_injection_fallback(state, question, settings)
+    except JudgeError:
         # Fail closed -- see module docstring's "fail-closed when erroring" section.
         return {
             **state,
@@ -154,4 +164,33 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
         }
 
+    return {**state, "audit_entry": noted}
+
+
+async def _gpt_injection_fallback(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+) -> TextToSQLState:
+    """Regex already ran. HTTP 402 uses the pre-Jev GPT classifier."""
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=DATA_GPT_INJECTION,
+            user=question,
+            field="injection",
+        )
+    except JudgeError:
+        return {
+            **state,
+            "audit_entry": _note(state, guard_stage="gpt_error"),
+            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
+        }
+    noted = _note(state, guard_stage="gpt")
+    if flagged:
+        return {
+            **state,
+            "audit_entry": noted,
+            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
+        }
     return {**state, "audit_entry": noted}

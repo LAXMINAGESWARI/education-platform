@@ -51,9 +51,10 @@ for "is this on topic" the way there is for adversarial phrasing tells — every
 that reaches this node pays for one classifier call. Same fail-open/fail-closed asymmetry
 as `injection_guard`: unconfigured means an off-topic question simply isn't caught
 (degrades to the prior, no-check-at-all behavior, not an outage); a classifier error fails
-closed under its own `OFF_TOPIC_REJECTED` category, reusing `injection_guard`'s own
-"safety check unavailable" wording for the message since the user-facing fact is the
-same, but keeping the category this node's own — an infra failure here has nothing to do
+closed, except HTTP 402, which falls back to this node's pre-Jev GPT classifier. If that
+GPT call also fails, the node fails closed. A missing key cannot call GPT. The refusal
+reuses `injection_guard`'s own "safety check unavailable" wording, since the user-facing
+fact is the same, but keeps the category this node's own — an infra failure here has nothing to do
 with injection, and tagging it `INJECTION_BLOCKED` would misrepresent the audit trail for
 a node that never touches that check at all.
 """
@@ -62,14 +63,16 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from education_platform.core.config import get_settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.modules.guard.classifier import (
+    DATA_GPT_OFF_TOPIC,
     DATA_OFF_TOPIC,
     classify_noul,
     guard_state,
     is_positive,
+    legacy_gpt_flag,
 )
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
     TextToSQLState,
@@ -99,7 +102,9 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
             question=DATA_OFF_TOPIC,
             settings=settings,
         )
-    except JevError:
+    except JudgePaymentRequired:
+        return await _gpt_off_topic_fallback(state, question, settings)
+    except JudgeError:
         # Fail closed under this node's own category -- see module docstring.
         return {
             **state,
@@ -119,4 +124,35 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
 
+    return {**state, "audit_entry": audit}
+
+
+async def _gpt_off_topic_fallback(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+) -> TextToSQLState:
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=DATA_GPT_OFF_TOPIC,
+            user=question,
+            field="off_topic",
+        )
+    except JudgeError:
+        return {
+            **state,
+            "audit_entry": {**(state.get("audit_entry") or {}), "guard_stage": "gpt_error"},
+            "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
+        }
+    audit: dict[str, Any] = {
+        **(state.get("audit_entry") or {}),
+        "guard_stage": "gpt",
+    }
+    if flagged:
+        return {
+            **state,
+            "audit_entry": audit,
+            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
+        }
     return {**state, "audit_entry": audit}

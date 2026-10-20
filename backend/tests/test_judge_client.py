@@ -202,3 +202,31 @@ def test_unexpected_answer_type_is_an_error() -> None:
     )
     with pytest.raises(JudgeResponseError, match="unexpected type"):
         judge.decide(_request())
+
+
+def _json_response(body: str) -> httpx.Response:
+    return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
+
+
+def test_nan_noul_and_score_are_rejected() -> None:
+    def noul(_request: httpx.Request) -> httpx.Response:
+        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": NaN}}}')
+
+    judge = HttpJudge(
+        _settings(),
+        client=httpx.Client(transport=httpx.MockTransport(noul)),
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(JudgeResponseError, match="NaN"):
+        judge.decide(_request())
+
+    def score(_request: httpx.Request) -> httpx.Response:
+        return _json_response('{"answers": {"urgency": {"type": "score", "score": NaN}}}')
+
+    scored = HttpJudge(
+        _settings(),
+        client=httpx.Client(transport=httpx.MockTransport(score)),
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(JudgeResponseError, match="NaN"):
+        scored.decide(_request())

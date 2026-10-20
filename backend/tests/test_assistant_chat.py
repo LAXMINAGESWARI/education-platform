@@ -50,7 +50,7 @@ from education_platform.modules.assistant.tools.retrieve_chunks import (
     retrieve_chunks_handler,
 )
 from education_platform.modules.audit.models import AuditEvent
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError
 from education_platform.modules.rag.chunking import TextChunk, content_hash
 from education_platform.modules.rag.models import (
     IngestJob,
@@ -121,6 +121,7 @@ async def test_heuristic_injection_blocks_before_classifier() -> None:
     )
     assert result["injection_blocked"] is True
     assert result["early_reply"] == HEURISTIC_INJECTION_REPLY
+    assert result["guard_stage"] == "heuristic"
     assert result["retrieved_chunks"] == []
 
 
@@ -475,7 +476,7 @@ async def test_question_validator_rejects_tiny_messages() -> None:
 async def test_classifier_error_fails_closed() -> None:
     async def boom(**kwargs: Any) -> float:
         _ = kwargs
-        raise JevError("upstream down")
+        raise JudgeError("upstream down")
 
     async def validator_boom(messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
         _ = messages, kwargs
@@ -790,7 +791,7 @@ def test_policy_refusal_is_audited_via_api(
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(
-        "education_platform.modules.guard.jev_client.httpx.AsyncClient",
+        "education_platform.modules.judge.client.httpx.AsyncClient",
         factory,
     )
 
@@ -832,10 +833,8 @@ def test_policy_refusal_is_audited_via_api(
         assert len(rows) == 1
         payload = rows[0].payload
         assert payload["injection_probability"] == 0.99
-        preview = payload["message_preview"]
-        assert isinstance(preview, str)
-        assert preview == attack[:160]
-        assert len(preview) <= 160
+        assert payload["guard_stage"] == "jev"
+        assert "message_preview" not in payload
 
         answered = client.post(
             f"/api/v1/chats/{conv_id}/messages",

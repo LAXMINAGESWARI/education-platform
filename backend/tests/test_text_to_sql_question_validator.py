@@ -12,7 +12,7 @@ from typing import Protocol, cast
 import pytest
 
 from education_platform.core.config import Settings
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError
 from education_platform.modules.text_to_sql.nodes.question_validator import question_validator
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
@@ -144,7 +144,7 @@ async def test_openrouter_not_configured_fails_open(monkeypatch: pytest.MonkeyPa
 
 async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _raising(*args: object, **kwargs: object) -> float:
-        raise JevError("network blew up")
+        raise JudgeError("network blew up")
 
     monkeypatch.setattr(_MODULE, "classify_noul", _raising)
 
@@ -156,7 +156,7 @@ async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) ->
 async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _missing(**kwargs: object) -> float:
         _ = kwargs
-        raise JevError("Decisions response missing a noul probability")
+        raise JudgeError("Decisions response missing a noul probability")
 
     monkeypatch.setattr(_MODULE, "classify_noul", _missing)
 

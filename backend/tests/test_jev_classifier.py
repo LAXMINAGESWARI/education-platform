@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -25,8 +27,20 @@ from education_platform.modules.assistant.strategy import GenerationAssistantCon
 from education_platform.modules.audit.models import AuditEvent
 from education_platform.modules.auth.models import User
 from education_platform.modules.authorization.principal import Principal
-from education_platform.modules.guard.classifier import DATA_INJECTION, guard_state, is_positive
-from education_platform.modules.guard.jev_client import JevError, decisions_endpoint, post_decisions
+from education_platform.modules.guard.classifier import (
+    DATA_INJECTION,
+    guard_state,
+    is_positive,
+    message_preview_field,
+)
+from education_platform.modules.judge.client import decisions_endpoint, post_decisions
+from education_platform.modules.judge.errors import (
+    JudgeError,
+    JudgePaymentRequired,
+    JudgeResponseError,
+)
+from education_platform.modules.judge.types import NoulAnswer
+from education_platform.modules.text_to_sql.nodes.injection_guard import injection_guard
 
 _FIXTURE = (
     Path(__file__).resolve().parents[1]
@@ -80,9 +94,10 @@ async def test_review_classifier_blocks_flags_and_fails_closed(
         "education_platform.modules.assistant.generation_strategy.classify_noul",
         high,
     )
-    assert await screen_review_message("Explain this quiz item", (), settings) == (
-        INJECTION_BLOCKED_REPLY
-    )
+    blocked = await screen_review_message("Explain this quiz item", (), settings)
+    assert blocked is not None
+    assert blocked.reply == INJECTION_BLOCKED_REPLY
+    assert blocked.guard_stage == "jev"
 
     async def low(**kwargs: object) -> float:
         _ = kwargs
@@ -96,15 +111,16 @@ async def test_review_classifier_blocks_flags_and_fails_closed(
 
     async def down(**kwargs: object) -> float:
         _ = kwargs
-        raise JevError("upstream down", status_code=402)
+        raise JudgeError("upstream down")
 
     monkeypatch.setattr(
         "education_platform.modules.assistant.generation_strategy.classify_noul",
         down,
     )
-    assert await screen_review_message("Explain this quiz item", (), settings) == (
-        GUARD_UNAVAILABLE_REPLY
-    )
+    unavailable = await screen_review_message("Explain this quiz item", (), settings)
+    assert unavailable is not None
+    assert unavailable.reply == GUARD_UNAVAILABLE_REPLY
+    assert unavailable.guard_stage == "jev_error"
 
 
 @pytest.mark.asyncio
@@ -135,7 +151,9 @@ async def test_decisions_call_posts_model_state_and_questions() -> None:
             settings=settings,
             client=client,
         )
-    assert parsed.answers["decision"]["noul"] == 0.2
+    decision = parsed.answers["decision"]
+    assert isinstance(decision, NoulAnswer)
+    assert decision.noul == 0.2
     assert parsed.input_tokens == 120
     body = json.loads(seen[0].content)
     assert body["model"] == "typesafe/jev-1.14"
@@ -178,14 +196,13 @@ async def test_jev_retries_once_and_does_not_retry_402() -> None:
         return httpx.Response(402, json={"error": {"message": "insufficient credits"}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(payment)) as client:
-        with pytest.raises(JevError) as caught:
+        with pytest.raises(JudgePaymentRequired):
             await post_decisions(
                 state="hello",
                 questions={"decision": {"type": "noul", "instructions": "override?"}},
                 settings=settings,
                 client=client,
             )
-    assert caught.value.status_code == 402
     assert calls["n"] == 1
 
 
@@ -224,7 +241,7 @@ async def test_review_refusal_records_audit(
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(
-        "education_platform.modules.guard.jev_client.httpx.AsyncClient",
+        "education_platform.modules.judge.client.httpx.AsyncClient",
         factory,
     )
     engine = create_async_engine(to_async_url(clean_db), pool_pre_ping=True)
@@ -258,9 +275,163 @@ async def test_review_refusal_records_audit(
         ).all()
         assert len(rows) == 1
         assert rows[0].entity_type == "generation_review"
-        preview = rows[0].payload["message_preview"]
-        assert preview == message[:160]
-        assert len(preview) <= 160
+        assert rows[0].payload["guard_stage"] == "jev"
+        assert "message_preview" not in rows[0].payload
     finally:
         await engine.dispose()
         get_settings.cache_clear()
+
+
+def test_message_preview_is_off_unless_the_setting_is_on() -> None:
+    hidden = Settings(_env_file=None)
+    assert message_preview_field("secret question", hidden) == {}
+    shown = Settings(_env_file=None, guard_audit_store_preview=True)
+    text = "p" * 200
+    assert message_preview_field(text, shown) == {"message_preview": "p" * 160}
+
+
+def test_known_regex_collisions_stay_until_shared_guards() -> None:
+    # These ordinary phrases match the current regex. The shared-guards change
+    # will narrow it. This branch must not pretend they are fixed.
+    assert _heuristic_injection("jailbreak school tablets")
+    assert _heuristic_injection("developer mode setting")
+
+
+@pytest.mark.asyncio
+async def test_guard_posts_guard_jev_model_when_set() -> None:
+    settings = Settings(
+        openrouter_api_key="test-key",
+        jev_model="typesafe/jev-1.14",
+        guard_jev_model="typesafe/jev-guard",
+    )
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert isinstance(body, dict)
+        seen.append(body)
+        return httpx.Response(
+            200,
+            json={"answers": {"decision": {"type": "noul", "noul": 0.1}}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await post_decisions(
+            state="hello",
+            questions={"decision": DATA_INJECTION},
+            settings=settings,
+            client=client,
+        )
+    assert seen[0]["model"] == "typesafe/jev-guard"
+
+
+@pytest.mark.asyncio
+async def test_nan_noul_is_rejected() -> None:
+    settings = Settings(openrouter_api_key="test-key")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"answers": {"decision": {"type": "noul", "noul": NaN}}}',
+            headers={"content-type": "application/json"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(JudgeResponseError, match="NaN"):
+            await post_decisions(
+                state="hello",
+                questions={"decision": DATA_INJECTION},
+                settings=settings,
+                client=client,
+            )
+
+
+@pytest.mark.asyncio
+async def test_timeout_and_5xx_retry_once_then_fail() -> None:
+    settings = Settings(openrouter_api_key="test-key", jev_guard_timeout_seconds=5.0)
+    calls = {"n": 0}
+
+    def timeout(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.TimeoutException("slow")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(timeout)) as client:
+        with pytest.raises(JudgeError, match="timed out"):
+            await post_decisions(
+                state="hello",
+                questions={"decision": DATA_INJECTION},
+                settings=settings,
+                client=client,
+            )
+    assert calls["n"] == 2
+
+    calls["n"] = 0
+
+    def down(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, text="unavailable")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(down)) as client:
+        with pytest.raises(JudgeError, match="503"):
+            await post_decisions(
+                state="hello",
+                questions={"decision": DATA_INJECTION},
+                settings=settings,
+                client=client,
+            )
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_injection_guard_stubbed_http_timeout_5xx_and_402(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node behavior for timeout, 5xx, and 402. The transport never leaves the process."""
+    node = cast(Any, sys.modules["education_platform.modules.text_to_sql.nodes.injection_guard"])
+    monkeypatch.setattr(
+        node,
+        "get_settings",
+        lambda: Settings(openrouter_api_key="test-key", jev_guard_timeout_seconds=5.0),
+    )
+    mode = {"kind": "timeout", "n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        mode["n"] += 1
+        if mode["kind"] == "timeout":
+            raise httpx.TimeoutException("slow")
+        if mode["kind"] == "down":
+            return httpx.Response(503, text="unavailable")
+        return httpx.Response(402, json={"error": {"message": "insufficient credits"}})
+
+    real_client = httpx.AsyncClient
+
+    def factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("education_platform.modules.judge.client.httpx.AsyncClient", factory)
+
+    async def allow_gpt(**kwargs: object) -> bool:
+        assert kwargs["field"] == "injection"
+        return False
+
+    monkeypatch.setattr(node, "legacy_gpt_flag", allow_gpt)
+    question = "What subject do I teach?"
+
+    timed = await injection_guard({"question": question, "error": None})
+    assert timed["error"] is not None
+    assert timed["audit_entry"]["guard_stage"] == "jev_error"
+    assert mode["n"] == 2
+
+    mode["kind"] = "down"
+    mode["n"] = 0
+    down = await injection_guard({"question": question, "error": None})
+    assert down["audit_entry"]["guard_stage"] == "jev_error"
+    assert mode["n"] == 2
+
+    mode["kind"] = "pay"
+    mode["n"] = 0
+    paid = await injection_guard({"question": question, "error": None})
+    assert paid["error"] is None
+    assert paid["audit_entry"]["guard_stage"] == "gpt"
+    assert mode["n"] == 1

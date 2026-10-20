@@ -34,13 +34,17 @@ from education_platform.modules.assistant.tools.registry import (
 )
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.guard.classifier import (
+    POLICY_GPT_INJECTION,
     POLICY_INJECTION,
     classify_noul,
     guard_state,
     is_positive,
+    legacy_gpt_flag,
 )
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 
+# Known false positives ("jailbreak school tablets", "developer mode setting")
+# stay until the shared-guards change.
 _INJECTION_PATTERNS = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instructions|"
     r"forget\s+(all\s+)?(the\s+)?((previous|prior)\s+)?(instructions|commands)|"
@@ -95,6 +99,7 @@ class GraphState(TypedDict, total=False):
     question_valid: bool
     injection_probability: float | None
     scope_probability: float | None
+    guard_stage: str | None
     early_reply: str | None
     retrieved_chunks: list[dict[str, Any]]
     assistant_content: str
@@ -164,8 +169,11 @@ def _refuse_scope(current: AssistantGraphState, reply: str) -> GraphState:
 async def injection_guard(state: GraphState, *, settings: Settings) -> GraphState:
     current = _enter(state)
     if _heuristic_injection(current.user_message):
+        current.guard_stage = "heuristic"
         return _refuse_injection(current, HEURISTIC_INJECTION_REPLY)
     if not settings.openrouter_configured:
+        # Regex already ran. GPT needs the same key, so the second stage does not.
+        current.guard_stage = "unconfigured"
         current.injection_blocked = False
         return _exit(current)
     # Jev Decisions stay on classify_noul. The gateway flag does not select this call.
@@ -178,10 +186,33 @@ async def injection_guard(state: GraphState, *, settings: Settings) -> GraphStat
             question=POLICY_INJECTION,
             settings=settings,
         )
-    except JevError:
+    except JudgePaymentRequired:
+        return await _gpt_policy_injection(current, settings)
+    except JudgeError:
+        current.guard_stage = "jev_error"
         return _refuse_injection(current, GUARD_UNAVAILABLE_REPLY)
     current.injection_probability = probability
+    current.guard_stage = "jev"
     if is_positive(probability, settings):
+        return _refuse_injection(current, INJECTION_BLOCKED_REPLY)
+    current.injection_blocked = False
+    return _exit(current)
+
+
+async def _gpt_policy_injection(current: AssistantGraphState, settings: Settings) -> GraphState:
+    """HTTP 402: the regex missed, so use the pre-Jev GPT injection classifier."""
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=POLICY_GPT_INJECTION,
+            user=_classifier_transcript(current),
+            field="injection",
+        )
+    except JudgeError:
+        current.guard_stage = "gpt_error"
+        return _refuse_injection(current, GUARD_UNAVAILABLE_REPLY)
+    current.guard_stage = "gpt"
+    if flagged:
         return _refuse_injection(current, INJECTION_BLOCKED_REPLY)
     current.injection_blocked = False
     return _exit(current)
@@ -337,10 +368,9 @@ async def _policy_json(
 ) -> dict[str, Any]:
     """Flag off calls the legacy chat client with the same arguments as before.
 
-    This helper is only for chat completions. Jev Decisions (``classify_noul``
-    on ``jev_client``) is a different API and stays outside ``complete``. When
-    the guard moves to that client, call it from the node and leave this helper
-    on the answer path.
+    Chat completions only. The injection guard calls Jev through
+    ``education_platform.modules.judge.client.post_decisions`` (the Decisions
+    API). That call stays outside ``complete``.
     """
     if not gateway_enabled("policy_chat", settings):
         return await chat_completion_json(messages, settings=settings)
@@ -462,6 +492,7 @@ def _initial_turn_state(
         "question_valid": True,
         "injection_probability": None,
         "scope_probability": None,
+        "guard_stage": None,
         "early_reply": None,
         "retrieved_chunks": [],
         "assistant_content": "",

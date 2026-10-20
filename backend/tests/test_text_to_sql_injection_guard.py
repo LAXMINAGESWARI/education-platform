@@ -12,7 +12,7 @@ from typing import Protocol, cast
 import pytest
 
 from education_platform.core.config import Settings
-from education_platform.modules.guard.jev_client import JevError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.nodes.injection_guard import injection_guard
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
@@ -187,7 +187,7 @@ async def test_openrouter_not_configured_fails_open(monkeypatch: pytest.MonkeyPa
 
 async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _raising(*args: object, **kwargs: object) -> float:
-        raise JevError("network blew up")
+        raise JudgeError("network blew up")
 
     monkeypatch.setattr(_MODULE, "classify_noul", _raising)
 
@@ -199,7 +199,7 @@ async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) ->
 async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _missing(**kwargs: object) -> float:
         _ = kwargs
-        raise JevError("Decisions response missing a noul probability")
+        raise JudgeError("Decisions response missing a noul probability")
 
     monkeypatch.setattr(_MODULE, "classify_noul", _missing)
 
@@ -207,3 +207,45 @@ async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.Mo
 
     # A noul answer without a probability is a classifier failure: fail closed.
     assert error_category(result["error"]) == INJECTION_BLOCKED
+
+
+async def test_402_falls_back_to_gpt_and_keeps_the_regex_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _pay(**kwargs: object) -> float:
+        _ = kwargs
+        raise JudgePaymentRequired("OpenRouter returned HTTP 402")
+
+    async def _gpt(**kwargs: object) -> bool:
+        assert kwargs["field"] == "injection"
+        return False
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _pay)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+
+    result = await injection_guard(_state("How many students do I teach in total?"))
+
+    assert result["error"] is None
+    audit = result["audit_entry"]
+    assert isinstance(audit, dict)
+    assert audit["guard_stage"] == "gpt"
+
+
+async def test_402_gpt_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _pay(**kwargs: object) -> float:
+        _ = kwargs
+        raise JudgePaymentRequired("OpenRouter returned HTTP 402")
+
+    async def _gpt(**kwargs: object) -> bool:
+        _ = kwargs
+        raise JudgeError("GPT classifier failed")
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _pay)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+
+    result = await injection_guard(_state("How many students do I teach in total?"))
+
+    assert error_category(result["error"]) == INJECTION_BLOCKED
+    audit = result["audit_entry"]
+    assert isinstance(audit, dict)
+    assert audit["guard_stage"] == "gpt_error"
