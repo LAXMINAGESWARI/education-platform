@@ -71,9 +71,17 @@ async def complete(
         text, usage, served = await _execute_async(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
-        parsed = _parse_json(text) if response_format is not None else None
     except Exception as exc:
         await _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
+        if isinstance(exc, OpenRouterError):
+            raise
+        raise OpenRouterError(_failure_message(exc)) from exc
+    try:
+        parsed = _parse_json(text) if response_format is not None else None
+    except Exception as exc:
+        await _schedule_meter(
+            _error_record(profile, exc, _latency_ms(started), usage=usage, served=served)
+        )
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
@@ -96,9 +104,15 @@ def complete_sync(
         text, usage, served = _execute_sync(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
-        parsed = _parse_json(text) if response_format is not None else None
     except Exception as exc:
         _safe_meter(_error_record(profile, exc, _latency_ms(started)))
+        if isinstance(exc, OpenRouterError):
+            raise
+        raise OpenRouterError(_failure_message(exc)) from exc
+    try:
+        parsed = _parse_json(text) if response_format is not None else None
+    except Exception as exc:
+        _safe_meter(_error_record(profile, exc, _latency_ms(started), usage=usage, served=served))
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
@@ -128,36 +142,48 @@ async def _execute_async(
     client = get_async_client(settings)
     attempts = profile.max_retries + 1
     deadline = _monotonic() + profile.timeout_seconds
-    for attempt in range(attempts):
-        remaining = deadline - _monotonic()
-        if remaining <= 0:
-            _note_primary(breaker, using_primary=using_primary, provider_failure=True)
-            raise OpenRouterError("OpenRouter call exceeded its deadline")
-        try:
-            async with semaphore:
-                text, usage, served = await _once_async(
-                    client,
-                    profile,
-                    messages,
-                    selected=selected,
-                    skipped_primary=skipped,
-                    response_format=response_format,
-                    stream=stream,
-                    timeout=_attempt_timeout(profile.timeout_seconds, remaining),
+    settled = False
+    try:
+        for attempt in range(attempts):
+            remaining = deadline - _monotonic()
+            if remaining <= 0:
+                _note_primary(breaker, using_primary=using_primary, outcome="failure")
+                settled = True
+                raise OpenRouterError("OpenRouter call exceeded its deadline")
+            try:
+                async with semaphore:
+                    text, usage, served = await _once_async(
+                        client,
+                        profile,
+                        messages,
+                        selected=selected,
+                        skipped_primary=skipped,
+                        response_format=response_format,
+                        stream=stream,
+                        timeout=_attempt_timeout(
+                            profile.timeout_seconds,
+                            remaining,
+                            attempts_after=attempts - attempt - 1,
+                        ),
+                    )
+            except Exception as exc:
+                if _can_retry(exc, attempt, attempts, deadline):
+                    await _async_sleep(_capped_delay(attempt, exc, settings, deadline))
+                    continue
+                _note_primary(
+                    breaker,
+                    using_primary=using_primary,
+                    outcome=_outcome_for(exc),
                 )
-        except Exception as exc:
-            if _can_retry(exc, attempt, attempts, deadline):
-                await _async_sleep(_capped_delay(attempt, exc, settings, deadline))
-                continue
-            _note_primary(
-                breaker,
-                using_primary=using_primary,
-                provider_failure=_provider_failure(exc),
-            )
-            raise
-        _note_primary(breaker, using_primary=using_primary, provider_failure=False)
-        return text, usage, served or selected
-    raise OpenRouterError("OpenRouter retry loop exited without a result")
+                settled = True
+                raise
+            _note_primary(breaker, using_primary=using_primary, outcome="success")
+            settled = True
+            return text, usage, served or selected
+        raise OpenRouterError("OpenRouter retry loop exited without a result")
+    finally:
+        if not settled and using_primary:
+            breaker.release_probe()
 
 
 def _execute_sync(
@@ -182,44 +208,52 @@ def _execute_sync(
     client = get_sync_client(settings)
     attempts = profile.max_retries + 1
     deadline = _monotonic() + profile.timeout_seconds
-    for attempt in range(attempts):
-        remaining = deadline - _monotonic()
-        if remaining <= 0:
-            _note_primary(breaker, using_primary=using_primary, provider_failure=True)
-            raise OpenRouterError("OpenRouter call exceeded its deadline")
-        error: Exception | None = None
-        text = ""
-        usage = TokenUsage()
-        served = ""
-        semaphore.acquire()
-        try:
-            text, usage, served = _once_sync(
-                client,
-                profile,
-                messages,
-                selected=selected,
-                skipped_primary=skipped,
-                response_format=response_format,
-                stream=stream,
-                timeout=_attempt_timeout(profile.timeout_seconds, remaining),
-            )
-        except Exception as exc:
-            error = exc
-        finally:
-            semaphore.release()
-        if error is None:
-            _note_primary(breaker, using_primary=using_primary, provider_failure=False)
-            return text, usage, served or selected
-        if _can_retry(error, attempt, attempts, deadline):
-            _sync_sleep(_capped_delay(attempt, error, settings, deadline))
-            continue
-        _note_primary(
-            breaker,
-            using_primary=using_primary,
-            provider_failure=_provider_failure(error),
-        )
-        raise error
-    raise OpenRouterError("OpenRouter retry loop exited without a result")
+    settled = False
+    try:
+        for attempt in range(attempts):
+            remaining = deadline - _monotonic()
+            if remaining <= 0:
+                _note_primary(breaker, using_primary=using_primary, outcome="failure")
+                settled = True
+                raise OpenRouterError("OpenRouter call exceeded its deadline")
+            error: Exception | None = None
+            text = ""
+            usage = TokenUsage()
+            served = ""
+            semaphore.acquire()
+            try:
+                text, usage, served = _once_sync(
+                    client,
+                    profile,
+                    messages,
+                    selected=selected,
+                    skipped_primary=skipped,
+                    response_format=response_format,
+                    stream=stream,
+                    timeout=_attempt_timeout(
+                        profile.timeout_seconds,
+                        remaining,
+                        attempts_after=attempts - attempt - 1,
+                    ),
+                )
+            except Exception as exc:
+                error = exc
+            finally:
+                semaphore.release()
+            if error is None:
+                _note_primary(breaker, using_primary=using_primary, outcome="success")
+                settled = True
+                return text, usage, served or selected
+            if _can_retry(error, attempt, attempts, deadline):
+                _sync_sleep(_capped_delay(attempt, error, settings, deadline))
+                continue
+            _note_primary(breaker, using_primary=using_primary, outcome=_outcome_for(error))
+            settled = True
+            raise error
+        raise OpenRouterError("OpenRouter retry loop exited without a result")
+    finally:
+        if not settled and using_primary:
+            breaker.release_probe()
 
 
 async def _once_async(
@@ -393,19 +427,30 @@ def _retryable(exc: BaseException) -> bool:
     return False
 
 
-def _provider_failure(exc: BaseException) -> bool:
-    return _retryable(exc)
+def _outcome_for(exc: BaseException) -> str:
+    """Retryable provider errors trip the breaker. A 400 is neutral."""
+    if _retryable(exc):
+        return "failure"
+    return "neutral"
 
 
 def _monotonic() -> float:
     return time.monotonic()
 
 
-def _attempt_timeout(step_timeout: float, remaining: float) -> float:
-    """First attempt keeps the step timeout; later attempts use what is left."""
+def _attempt_timeout(step_timeout: float, remaining: float, *, attempts_after: int) -> float:
+    """Leave half of the deadline for a later try while retries remain.
+
+    A timed-out first attempt would otherwise consume the whole step timeout
+    and leave no time for one retry. The last attempt may use what is left.
+    """
+    if attempts_after > 0:
+        if remaining >= step_timeout - 0.05:
+            return step_timeout / 2
+        return min(step_timeout, remaining / 2)
     if remaining >= step_timeout - 0.05:
         return step_timeout
-    return remaining
+    return min(step_timeout, remaining)
 
 
 def _can_retry(exc: BaseException, attempt: int, attempts: int, deadline: float) -> bool:
@@ -419,14 +464,17 @@ def _capped_delay(attempt: int, exc: BaseException, settings: Settings, deadline
     return min(_delay(attempt, exc, settings), remaining)
 
 
-def _note_primary(breaker: Any, *, using_primary: bool, provider_failure: bool) -> None:
+def _note_primary(breaker: Any, *, using_primary: bool, outcome: str) -> None:
     """Record the primary's outcome. Fallback calls leave the cooldown alone."""
     if not using_primary:
         return
-    if provider_failure:
+    if outcome == "failure":
         breaker.record_failure()
         return
-    breaker.record_success()
+    if outcome == "success":
+        breaker.record_success()
+        return
+    breaker.release_probe()
 
 
 def _delay(attempt: int, exc: BaseException, settings: Settings) -> float:
@@ -504,16 +552,24 @@ def _ok_record(
     )
 
 
-def _error_record(profile: StepProfile, exc: BaseException, latency_ms: int) -> UsageRecord:
+def _error_record(
+    profile: StepProfile,
+    exc: BaseException,
+    latency_ms: int,
+    *,
+    usage: TokenUsage | None = None,
+    served: str | None = None,
+) -> UsageRecord:
+    tokens = usage or TokenUsage()
     return UsageRecord(
         feature=profile.feature,
         step=profile.step,
         requested_model=profile.model,
-        served_model=None,
-        prompt_tokens=0,
-        completion_tokens=0,
-        cached_tokens=0,
-        cost_usd=None,
+        served_model=served,
+        prompt_tokens=tokens.prompt_tokens,
+        completion_tokens=tokens.completion_tokens,
+        cached_tokens=tokens.cached_tokens,
+        cost_usd=tokens.cost_usd,
         latency_ms=latency_ms,
         status="error",
         error_class=type(exc).__name__,

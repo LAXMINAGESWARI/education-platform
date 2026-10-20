@@ -13,12 +13,15 @@ from enum import StrEnum
 from education_platform.core.config import Settings
 from education_platform.core.llm import OpenRouterError
 
+# Checked against https://openrouter.ai/api/v1/models on 2026-10-20.
+# anthropic/claude-3.5-haiku and anthropic/claude-sonnet-4 were not on that list.
+# These are current paid ids in the same provider family and tier.
 MINI_FALLBACKS: tuple[str, ...] = (
     "google/gemini-2.5-flash",
-    "anthropic/claude-3.5-haiku",
+    "anthropic/claude-haiku-4.5",
 )
 STRONG_FALLBACKS: tuple[str, ...] = (
-    "anthropic/claude-sonnet-4",
+    "anthropic/claude-sonnet-4.6",
     "google/gemini-2.5-pro",
 )
 

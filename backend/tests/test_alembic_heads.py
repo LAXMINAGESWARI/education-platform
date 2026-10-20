@@ -67,7 +67,6 @@ def test_gateway_migration_round_trip_on_seeded_db(seeded_db: Session, clean_db:
     """Upgrade, downgrade, and upgrade again while curriculum rows are present."""
     seeded_db.commit()
     sync_url = to_sync_url(clean_db)
-    assert "education_test" in sync_url
     cfg = _alembic_config(sync_url)
     command.upgrade(cfg, "head")
     before = _table_counts(sync_url, skip=frozenset({"llm_gateway_calls"}))

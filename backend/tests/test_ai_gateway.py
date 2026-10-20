@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import json
+import re
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
@@ -39,7 +43,13 @@ from education_platform.ai_platform.gateway.client import (
 from education_platform.ai_platform.gateway.control import reset_controls
 from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.ai_platform.gateway.models import LlmGatewayCall
-from education_platform.ai_platform.gateway.registry import openrouter_model_id, resolve, step_ids
+from education_platform.ai_platform.gateway.registry import (
+    MINI_FALLBACKS,
+    STRONG_FALLBACKS,
+    openrouter_model_id,
+    resolve,
+    step_ids,
+)
 from education_platform.ai_platform.gateway.usage import UsageRecord, write_usage
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import _OPENROUTER_HEADERS, OpenRouterError
@@ -345,6 +355,47 @@ async def test_client_error_is_not_retried() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_error_does_not_move_the_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=2,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    seen: list[str] = []
+    statuses = iter([500, 400, 500, 200])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        model = str(body["model"])
+        seen.append(model)
+        status = next(statuses)
+        if status == 200:
+            return httpx.Response(200, json=_completion("ok", model=model))
+        return httpx.Response(status, json={"error": {"message": "no", "type": "error"}})
+
+    _bind_async(handler)
+    for _ in range(3):
+        with pytest.raises(OpenRouterError):
+            await complete(
+                "policy_chat.answer",
+                [{"role": "user", "content": "hi"}],
+                ctx=_ctx("policy_chat", settings),
+            )
+    clock["t"] = 1020.0
+    cooled = await complete(
+        "policy_chat.answer",
+        [{"role": "user", "content": "still open"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert seen == [primary, primary, primary, cooled.served_model]
+    assert seen[3] != primary
+    assert cooled.text == "ok"
+
+
+@pytest.mark.asyncio
 async def test_fallback_models_timeout_and_title_are_sent() -> None:
     script = _Script([200], content="answer", model="google/gemini-2.5-flash")
     _bind_async(script)
@@ -364,7 +415,7 @@ async def test_fallback_models_timeout_and_title_are_sent() -> None:
     headers = script.requests[0].headers
     assert headers["x-title"] == "CurioEd Policy Assistant"
     assert headers["http-referer"] == HTTP_REFERER
-    assert float(headers["x-stainless-read-timeout"]) == profile.timeout_seconds
+    assert float(headers["x-stainless-read-timeout"]) == profile.timeout_seconds / 2
     assert result.served_model == "google/gemini-2.5-flash"
     assert result.usage.prompt_tokens == 11
     assert result.usage.completion_tokens == 7
@@ -381,7 +432,7 @@ async def test_fallback_models_timeout_and_title_are_sent() -> None:
     )
     sql_headers = guard.requests[0].headers
     assert sql_headers["x-title"] == "CurioEd Text to SQL"
-    assert float(sql_headers["x-stainless-read-timeout"]) == 20.0
+    assert float(sql_headers["x-stainless-read-timeout"]) == 10.0
 
     outline = _Script([200], content="outline")
     _bind_async(outline)
@@ -390,7 +441,7 @@ async def test_fallback_models_timeout_and_title_are_sent() -> None:
         [{"role": "user", "content": "headings"}],
         ctx=_ctx("generation", settings),
     )
-    assert float(outline.requests[0].headers["x-stainless-read-timeout"]) == 120.0
+    assert float(outline.requests[0].headers["x-stainless-read-timeout"]) == 60.0
 
 
 @pytest.mark.asyncio
@@ -721,7 +772,7 @@ async def test_flag_on_policy_chat_uses_the_gateway(monkeypatch: pytest.MonkeyPa
     body = json.loads(guard.requests[0].content.decode())
     assert body["model"] == settings.openrouter_model
     assert body["response_format"] == {"type": "json_object"}
-    assert float(guard.requests[0].headers["x-stainless-read-timeout"]) == 8.0
+    assert float(guard.requests[0].headers["x-stainless-read-timeout"]) == 4.0
 
     answer_script = _Script([200], content="## Attendance\n\nNotify the office.")
     _bind_async(answer_script)
@@ -729,7 +780,7 @@ async def test_flag_on_policy_chat_uses_the_gateway(monkeypatch: pytest.MonkeyPa
     assert answer["assistant_content"].startswith("## Attendance")
     answer_body = json.loads(answer_script.requests[0].content.decode())
     assert answer_body["temperature"] == 0.2
-    assert float(answer_script.requests[0].headers["x-stainless-read-timeout"]) == 30.0
+    assert float(answer_script.requests[0].headers["x-stainless-read-timeout"]) == 15.0
     assert answer_script.requests[0].headers["x-title"] == "CurioEd Policy Assistant"
 
 
@@ -762,7 +813,7 @@ def test_sync_completion_uses_the_shared_client() -> None:
     assert result.parsed_json is None
     body = json.loads(script.requests[0].content.decode())
     assert body["model"] == settings.openrouter_model
-    assert float(script.requests[0].headers["x-stainless-read-timeout"]) == 20.0
+    assert float(script.requests[0].headers["x-stainless-read-timeout"]) == 10.0
 
 
 def _admin_headers(client: TestClient) -> dict[str, str]:
@@ -881,6 +932,9 @@ async def test_flag_on_guard_non_json_fails_closed(
         row = rows[0]
         assert row.step == "policy_chat.guard"
         assert row.status == "error"
+        assert row.prompt_tokens == 11
+        assert row.completion_tokens == 7
+        assert row.cached_tokens == 4
         stored = " ".join(str(getattr(row, column.name)) for column in row.__table__.columns)
         assert message not in stored
         assert "this is not json" not in stored
@@ -977,26 +1031,32 @@ async def test_step_deadline_bounds_retries(monkeypatch: pytest.MonkeyPatch) -> 
             [{"role": "user", "content": "hi"}],
             ctx=_ctx("policy_chat", settings),
         )
-    assert timeouts == [30.0, 18.0, 6.0]
+    assert timeouts == [15.0, 9.0, 3.0]
 
-    clock["t"] = 100.0
-    guard_calls = {"n": 0}
-
-    def slow_guard(request: httpx.Request) -> httpx.Response:
-        guard_calls["n"] += 1
-        clock["t"] += float(request.headers["x-stainless-read-timeout"])
-        return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
-
-    _bind_async(slow_guard)
     bounded = _settings(ai_gateway_max_retries=4, ai_gateway_retry_base_seconds=0)
-    for step in ("policy_chat.guard", "policy_chat.validator", "policy_chat.answer"):
+    for step, limit in (
+        ("policy_chat.guard", 8.0),
+        ("policy_chat.validator", 8.0),
+        ("policy_chat.answer", 30.0),
+    ):
+        clock["t"] = 0.0
+        seen: list[float] = []
+
+        def slow_guard(request: httpx.Request, bucket: list[float] = seen) -> httpx.Response:
+            timeout = float(request.headers["x-stainless-read-timeout"])
+            bucket.append(timeout)
+            clock["t"] += timeout
+            return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
+
+        _bind_async(slow_guard)
         with pytest.raises(OpenRouterError):
             await complete(
                 step,
                 [{"role": "user", "content": "hi"}],
                 ctx=_ctx("policy_chat", bounded),
             )
-    assert guard_calls["n"] == 3
+        assert len(seen) >= 2
+        assert sum(seen) <= limit + 1e-6
 
 
 @pytest.mark.asyncio
@@ -1131,12 +1191,81 @@ async def test_half_open_probe_failure_reopens_for_one_caller(
     assert any(model != primary for model in models)
 
 
+@pytest.mark.asyncio
+async def test_cancelled_half_open_probe_releases_the_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=1,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    script = _Script([500])
+    _bind_async(script)
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "trip"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1030.0
+    started = asyncio.Event()
+
+    async def _hang(*_args: Any, **_kwargs: Any) -> tuple[str, Any, str]:
+        started.set()
+        await asyncio.Future()
+        raise AssertionError("cancelled probe must not finish")
+
+    monkeypatch.setattr(api, "_once_async", _hang)
+    probe = asyncio.create_task(
+        complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "probe"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    )
+    await started.wait()
+    probe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await probe
+
+    chosen: list[str] = []
+
+    async def _ok(*_args: Any, **kwargs: Any) -> tuple[str, Any, str]:
+        chosen.append(str(kwargs["selected"]))
+        return ("again", api.TokenUsage(), str(kwargs["selected"]))
+
+    monkeypatch.setattr(api, "_once_async", _ok)
+    result = await complete(
+        "policy_chat.answer",
+        [{"role": "user", "content": "next"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert chosen == [primary]
+    assert result.text == "again"
+
+
 def test_generation_steps_strip_the_litellm_prefix() -> None:
     settings = _settings(adk_model="openrouter/openai/gpt-4o-mini")
     for step in ("generation.lesson", "generation.items.writer", "generation.curriculum"):
         assert resolve(step, settings).model == "openai/gpt-4o-mini"
     assert resolve("generation.outline", settings).model == settings.openrouter_model
     assert not resolve("generation.lesson", settings).model.startswith("openrouter/")
+
+
+_MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def test_fallback_model_ids_are_well_formed() -> None:
+    ids = (*MINI_FALLBACKS, *STRONG_FALLBACKS)
+    assert len(ids) == 4
+    assert len(set(ids)) == 4
+    for model_id in ids:
+        assert _MODEL_ID.fullmatch(model_id)
+        assert not model_id.endswith(":batch")
 
 
 def test_async_client_and_semaphore_follow_each_event_loop() -> None:
@@ -1162,7 +1291,6 @@ def test_async_client_and_semaphore_follow_each_event_loop() -> None:
 
     assert once() == "ok"
     assert once() == "ok"
-
     errors: list[BaseException] = []
 
     def worker() -> None:
@@ -1177,6 +1305,31 @@ def test_async_client_and_semaphore_follow_each_event_loop() -> None:
     for thread in threads:
         thread.join()
     assert errors == []
+
+
+def test_contended_semaphore_does_not_keep_the_loop_alive() -> None:
+    loop = asyncio.new_event_loop()
+    ref = weakref.ref(loop)
+
+    async def _contend() -> None:
+        semaphore = control.async_semaphore("gc-probe", 1)
+        await semaphore.acquire()
+
+        async def _blocked() -> None:
+            await semaphore.acquire()
+
+        waiter = asyncio.create_task(_blocked())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiter
+        semaphore.release()
+
+    loop.run_until_complete(_contend())
+    loop.close()
+    del loop
+    gc.collect()
+    assert ref() is None
 
 
 def test_sync_semaphore_is_released_when_the_call_raises() -> None:

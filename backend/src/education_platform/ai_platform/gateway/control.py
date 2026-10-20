@@ -11,14 +11,17 @@ import asyncio
 import enum
 import threading
 import time
+import weakref
 from weakref import WeakKeyDictionary
 
 from education_platform.core.llm import OpenRouterError
 
 _guard = threading.Lock()
-_async_semaphores: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]] = (
-    WeakKeyDictionary()
-)
+# The semaphore is held weakly. A contended ``asyncio.Semaphore`` stores the
+# loop on itself, so a strong value would keep that loop alive.
+_async_semaphores: WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, weakref.ReferenceType[asyncio.Semaphore]]
+] = WeakKeyDictionary()
 _sync_semaphores: dict[str, threading.BoundedSemaphore] = {}
 
 
@@ -75,6 +78,16 @@ class CircuitBreaker:
             if self._consecutive >= self._threshold:
                 self._trip()
 
+    def release_probe(self) -> None:
+        """Give back a half-open probe that did not finish.
+
+        Cancellation and a non-retryable client error must not leave the
+        breaker half-open, and they must not move the cooldown.
+        """
+        with self._lock:
+            if self._state is _CircuitState.HALF_OPEN:
+                self._state = _CircuitState.OPEN
+
     def _trip(self) -> None:
         self._state = _CircuitState.OPEN
         self._consecutive = 0
@@ -105,13 +118,15 @@ def async_semaphore(name: str, limit: int) -> asyncio.Semaphore:
         if bucket is None:
             bucket = {}
             _async_semaphores[loop] = bucket
-        existing = bucket.get(name)
-        if existing is not None:
-            return existing
+        ref = bucket.get(name)
+        if ref is not None:
+            existing = ref()
+            if existing is not None:
+                return existing
         if limit < 1:
             raise OpenRouterError(f"Concurrency limit for {name} must be at least 1")
         created = asyncio.Semaphore(limit)
-        bucket[name] = created
+        bucket[name] = weakref.ref(created)
         return created
 
 
