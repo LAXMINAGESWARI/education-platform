@@ -43,6 +43,7 @@ from education_platform.modules.generation.types import (
     ReviewStage,
     RunPhase,
 )
+from education_platform.modules.judge.views import JudgeReadout, load_judge_readouts
 from education_platform.modules.materials.models import SourceChunk, SourceMaterialVersion
 from education_platform.modules.rag.models import IngestJob, IngestJobStatus
 
@@ -166,6 +167,7 @@ class OutlineReviewDetail:
 class LessonDetail:
     markdown: str | None
     published_lesson_version_id: UUID | None
+    judge: tuple[JudgeReadout, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,7 @@ class ItemsDetail:
     dropped: int | None
     key_disputed: int
     items: tuple[QaItem, ...]
+    judge: tuple[JudgeReadout, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,11 +251,15 @@ async def get_step_detail(
         return StepDetail(timing=timing, outline_review=await _review_detail(session, facts))
     if step_id == "lesson":
         markdown = (facts.row.draft_lesson_markdown or "").strip() or None
+        readouts = await load_judge_readouts(session, facts.row.id)
         return StepDetail(
             timing=timing,
             lesson=LessonDetail(
                 markdown=markdown,
                 published_lesson_version_id=facts.row.published_lesson_version_id,
+                judge=tuple(
+                    item for item in readouts if item.subject_kind in {"lesson", "lesson_section"}
+                ),
             ),
         )
     if step_id == "items":
@@ -785,6 +792,7 @@ async def _review_detail(session: AsyncSession, facts: _Facts) -> OutlineReviewD
 
 async def _items_detail(session: AsyncSession, facts: _Facts) -> ItemsDetail:
     items = tuple(await qa_items_for_run(session, facts.domain))
+    readouts = await load_judge_readouts(session, facts.row.id)
     stored = await item_validation_for_runs(session, [facts.row.id])
     validation = stored.get(facts.row.id)
     passed, fixed, dropped = _validation_counts(validation, items)
@@ -802,6 +810,7 @@ async def _items_detail(session: AsyncSession, facts: _Facts) -> ItemsDetail:
             if isinstance(item.blind_solve, dict) and item.blind_solve.get("status") == "disagree"
         ),
         items=items,
+        judge=tuple(item for item in readouts if item.subject_kind == "quiz_item"),
     )
 
 

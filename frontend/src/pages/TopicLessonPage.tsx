@@ -4,9 +4,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { updateTopicMaterialProgress } from "../api/materials";
 import { ApiError } from "../api/types";
 import { Crumbs } from "../components/Crumbs";
-import { LessonSlideFrame } from "../components/LessonSlideFrame";
+import { LessonSlideStage } from "../components/LessonSlideStage";
 import { PushButton } from "../components/PushButton";
-import { SlideProgress } from "../components/SlideProgress";
 import { slidesForLessonView } from "../lib/lessonSlides";
 import { quizActionLabel } from "../lib/quizAction";
 import { topicPagePath } from "../lib/subjectMaterial";
@@ -137,77 +136,47 @@ export function TopicLessonPage() {
             ]}
           />
           <h1 className="sr-only">{topicTitle}</h1>
-          <div className="lesson-stage__bar">
-            <Link to={topicPath} className="lesson-back">
-              Back to topic
-            </Link>
-            <SlideProgress
-              heading
-              sectionTitle={slide.sectionTitle ?? slide.title}
-              index={slideIndex}
-              total={slides.length}
-              complete={lesson.progress?.status === "completed"}
-            />
-          </div>
-
-          <div className="lesson-layout">
-            <section className="lesson-layout__main lesson-slides" aria-label={topicTitle}>
-              <LessonSlideFrame
-                title={slide.title}
-                content={slide.content}
-                ariaLabel={topicTitle}
-                scrollKey={slideIndex}
-                hideTitle
-                footer={
-                  <>
-                    <div className="slide-nav__controls">
-                      <PushButton
-                        variant="outline"
-                        size="sm"
-                        disabled={slideIndex === 0}
-                        onClick={() => setSlideIndex((index) => Math.max(0, index - 1))}
-                      >
-                        Previous
-                      </PushButton>
-                      {atEnd && quizId ? (
-                        quizUnlocked ? (
-                          <Link to={`/quizzes/${quizId}`} className="btn btn--sm">
-                            {quizCta}
-                          </Link>
-                        ) : (
-                          <PushButton size="sm" disabled>
-                            Start quiz
-                          </PushButton>
-                        )
-                      ) : (
-                        <PushButton
-                          size="sm"
-                          disabled={atEnd}
-                          onClick={() =>
-                            setSlideIndex((index) => Math.min(slides.length - 1, index + 1))
-                          }
-                        >
-                          Next slide
-                        </PushButton>
-                      )}
-                    </div>
-                    {atEnd && (
-                      <p className="lesson-toolbar__hint">
-                        {quizUnlocked
-                          ? "Topic quiz follows the slides."
-                          : "Complete the topic lesson first."}
-                      </p>
-                    )}
-                  </>
-                }
-              />
-              {progressError && (
+          <LessonSlideStage
+            slides={slides}
+            index={slideIndex}
+            onIndexChange={setSlideIndex}
+            ariaLabel={topicTitle}
+            complete={lesson.progress?.status === "completed"}
+            leading={
+              <Link to={topicPath} className="lesson-back">
+                Back to topic
+              </Link>
+            }
+            endAction={
+              quizId ? (
+                quizUnlocked ? (
+                  <Link to={`/quizzes/${quizId}`} className="btn btn--sm">
+                    {quizCta}
+                  </Link>
+                ) : (
+                  <PushButton size="sm" disabled>
+                    Start quiz
+                  </PushButton>
+                )
+              ) : undefined
+            }
+            hint={
+              atEnd ? (
+                <p className="lesson-toolbar__hint">
+                  {quizUnlocked
+                    ? "Topic quiz follows the slides."
+                    : "Complete the topic lesson first."}
+                </p>
+              ) : null
+            }
+            after={
+              progressError ? (
                 <p className="form__error" role="alert">
                   {progressError}
                 </p>
-              )}
-            </section>
-          </div>
+              ) : null
+            }
+          />
         </div>
       )}
     </>

@@ -9,6 +9,7 @@ from education_platform.modules.audit import models as audit_models
 from education_platform.modules.auth import models as auth_models
 from education_platform.modules.engagement import models as engagement_models
 from education_platform.modules.generation import models as generation_models
+from education_platform.modules.judge import models as judge_models
 from education_platform.modules.materials import models as materials_models
 from education_platform.modules.rag import models as rag_models
 from education_platform.modules.self_evaluation import models as self_evaluation_models
@@ -23,6 +24,7 @@ __all__ = [
     "auth_models",
     "engagement_models",
     "generation_models",
+    "judge_models",
     "materials_models",
     "rag_models",
     "self_evaluation_models",

@@ -33,6 +33,24 @@ def test_client_major_matches_compose_postgres_image() -> None:
     assert "python -m education_platform.db.pg_backup" in script
 
 
+def test_migrate_backs_up_before_alembic_upgrade() -> None:
+    lines = (_REPO / "deploy" / "migrate.sh").read_text().splitlines()
+    backup_at = next(
+        index
+        for index, line in enumerate(lines)
+        if "python -m education_platform.db.pg_backup" in line
+    )
+    upgrade_at = next(
+        index for index, line in enumerate(lines) if line.strip() == "alembic upgrade head"
+    )
+    promote_at = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "python -m education_platform.modules.synthetic.promote"
+    )
+    assert backup_at < upgrade_at < promote_at
+
+
 def test_version_majors() -> None:
     assert pg_dump_major("pg_dump (PostgreSQL) 16.15 (Debian 16.15-1.pgdg12+2)") == 16
     assert pg_dump_major("pg_dump (PostgreSQL) 15.19 (Debian 15.19-0+deb12u1)") == 15

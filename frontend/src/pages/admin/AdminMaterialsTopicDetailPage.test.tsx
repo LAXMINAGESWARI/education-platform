@@ -257,6 +257,7 @@ describe("AdminMaterialsTopicDetailPage", () => {
         { number: 2, title: "Lesson Summary", content: "Two halves make one." },
       ],
       source_material_version_id: "ver-1",
+      published_at: "2026-09-09T00:00:00Z",
       quiz_unlocked: true,
       quiz_id: "quiz-1-uuid",
       progress: null,
@@ -269,10 +270,21 @@ describe("AdminMaterialsTopicDetailPage", () => {
       "true",
     );
     expect(document.querySelectorAll(".admin-published-row")).toHaveLength(0);
-    expect(await screen.findByRole("heading", { name: "Lesson Summary" })).toBeInTheDocument();
-    expect(screen.getByText("Two halves make one.")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Introduction" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Introduction" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Numbers" })).toBeInTheDocument();
+    expect(screen.getByText("Published 9 Sep 2026 · 2 slides · 1 question")).toBeInTheDocument();
+    expect(screen.getByText("A whole is two halves.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Lesson Summary" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open lesson as student" })).toHaveAttribute(
+      "href",
+      "/subjects/subj-math-uuid/topics/topic-1-uuid/lesson",
+    );
+    expect(screen.getByRole("link", { name: "Open quiz as student" })).toHaveAttribute(
+      "href",
+      "/quizzes/quiz-1-uuid",
+    );
     expect(await screen.findByText("What is 1/2 + 1/2?")).toBeInTheDocument();
+    expect(screen.getByText("Correct")).toBeInTheDocument();
     expect(getTopicMaterial).toHaveBeenCalledWith("topic-1-uuid");
     expect(screen.queryByRole("link", { name: /Start quiz|Retry/i })).not.toBeInTheDocument();
     expect(screen.queryByText("Last attempt")).not.toBeInTheDocument();
@@ -282,17 +294,14 @@ describe("AdminMaterialsTopicDetailPage", () => {
     expect(await screen.findByRole("region", { name: "Item statistics" })).toBeInTheDocument();
     expect(screen.getByText(/Not enough responses to flag items yet/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(await screen.findByRole("heading", { name: "Introduction" })).toBeInTheDocument();
-    expect(screen.getByText("A whole is two halves.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Next slide" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next slide" })).toBeEnabled();
     expect(screen.getByText("Slide 1 of 2")).toBeInTheDocument();
-    expect(screen.getByText("What is 1/2 + 1/2?")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Next slide" }));
     expect(await screen.findByRole("heading", { name: "Lesson Summary" })).toBeInTheDocument();
+    expect(screen.getByText("Two halves make one.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next slide" })).toBeDisabled();
-    expect(screen.queryByRole("link", { name: /Start quiz/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Start quiz$/i })).not.toBeInTheDocument();
   });
 
   it("switches to Published after a successful publish", async () => {
@@ -355,12 +364,12 @@ describe("AdminMaterialsTopicDetailPage", () => {
       expect(screen.getByRole("tab", { name: "Published" })).toHaveAttribute("aria-selected", "true");
     });
     expect(document.querySelectorAll(".admin-published-row")).toHaveLength(0);
-    expect(await screen.findByRole("heading", { name: "Lesson Summary" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Introduction" })).toBeInTheDocument();
+    expect(screen.getByText("A whole is two halves.")).toBeInTheDocument();
     expect(fetchLearningDirectory).toHaveBeenCalledTimes(2);
   });
 
   it("still shows slides immediately when only the lesson is published", async () => {
-    const user = userEvent.setup();
     vi.mocked(fetchLearningDirectory).mockResolvedValue(directory({ has_topic_lesson: true }));
     vi.mocked(getTopicMaterial).mockResolvedValue({
       id: "topic-1-uuid",
@@ -382,9 +391,10 @@ describe("AdminMaterialsTopicDetailPage", () => {
     expect(document.querySelectorAll(".admin-published-row")).toHaveLength(0);
     expect(await screen.findByRole("heading", { name: "Fractions" })).toBeInTheDocument();
     expect(screen.getByText("A part of a whole.")).toBeInTheDocument();
+    expect(screen.getByText("Slide 1 of 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next slide" })).toBeDisabled();
     expect(screen.getByText("No published quiz items on the latest run.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(await screen.findByRole("heading", { name: "Fractions" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open quiz as student" })).not.toBeInTheDocument();
   });
 
   it("keeps the Upload tab as a blank form plus history when a published run exists", async () => {
@@ -418,6 +428,82 @@ describe("AdminMaterialsTopicDetailPage", () => {
     expect(screen.getByRole("heading", { name: "Previous runs" })).toBeInTheDocument();
     expect(screen.queryByText("published. This run is published.")).not.toBeInTheDocument();
     expect(screen.queryByText("What is 1/2 + 1/2?")).not.toBeInTheDocument();
+  });
+
+  it("shows a recap list, nested lists, a table, and filters quiz cards", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchLearningDirectory).mockResolvedValue(directory({ has_topic_lesson: true }));
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({
+        phase: "published",
+        qa_items: [
+          qaItem({
+            question_id: "q-easy",
+            prompt: "What is the area of a square?",
+            difficulty: "easy",
+            subtopic_title: "Area of a polygon",
+          }),
+          qaItem({
+            question_id: "q-hard",
+            question_version_id: "qv-2",
+            sequence: 2,
+            prompt: "What is the volume of a cube?",
+            difficulty: "hard",
+            subtopic_title: "Volume of a cube",
+          }),
+        ],
+      }),
+    ]);
+    vi.mocked(getTopicMaterial).mockResolvedValue({
+      id: "topic-1-uuid",
+      title: "Mensuration",
+      markdown: "",
+      slides: [
+        {
+          number: 1,
+          title: "Area of a polygon",
+          content: [
+            "1. Surface area is the total of the faces.",
+            "   - A cuboid uses $2(lb + bh + hl)$.",
+            "   - A cube uses $6a^2$.",
+            "",
+            "| Shape | Area |",
+            "| --- | --- |",
+            "| Square | $a^2$ |",
+            "",
+            "$$\\text{Area} = l \\times b$$",
+            "",
+            "**Topic recap.**",
+            "",
+            "- Area of a polygon",
+            "- Volume of a cube",
+          ].join("\n"),
+        },
+      ],
+      source_material_version_id: "ver-1",
+      quiz_unlocked: true,
+      quiz_id: "quiz-1-uuid",
+      progress: null,
+    });
+
+    renderPage();
+
+    const surface = await screen.findByText(/Surface area is the total/);
+    const item = surface.closest("li");
+    expect(item?.querySelector("ul")).not.toBeNull();
+    const scroller = document.querySelector(".lesson-overview__scroll");
+    expect(scroller?.querySelector("table")).not.toBeNull();
+    expect(scroller?.querySelector(".katex-display")).not.toBeNull();
+    expect(scroller?.textContent).toContain("Area of a polygon");
+    expect(scroller?.textContent).toContain("Volume of a cube");
+    expect(screen.queryByText(/TRY THESE/)).not.toBeInTheDocument();
+    expect(screen.getByText("2 questions · 1 easy · 1 hard")).toBeInTheDocument();
+    expect(screen.getByText("What is the area of a square?")).toBeInTheDocument();
+    expect(screen.getByText("What is the volume of a cube?")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by difficulty" }), "hard");
+    expect(screen.queryByText("What is the area of a square?")).not.toBeInTheDocument();
+    expect(screen.getByText("What is the volume of a cube?")).toBeInTheDocument();
   });
 
   it("opens a chapter's published lesson from tab and unit query params", async () => {

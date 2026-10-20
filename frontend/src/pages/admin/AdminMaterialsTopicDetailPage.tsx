@@ -1,22 +1,34 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Navigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 
 import { listTopicGenerationRuns } from "../../api/generation";
 import { getSubtopicMaterial, getTopicMaterial } from "../../api/materials";
-import type { GenerationQaItem, GenerationRun, LessonMaterial, LessonSlide } from "../../api/types";
+import type { GenerationQaItem, GenerationRun, LessonMaterial } from "../../api/types";
 import { Crumbs, type Crumb } from "../../components/Crumbs";
-import { LessonSlideFrame } from "../../components/LessonSlideFrame";
-import { SlideProgress } from "../../components/SlideProgress";
-import { MarkdownContent } from "../../components/MarkdownContent";
-import { PushButton } from "../../components/PushButton";
+import { LessonSlideStage } from "../../components/LessonSlideStage";
+import { QuizItemCards } from "../../components/QuizItemCards";
 import { TopicGenerationUpload } from "../../components/TopicGenerationUpload";
 import { TopicItemStats } from "../../components/TopicItemStats";
-import { findSummarySlide, slidesForLessonView } from "../../lib/lessonSlides";
-import { presentQuizText } from "../../lib/quizText";
+import { slidesForLessonView } from "../../lib/lessonSlides";
+import { topicLessonPath } from "../../lib/subjectMaterial";
 import { useAdminDirectory } from "../../lib/useAdminDirectory";
 
 type TabId = "upload" | "published";
-type PublishedView = "overview" | "slides";
+
+const PUBLISHED_MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
 
 async function loadPublishedLesson(
   topicId: string,
@@ -38,8 +50,51 @@ async function loadPublishedLesson(
   }
 }
 
-function optionEntries(options: Record<string, string>): [string, string][] {
-  return Object.entries(options).sort(([left], [right]) => left.localeCompare(right));
+function formatPublishedDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const month = PUBLISHED_MONTHS[date.getUTCMonth()];
+  if (!month) return null;
+  return `${date.getUTCDate()} ${month} ${date.getUTCFullYear()}`;
+}
+
+function studentLessonHref(
+  subjectId: string,
+  topicId: string,
+  subtopicId: string | null,
+  preferSubtopic: boolean,
+): string {
+  if (preferSubtopic && subtopicId) {
+    return `/subjects/${subjectId}/subtopics/${subtopicId}/lesson`;
+  }
+  return topicLessonPath(subjectId, topicId);
+}
+
+function difficultyMix(items: GenerationQaItem[]): string {
+  const counts = { easy: 0, medium: 0, hard: 0, unlabeled: 0 };
+  for (const item of items) {
+    switch (item.difficulty) {
+      case "easy":
+        counts.easy += 1;
+        break;
+      case "medium":
+        counts.medium += 1;
+        break;
+      case "hard":
+        counts.hard += 1;
+        break;
+      default:
+        counts.unlabeled += 1;
+        break;
+    }
+  }
+  const parts: string[] = [];
+  if (counts.easy > 0) parts.push(`${counts.easy} easy`);
+  if (counts.medium > 0) parts.push(`${counts.medium} medium`);
+  if (counts.hard > 0) parts.push(`${counts.hard} hard`);
+  if (counts.unlabeled > 0 && parts.length > 0) parts.push(`${counts.unlabeled} unlabeled`);
+  return parts.join(" · ");
 }
 
 function AdminPublishedQuiz({
@@ -49,12 +104,37 @@ function AdminPublishedQuiz({
   items: GenerationQaItem[];
   loading: boolean;
 }) {
+  const [difficulty, setDifficulty] = useState("all");
+  const [subtopic, setSubtopic] = useState("all");
   const sorted = useMemo(
     () => [...items].sort((left, right) => left.sequence - right.sequence),
     [items],
   );
-  const countLabel =
-    sorted.length === 1 ? "1 question" : `${sorted.length} questions`;
+  const difficulties = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of sorted) {
+      if (item.difficulty) values.add(item.difficulty);
+    }
+    return [...values].sort();
+  }, [sorted]);
+  const subtopics = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of sorted) {
+      if (item.subtopic_title) values.add(item.subtopic_title);
+    }
+    return [...values].sort((left, right) => left.localeCompare(right));
+  }, [sorted]);
+  const filtered = useMemo(
+    () =>
+      sorted.filter((item) => {
+        if (difficulty !== "all" && item.difficulty !== difficulty) return false;
+        if (subtopic !== "all" && item.subtopic_title !== subtopic) return false;
+        return true;
+      }),
+    [sorted, difficulty, subtopic],
+  );
+  const countLabel = sorted.length === 1 ? "1 question" : `${sorted.length} questions`;
+  const mix = difficultyMix(sorted);
 
   return (
     <div className="lesson-quiz-panel">
@@ -67,7 +147,9 @@ function AdminPublishedQuiz({
               {loading
                 ? "Loading quiz…"
                 : sorted.length > 0
-                  ? `${countLabel} · read-only`
+                  ? mix
+                    ? `${countLabel} · ${mix}`
+                    : `${countLabel} · read-only`
                   : "No quiz linked"}
             </span>
           </div>
@@ -80,148 +162,78 @@ function AdminPublishedQuiz({
       ) : sorted.length === 0 ? (
         <p className="lesson-toolbar__hint">No published quiz items on the latest run.</p>
       ) : (
-        <ol className="admin-published-quiz">
-          {sorted.map((item) => (
-            <li key={item.question_id} className="admin-published-quiz__item">
-              <p className="admin-published-quiz__prompt">
-                <strong>Q{item.sequence}.</strong>{" "}
-                <MarkdownContent inline>{presentQuizText(item.prompt)}</MarkdownContent>
-              </p>
-              <ul className="draft-options">
-                {optionEntries(item.options).map(([label, text]) => (
-                  <li
-                    key={label}
-                    className={
-                      label === item.correct_label ? "draft-option is-correct" : "draft-option"
-                    }
+        <>
+          {difficulties.length > 0 || subtopics.length > 0 ? (
+            <div className="admin-published-filters">
+              {difficulties.length > 0 ? (
+                <label>
+                  Difficulty
+                  <select
+                    aria-label="Filter by difficulty"
+                    value={difficulty}
+                    onChange={(event) => setDifficulty(event.target.value)}
                   >
-                    <span className="draft-option__label">{label}</span>
-                    <span>
-                      <MarkdownContent inline>{presentQuizText(text)}</MarkdownContent>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ol>
+                    <option value="all">All</option>
+                    {difficulties.map((value) => (
+                      <option key={value} value={value}>
+                        {value.charAt(0).toUpperCase() + value.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {subtopics.length > 0 ? (
+                <label>
+                  Subtopic
+                  <select
+                    aria-label="Filter by subtopic"
+                    value={subtopic}
+                    onChange={(event) => setSubtopic(event.target.value)}
+                  >
+                    <option value="all">All</option>
+                    {subtopics.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+          {filtered.length === 0 ? (
+            <p className="lesson-toolbar__hint">No questions match this filter.</p>
+          ) : (
+            <QuizItemCards items={filtered} />
+          )}
+        </>
       )}
     </div>
   );
 }
 
-function AdminPublishedSlides({
-  slides,
-  pane,
-  onOpenSlides,
-}: {
-  slides: LessonSlide[];
-  pane: "overview" | "slides";
-  onOpenSlides: () => void;
-}) {
-  const [slideIndex, setSlideIndex] = useState(0);
-  const summarySlide = findSummarySlide(slides);
-
-  useEffect(() => {
-    if (pane === "slides") {
-      setSlideIndex(0);
-    }
-  }, [pane]);
-
-  if (slides.length === 0) {
-    return (
-      <p className="muted" role="status">
-        No published topic lesson.
-      </p>
-    );
-  }
-
-  switch (pane) {
-    case "overview":
-      return (
-        <LessonSlideFrame
-          title={summarySlide?.title ?? "Lesson summary"}
-          content={summarySlide?.content ?? ""}
-          ariaLabel="Topic lesson"
-          footer={
-            <PushButton size="sm" onClick={onOpenSlides}>
-              Continue
-            </PushButton>
-          }
-        />
-      );
-    case "slides": {
-      const slide = slides[slideIndex] ?? slides[0];
-      const atEnd = slideIndex >= slides.length - 1;
-      return (
-        <div className="lesson-slides">
-          <LessonSlideFrame
-            title={slide.title}
-            content={slide.content}
-            ariaLabel="Topic lesson slides"
-            footer={
-              <>
-                <div className="slide-nav__controls">
-                  <PushButton
-                    variant="outline"
-                    size="sm"
-                    disabled={slideIndex === 0}
-                    onClick={() => setSlideIndex((index) => Math.max(0, index - 1))}
-                  >
-                    Previous
-                  </PushButton>
-                  <PushButton
-                    size="sm"
-                    disabled={atEnd}
-                    onClick={() =>
-                      setSlideIndex((index) => Math.min(slides.length - 1, index + 1))
-                    }
-                  >
-                    Next slide
-                  </PushButton>
-                </div>
-                <SlideProgress
-                  sectionTitle={slide.sectionTitle}
-                  index={slideIndex}
-                  total={slides.length}
-                />
-              </>
-            }
-          />
-        </div>
-      );
-    }
-    default: {
-      const _never: never = pane;
-      void _never;
-      return null;
-    }
-  }
-}
-
 function AdminPublishedMaterial({
+  subjectId,
   topicId,
   subtopicId,
   fallbackTitle,
   hasLesson,
   quizItems,
   quizLoading,
-  pane,
   preferSubtopic,
-  onOpenSlides,
 }: {
+  subjectId: string;
   topicId: string;
   subtopicId: string | null;
   fallbackTitle: string;
   hasLesson: boolean;
   quizItems: GenerationQaItem[];
   quizLoading: boolean;
-  pane: "overview" | "slides";
   preferSubtopic: boolean;
-  onOpenSlides: () => void;
 }) {
   const [lesson, setLesson] = useState<LessonMaterial | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [slideIndex, setSlideIndex] = useState(0);
 
   useEffect(() => {
     if (!hasLesson) {
@@ -245,10 +257,25 @@ function AdminPublishedMaterial({
     };
   }, [topicId, subtopicId, hasLesson, preferSubtopic]);
 
+  useEffect(() => {
+    setSlideIndex(0);
+  }, [lesson?.id, lesson?.source_material_version_id]);
+
   const slides = useMemo(
     () => (lesson ? slidesForLessonView({ ...lesson, title: lesson.title || fallbackTitle }) : []),
     [lesson, fallbackTitle],
   );
+  const publishedOn = formatPublishedDate(lesson?.published_at);
+  const slideLabel = slides.length === 1 ? "1 slide" : `${slides.length} slides`;
+  const questionLabel =
+    quizItems.length === 1 ? "1 question" : `${quizItems.length} questions`;
+  const meta = [
+    publishedOn ? `Published ${publishedOn}` : null,
+    lesson ? slideLabel : null,
+    quizLoading ? null : questionLabel,
+  ].filter((part): part is string => part != null);
+  const lessonHref = studentLessonHref(subjectId, topicId, subtopicId, preferSubtopic);
+  const quizHref = lesson?.quiz_id ? `/quizzes/${lesson.quiz_id}` : null;
 
   let main: ReactNode;
   if (error) {
@@ -263,14 +290,42 @@ function AdminPublishedMaterial({
         Loading topic lesson…
       </p>
     );
+  } else if (slides.length === 0) {
+    main = (
+      <p className="muted" role="status">
+        No published topic lesson.
+      </p>
+    );
   } else {
     main = (
-      <AdminPublishedSlides slides={slides} pane={pane} onOpenSlides={onOpenSlides} />
+      <LessonSlideStage
+        slides={slides}
+        index={Math.min(slideIndex, slides.length - 1)}
+        onIndexChange={setSlideIndex}
+        ariaLabel="Published lesson"
+      />
     );
   }
 
   return (
     <div className="lesson-view admin-published-material">
+      <header className="admin-published-head">
+        <div>
+          <p className="kicker">Published lesson</p>
+          <h1>{lesson?.title || fallbackTitle}</h1>
+          {meta.length > 0 ? <p className="admin-published-head__meta">{meta.join(" · ")}</p> : null}
+        </div>
+        <div className="admin-published-head__actions">
+          <Link className="btn btn--outline btn--sm" to={lessonHref}>
+            Open lesson as student
+          </Link>
+          {quizHref ? (
+            <Link className="btn btn--outline btn--sm" to={quizHref}>
+              Open quiz as student
+            </Link>
+          ) : null}
+        </div>
+      </header>
       <div className="lesson-layout">
         <section className="lesson-layout__main" aria-label="Published lesson">
           {main}
@@ -290,7 +345,6 @@ export function AdminMaterialsTopicDetailPage() {
   const { grades, loading, error, reload, getTopic } = useAdminDirectory();
   const found = getTopic(gradeKey, subjectId, topicId);
   const [tabOverride, setTabOverride] = useState<TabId | null>(null);
-  const [publishedView, setPublishedView] = useState<PublishedView>("overview");
   const [publishedRun, setPublishedRun] = useState<GenerationRun | null>(null);
   const [publishedRunLoading, setPublishedRunLoading] = useState(false);
 
@@ -310,7 +364,6 @@ export function AdminMaterialsTopicDetailPage() {
   const preferSubtopicLesson = requestedUnit != null;
 
   useEffect(() => {
-    setPublishedView("overview");
     setTabOverride(null);
   }, [topicId, unitId, requestedTab]);
 
@@ -355,51 +408,33 @@ export function AdminMaterialsTopicDetailPage() {
       },
       {
         label: topic?.title ?? "Topic",
-        onClick:
-          tab === "published" && publishedView === "slides"
-            ? () => setPublishedView("overview")
-            : undefined,
       },
     ];
-    if (tab === "published" && publishedView === "slides") {
-      parts.push({ label: "Slides" });
-    }
     return parts;
-  }, [grade, subject, topic, tab, publishedView]);
+  }, [grade, subject, topic]);
 
   if (!loading && !error && grades && !found) {
     return <Navigate to="/admin/materials" replace />;
   }
 
-  function openPublished(view: PublishedView) {
+  function openPublished() {
     setTabOverride("published");
-    setPublishedView(view);
   }
 
   function renderPublished() {
     if (!topic) return null;
-    switch (publishedView) {
-      case "overview":
-      case "slides":
-        return (
-          <AdminPublishedMaterial
-            topicId={topic.id}
-            subtopicId={lessonSubtopicId}
-            fallbackTitle={requestedUnit?.title ?? topic.title}
-            hasLesson={hasPublishedLesson}
-            quizItems={publishedRun?.qa_items ?? []}
-            quizLoading={publishedRunLoading}
-            pane={publishedView}
-            preferSubtopic={preferSubtopicLesson}
-            onOpenSlides={() => setPublishedView("slides")}
-          />
-        );
-      default: {
-        const _never: never = publishedView;
-        void _never;
-        return null;
-      }
-    }
+    return (
+      <AdminPublishedMaterial
+        subjectId={subjectId}
+        topicId={topic.id}
+        subtopicId={lessonSubtopicId}
+        fallbackTitle={requestedUnit?.title ?? topic.title}
+        hasLesson={hasPublishedLesson}
+        quizItems={publishedRun?.qa_items ?? []}
+        quizLoading={publishedRunLoading}
+        preferSubtopic={preferSubtopicLesson}
+      />
+    );
   }
 
   return (
@@ -429,7 +464,6 @@ export function AdminMaterialsTopicDetailPage() {
               className={`admin-tabs__tab ${tab === "upload" ? "is-active" : ""}`}
               onClick={() => {
                 setTabOverride("upload");
-                setPublishedView("overview");
               }}
             >
               Upload
@@ -443,7 +477,6 @@ export function AdminMaterialsTopicDetailPage() {
               className={`admin-tabs__tab ${tab === "published" ? "is-active" : ""}`}
               onClick={() => {
                 setTabOverride("published");
-                setPublishedView("overview");
               }}
             >
               Published
@@ -463,7 +496,7 @@ export function AdminMaterialsTopicDetailPage() {
                 publishedHref={`/admin/materials/grades/${gradeKey}/subjects/${subjectId}/topics/${topic.id}?tab=published`}
                 onPublished={() => {
                   void reload();
-                  openPublished("overview");
+                  openPublished();
                 }}
               />
             </div>

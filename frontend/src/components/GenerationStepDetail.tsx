@@ -8,6 +8,7 @@ import {
   type GenerationStepDetail,
   type GenerationStepId,
   type GenerationStepStatus,
+  type JudgeReadout,
   type LessonMaterial,
 } from "../api/types";
 import { slidesForLessonView } from "../lib/lessonSlides";
@@ -128,6 +129,64 @@ function OutlineTree({
         </li>
       ))}
     </ul>
+  );
+}
+
+function decisionWord(decision: string): string {
+  switch (decision) {
+    case "accept":
+      return "Accept";
+    case "needs_review":
+      return "Needs review";
+    case "reject":
+      return "Reject";
+    case "error":
+      return "Error";
+    default:
+      return decision;
+  }
+}
+
+function probabilityLine(probabilities: Record<string, number>): string {
+  return Object.entries(probabilities)
+    .map(([label, value]) => `${label} ${value.toFixed(2)}`)
+    .join(" · ");
+}
+
+function JudgeScores({ readouts }: { readouts: JudgeReadout[] }) {
+  if (readouts.length === 0) return null;
+  return (
+    <div className="step-detail__judge">
+      <h4>Jev scores</h4>
+      <ul className="step-detail__judge-list">
+        {readouts.map((readout) => (
+          <li key={`${readout.subject_kind}-${readout.subject_key ?? readout.label}`}>
+            <p>
+              <span className={`step-detail__judge-decision is-${readout.decision}`}>
+                {decisionWord(readout.decision)}
+              </span>{" "}
+              {readout.label}
+              {readout.model ? <span className="muted"> · {readout.model}</span> : null}
+            </p>
+            <ul>
+              {readout.checks.map((check) => (
+                <li key={check.check_id}>
+                  {check.check_id}: {check.summary} · {decisionWord(check.decision)}
+                  {probabilityLine(check.probabilities)
+                    ? ` · ${probabilityLine(check.probabilities)}`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+            {readout.reasons.map((reason) => (
+              <p key={reason} className="muted">
+                {reason}
+              </p>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -327,6 +386,7 @@ export function GenerationStepDetailPanel({
       ) : null}
       {detail?.lesson ? (
         <div className="step-detail__body">
+          <JudgeScores readouts={detail.lesson.judge ?? []} />
           {slides.length === 0 ? (
             <p className="muted">No lesson markdown was stored for this step.</p>
           ) : (
@@ -350,6 +410,7 @@ export function GenerationStepDetailPanel({
       ) : null}
       {detail?.items ? (
         <div className="step-detail__body">
+          <JudgeScores readouts={detail.items.judge ?? []} />
           <p>
             {detail.items.count === 1 ? "1 item" : `${detail.items.count} items`}
             {mixLine(detail.items.difficulty_mix)

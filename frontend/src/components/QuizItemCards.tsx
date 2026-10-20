@@ -1,6 +1,7 @@
 import type { BloomLevel, GenerationQaItem } from "../api/types";
 import { presentQuizText } from "../lib/quizText";
 import { MarkdownContent } from "./MarkdownContent";
+import "./TopicGenerationQa.css";
 
 type QuizItemCardsProps = {
   items: GenerationQaItem[];

@@ -163,6 +163,9 @@ Environment variables (see `.env.example`):
 | `JEV_BLOCK_THRESHOLD` | `0.85` | Noul probability treated as the old classifier's `true` |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |
+| `JEV_MODEL` | `typesafe/jev-1.14` | Decision model posted to OpenRouter `/api/alpha/decisions` with `OPENROUTER_API_KEY` |
+| `JEV_MODE` | `shadow` | `off`, `shadow` (store only), `augment`, or `replace` |
+| `JEV_NOUL_ACCEPT` / `JEV_NOUL_REJECT` | `0.80` / `0.35` | Noul accept and reject thresholds |
 | `CHAT_CONTEXT_LIMIT_TOKENS` | `20000` | Context meter denominator |
 | `CHAT_RETRIEVAL_LIMIT` | `6` | Default `retrieve_chunks` top-k |
 
