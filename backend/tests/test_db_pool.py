@@ -158,20 +158,6 @@ def test_cached_engines_use_configured_pools(configured_pools: None) -> None:
     _assert_pool(reader.pool, size=2, overflow=1, timeout=11.0, recycle=120, pre_ping=True)
 
 
-def test_startup_seed_engine_uses_the_general_pool(
-    configured_pools: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _ = configured_pools
-    created: list[Engine] = []
-    monkeypatch.setattr("education_platform.main.Session", _recording_session(created))
-    monkeypatch.setattr("education_platform.main.seed_approved_materials", lambda *_a, **_k: None)
-    from education_platform.main import _seed_if_empty
-
-    _seed_if_empty()
-    assert len(created) == 1
-    _assert_pool(created[0].pool, size=4, overflow=3, timeout=11.0, recycle=120, pre_ping=True)
-
-
 def test_curriculum_seed_cli_uses_the_general_pool(
     configured_pools: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -256,10 +242,7 @@ def test_retrieve_chunks_reuses_one_engine(
     _assert_pool(created[0].pool, size=4, overflow=3, timeout=11.0, recycle=120, pre_ping=True)
 
 
-async def test_lifespan_disposes_the_shared_sync_engine(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
+async def test_lifespan_disposes_the_shared_sync_engine() -> None:
     await dispose_engines()
     try:
         first = get_sync_engine()

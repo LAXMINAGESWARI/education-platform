@@ -337,7 +337,7 @@ def run_curriculum_seed() -> list[str]:
     not apply; that switch belongs to the migrate script's demo school.
     """
     settings = get_settings()
-    engine = create_general_sync_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
+    engine = create_general_sync_engine(to_sync_url(settings.database_url))
     try:
         with Session(engine) as session:
             return seed_approved_materials(session, replace=False)
