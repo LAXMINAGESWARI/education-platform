@@ -25,7 +25,8 @@ who happens to also hold another role, not whichever role happened to be "first.
 writes the shared progress envelope (`docs/design/text-to-sql-stream-events.md`). It
 checks the teacher role the same way `require_role("teacher")` does, but resolves the
 principal with `get_current_user_detached` so the request database session is released
-before the first frame. `Last-Event-ID` is ignored.
+before the first frame. `Last-Event-ID` is ignored. A second post with the same
+``request_id`` for the same user replays the stored run and does not execute SQL again.
 
 **The compiled graph is built once, at import time** (`_GRAPH`), not per request.
 `build_text_to_sql_graph()` takes no per-request arguments — every node reads identity from
@@ -208,7 +209,7 @@ async def ask_stream(
     body: AskStreamIn,
     principal: Principal = Depends(get_current_user_detached),
 ) -> StreamingResponse:
-    """Stream one lean ask. A dropped client re-posts the same ``request_id``."""
+    """Stream one lean ask. The same ``request_id`` replays the stored run."""
     _require_teacher(principal)
     request_id = str(body.request_id)
     initial = _initial_state(question=body.question, principal=principal, request_id=request_id)

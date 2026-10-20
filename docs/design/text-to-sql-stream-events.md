@@ -13,8 +13,8 @@ Job progress for generation and ingest already uses `modules/progress/sse.py`:
 `apiStream`, `frontend/src/api/progress.ts` `readSse`). Native `EventSource` cannot
 set that header, so this stream does not use it. Comment lines are already ignored
 by `parseSseBlock`. This endpoint reuses that framing and the 15 s heartbeat. It
-does not reuse the progress subject's snapshot/`Last-Event-ID` replay, because an
-ask is not a durable Postgres snapshot.
+does not reuse the progress subject's snapshot/`Last-Event-ID` replay. An ask
+stores its own row, described under Reconnect.
 
 `POST /text-to-sql/ask` is unchanged: teacher role, `AskIn` (`question` only), and
 the three-field `AskOut` (`natural_answer`, `confidence`, `provenance`). Streaming
@@ -135,9 +135,12 @@ The stream does not include a status code, a stack, or the exception text.
 
 1. As soon as the lean run starts, emit `progress` `checking` / `running` and
    `understanding` / `running`. Speculative SQL generation may run beside the
-   guards and the intent router. Until both guard verdicts have passed, those
-   two stages are the only `progress` stages emitted. No `writing_query`, no
-   `answer_delta`, no `table`.
+   guards and the intent router. The guard is the batched Jev call plus, when
+   Jev passes, the same GPT injection and off-topic checks the legacy nodes
+   run. `checking` / `done` is emitted only after those have passed. Until
+   then, `checking` and `understanding` / `running` are the only `progress`
+   stages emitted. No `writing_query`, no `answer_delta`, no `table`. No SQL
+   executes.
 2. Guard refusal: `progress` `checking` / `failed`, then exactly one `refusal`,
    then the stream closes. Do not emit `understanding` `done`, `writing_query`,
    `validating`, `running`, `summarising`, `table`, `answer_delta`, or `final`.
@@ -188,12 +191,31 @@ by filtering a free-form payload.
 ## Reconnect
 
 `Last-Event-ID` is ignored. The progress module uses it as a fingerprint of a
-durable snapshot (`modules/progress/subscribe.py`); this stream keeps no event
-log and cannot replay `seq`. A dropped connection is restarted by the client:
-the same `POST` body, including the same `request_id`. The server runs the
-question again. It does not resume `seq` and it does not cache the previous
-answer. `request_id` is copied into the audit payload so the two runs can be
-correlated.
+generation snapshot (`modules/progress/subscribe.py`). This stream does not
+use that log. It stores one row in `text_to_sql_ask_runs`, keyed by
+`(user_id, request_id)`, for `TEXT_TO_SQL_STREAM_TTL_SECONDS` (10 minutes).
+The row holds the progress snapshot and the terminal frames (`table`, `final`,
+`refusal`, `error`). It does not store raw `query_result` rows beyond the
+`table` frame `/ask` already renders. The row is in Postgres so any API pod
+can read it.
+
+A client that drops and posts the same body again:
+
+- After the run is `done` and the row has not expired: the server sends the
+  stored terminal frames and does not start another run. SQL does not execute
+  again.
+- While the first run is still `running`: the server sends the progress
+  snapshot already stored, then comment heartbeats, and polls the row on that
+  heartbeat interval. When the first run stores its terminal frames, this
+  response sends them. It does not start a second run.
+- A different user with the same `request_id` is a different key and gets
+  their own run.
+- After the row expires, a new post may claim it and run again.
+
+A dropped connection does not cancel the run. The producer finishes, writes
+the audit row, and stores the terminal frames. `audit_log` still runs exactly
+once for that execution, including when the client is already gone. A client
+disconnect is logged at INFO with no traceback.
 
 ## Timeouts
 
@@ -202,7 +224,7 @@ correlated.
 | Heartbeat quiet gap | 15 s | one comment heartbeat; the run continues |
 | Whole ask, same as `/ask` `_GRAPH_TIMEOUT_SECONDS` | 60 s | one `error` with the 504 detail string, then close |
 | `execute_sql` `statement_timeout` | 15 s | unchanged; surfaces as today's execution refusal |
-| Gateway guard / SQL generate / compose (lean) | 8 s / 20 s / 30 s | today's fail-closed guard or honest refusal; no extra app-level transport retry |
+| Jev guard and gateway guard (`JEV_GUARD_TIMEOUT_SECONDS`) / SQL generate / compose | 8 s / 20 s / 30 s | today's fail-closed guard or honest refusal; no extra app-level transport retry |
 
 15 s comment heartbeats stay under Cloudflare's 100 s idle proxy timeout.
 

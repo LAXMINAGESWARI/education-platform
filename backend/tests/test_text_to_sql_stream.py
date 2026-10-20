@@ -21,6 +21,7 @@ import education_platform.modules.text_to_sql.stream as stream_mod
 from education_platform.api.deps import get_current_user_detached
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.text_to_sql import router as router_mod
+from education_platform.modules.text_to_sql.run_store import MemoryRunStore
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
     TextToSQLState,
@@ -33,6 +34,14 @@ _INST = "00000000-0000-0000-0000-000000000002"
 _REQUEST = "2f1c0c2e-7b1a-4e0a-9c3d-1a2b3c4d5e6f"
 _SECRET_SQL = "SELECT secret_column FROM secret_table"
 _STREAM_URL = "/api/v1/text-to-sql/ask/stream"
+
+
+@pytest.fixture(autouse=True)
+def _memory_store(monkeypatch: pytest.MonkeyPatch) -> MemoryRunStore:
+    """Stream tests share no Postgres row. One store per test."""
+    store = MemoryRunStore()
+    monkeypatch.setattr(stream_mod, "default_store", lambda: store)
+    return store
 
 
 def _state(**overrides: Any) -> TextToSQLState:

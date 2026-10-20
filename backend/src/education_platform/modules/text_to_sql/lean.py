@@ -28,6 +28,7 @@ from education_platform.modules.text_to_sql.meter import (
     start_meter,
 )
 from education_platform.modules.text_to_sql.pipeline import LEAN, LEAN_MAX_RETRIES
+from education_platform.modules.text_to_sql.run_store import active_store
 from education_platform.modules.text_to_sql.state import (
     LLM_ERROR,
     SCHEMA_ERROR,
@@ -145,15 +146,63 @@ async def _stage(events: AskEvents | None, stage: str, status: str) -> None:
         await events.progress(stage, status)
 
 
-async def _refuse(state: TextToSQLState, events: AskEvents | None = None) -> TextToSQLState:
+class _AuditOnce:
+    """One ``audit_log`` task for the run, including a cancelled stream."""
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task[TextToSQLState] | None = None
+
+    def schedule(self, state: TextToSQLState) -> asyncio.Task[TextToSQLState]:
+        if self._task is None:
+            self._task = asyncio.create_task(nodes.audit_log(state))
+        return self._task
+
+    async def wait(self, state: TextToSQLState) -> TextToSQLState:
+        return await _protect(self.schedule(state))
+
+    async def finish(self, executed: TextToSQLState | None) -> None:
+        if self._task is None and executed is not None:
+            self.schedule(executed)
+        if self._task is not None and not self._task.done():
+            await _protect(self._task)
+
+
+async def _protect(task: asyncio.Task[TextToSQLState]) -> TextToSQLState:
+    """Finish ``task`` even when this run is being cancelled."""
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        pending = current.cancelling() if current is not None else 0
+        if current is not None:
+            while current.cancelling():
+                current.uncancel()
+        try:
+            if not task.done():
+                await task
+            task.result()
+        finally:
+            if current is not None:
+                for _ in range(pending):
+                    current.cancel()
+        raise
+
+
+async def _refuse(
+    state: TextToSQLState,
+    events: AskEvents | None = None,
+    audits: _AuditOnce | None = None,
+) -> TextToSQLState:
     refused = await nodes.honest_refusal(state)
-    logged = await nodes.audit_log(refused)
+    logged = await (audits.wait(refused) if audits is not None else nodes.audit_log(refused))
     if events is not None:
         await events.refusal(logged.get("natural_answer") or "")
     return logged
 
 
-async def _summarise(state: TextToSQLState, events: AskEvents | None) -> TextToSQLState:
+async def _summarise(
+    state: TextToSQLState, events: AskEvents | None, audits: _AuditOnce | None = None
+) -> TextToSQLState:
     await _stage(events, "summarising", "running")
     hook = push_compose_stream(events) if events is not None else None
     try:
@@ -161,7 +210,7 @@ async def _summarise(state: TextToSQLState, events: AskEvents | None) -> TextToS
     finally:
         if hook is not None:
             reset_compose_stream(hook)
-    logged = await nodes.audit_log(composed)
+    logged = await (audits.wait(composed) if audits is not None else nodes.audit_log(composed))
     if logged.get("error"):
         await _stage(events, "summarising", "failed")
         if events is not None:
@@ -177,13 +226,15 @@ async def _summarise(state: TextToSQLState, events: AskEvents | None) -> TextToS
     return logged
 
 
-async def _after_rows(state: TextToSQLState, events: AskEvents | None) -> TextToSQLState:
+async def _after_rows(
+    state: TextToSQLState, events: AskEvents | None, audits: _AuditOnce | None = None
+) -> TextToSQLState:
     checked = await nodes.sanity_check(state)
     if checked.get("error"):
         await _stage(events, "running", "failed")
-        return await _refuse(checked, events)
+        return await _refuse(checked, events, audits)
     await _stage(events, "running", "done")
-    return await _summarise(checked, events)
+    return await _summarise(checked, events, audits)
 
 
 def _needs_repair(state: TextToSQLState) -> bool:
@@ -218,37 +269,60 @@ async def _validate_once_repaired(state: TextToSQLState) -> TextToSQLState:
     return await nodes.validate_sql(repaired)
 
 
-async def _sql_path(state: TextToSQLState, events: AskEvents | None = None) -> TextToSQLState:
+async def _note_executed(state: TextToSQLState, executed_box: dict[str, TextToSQLState]) -> None:
+    executed_box["state"] = state
+    request_id = state.get("stream_request_id")
+    store = active_store()
+    if store is None or not request_id:
+        return
+    await store.mark_sql_executed(str(state["user_id"]), str(request_id))
+
+
+async def _sql_path(
+    state: TextToSQLState,
+    events: AskEvents | None = None,
+    audits: _AuditOnce | None = None,
+    executed_box: dict[str, TextToSQLState] | None = None,
+) -> TextToSQLState:
     await _stage(events, "writing_query", "running")
     if error_category(state.get("error")) in {LLM_ERROR, SCHEMA_ERROR}:
         await _stage(events, "writing_query", "failed")
-        return await _refuse(state, events)
+        return await _refuse(state, events, audits)
     await _stage(events, "writing_query", "done")
     await _stage(events, "validating", "running")
     validated = await _validate_once_repaired(state)
     if not validated.get("validated_sql"):
         await _stage(events, "validating", "failed")
-        return await _refuse(validated, events)
+        return await _refuse(validated, events, audits)
     scoped = await nodes.apply_role_scope(validated)
     if scoped.get("error"):
         await _stage(events, "validating", "failed")
-        return await _refuse(scoped, events)
+        return await _refuse(scoped, events, audits)
     await _stage(events, "validating", "done")
     await _stage(events, "running", "running")
     executed = await _timed("execute_ms", nodes.execute_sql(scoped))
     if executed.get("error"):
         await _stage(events, "running", "failed")
-        return await _refuse(executed, events)
-    return await _after_rows(executed, events)
+        return await _refuse(executed, events, audits)
+    if executed_box is not None:
+        await _note_executed(executed, executed_box)
+    return await _after_rows(executed, events, audits)
 
 
-async def _service_path(state: TextToSQLState, events: AskEvents | None = None) -> TextToSQLState:
+async def _service_path(
+    state: TextToSQLState,
+    events: AskEvents | None = None,
+    audits: _AuditOnce | None = None,
+    executed_box: dict[str, TextToSQLState] | None = None,
+) -> TextToSQLState:
     await _stage(events, "running", "running")
     resolved = await _timed("execute_ms", nodes.resolve_at_risk(state))
     if resolved.get("error"):
         await _stage(events, "running", "failed")
-        return await _refuse(resolved, events)
-    return await _after_rows(resolved, events)
+        return await _refuse(resolved, events, audits)
+    if executed_box is not None:
+        executed_box["state"] = resolved
+    return await _after_rows(resolved, events, audits)
 
 
 def _spawn(key: str, work: Coroutine[Any, Any, TextToSQLState]) -> asyncio.Task[TextToSQLState]:
@@ -267,6 +341,8 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
     the legacy response shape does not gain frames.
     """
     token = start_meter()
+    audits = _AuditOnce()
+    executed_box: dict[str, TextToSQLState] = {}
     try:
         initial: TextToSQLState = {**state, "pipeline": LEAN}
         await _stage(events, "checking", "running")
@@ -283,7 +359,7 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
             await _join(generate_task)
             blocked: TextToSQLState = {**guarded, "pipeline": LEAN, "generated_sql": None}
             await _stage(events, "checking", "failed")
-            return _measured(await _refuse(blocked, events))
+            return _measured(await _refuse(blocked, events, audits))
 
         await _stage(events, "checking", "done")
         intent_state = await intent_task
@@ -293,7 +369,11 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
         if route == "template" and source == "service":
             _cancel(generate_task)
             await _join(generate_task)
-            return _measured(await _service_path(_take_service(guarded, intent_state), events))
+            return _measured(
+                await _service_path(
+                    _take_service(guarded, intent_state), events, audits, executed_box
+                )
+            )
         if route == "template" and source == "template":
             # The template SQL is the one that executes. Keep a finished schema
             # load for a repair; cancel a generation that is still in flight.
@@ -301,15 +381,24 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
                 _cancel(generate_task)
             generated = await _join(generate_task)
             return _measured(
-                await _sql_path(_take_template(guarded, intent_state, generated), events)
+                await _sql_path(
+                    _take_template(guarded, intent_state, generated), events, audits, executed_box
+                )
             )
         if not generate_task.done():
             generated = await generate_task
         else:
             generated = await _join(generate_task)
-        return _measured(await _sql_path(_take_free_form(guarded, intent_state, generated), events))
+        return _measured(
+            await _sql_path(
+                _take_free_form(guarded, intent_state, generated), events, audits, executed_box
+            )
+        )
     finally:
-        reset_meter(token)
+        try:
+            await audits.finish(executed_box.get("state"))
+        finally:
+            reset_meter(token)
 
 
 __all__ = ["run_lean"]
