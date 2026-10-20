@@ -216,7 +216,7 @@ export async function subscribeGenerationRun(
     signal?: AbortSignal;
     onSnapshot?: (run: GenerationRun) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
-    /** Fires when the socket opens, including the first connect, before any frame is read. */
+    /** Fires on the first frame of a connection, including the first connect. */
     onReconnected?: () => void;
   } = {},
 ): Promise<GenerationRun> {

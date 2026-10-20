@@ -169,6 +169,7 @@ export function AdminDocumentsPage() {
           if (!abort.signal.aborted) setReconnecting(true);
         },
         onReconnected: () => {
+          // First frame, not response headers, so the banner does not flicker.
           if (!abort.signal.aborted) setReconnecting(false);
         },
       });
