@@ -157,8 +157,9 @@ def ingest_lease_needs_stage_reset(job: IngestJob, *, now: datetime | None = Non
 
     A first queue has ``attempts == 0`` and is left alone. A running job with a
     missing or expired lease matches. A queued job that already has attempts
-    matches a requeue that kept the attempt count. A graceful release that
-    refunds the attempt is not detected here; that path calls
+    matches a requeue that kept the attempt count. PR #200's release (2a00407)
+    refunds a graceful SIGTERM and is a no-op unless id, running, attempts, and
+    the last ``locked_until`` match. That path is not detected here; it calls
     ``reset_stage_on_requeue`` itself only when its update rowcount is 1.
     """
     moment = now or datetime.now(UTC)

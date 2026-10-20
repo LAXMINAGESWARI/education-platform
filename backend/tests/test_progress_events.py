@@ -34,6 +34,7 @@ from education_platform.modules.progress.sse import iter_sse
 from education_platform.modules.progress.stage_store import (
     heal_expired_ingest_stage,
     persist_upload_stage,
+    reset_stage_on_requeue,
 )
 from education_platform.modules.progress.subscribe import subscribe
 from education_platform.modules.progress.types import (
@@ -583,7 +584,11 @@ def test_fresh_queue_is_not_restarted(
 async def test_sigterm_requeue_shape_resets_on_read_and_claim(
     seeded_db: Session, seeded_subtopic_id: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """PR #200 sets status=queued and locked_until=null without decrementing attempts."""
+    """A requeue that kept its attempt still clears the stage on read and claim.
+
+    PR #200 at 2a00407 does not leave this shape on a graceful SIGTERM: that
+    release refunds the attempt. This covers a queued row whose attempt was kept.
+    """
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     get_settings.cache_clear()
     version, first_job = _store_version(
@@ -643,6 +648,48 @@ async def test_sigterm_requeue_shape_resets_on_read_and_claim(
     assert claimed_version.stage_message == RESTART_MESSAGE
     assert claimed_version.stage_current is None
     assert claimed_version.stage_seq == 3
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_refunded_sigterm_stays_until_release_resets(
+    seeded_db: Session, seeded_subtopic_id: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A refunded attempt looks like a first queue, so only the release may reset it."""
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        stage="embedding",
+        stage_seq=5,
+        stage_current=4,
+        stage_total=10,
+        stage_message="Embedding 4 of 10 chunks.",
+        attempts=0,
+        status=IngestJobStatus.QUEUED,
+        locked_until=None,
+    )
+    factory = get_session_factory()
+    async with factory() as session:
+        await heal_expired_ingest_stage(session, version.id)
+        await session.commit()
+    seeded_db.expire_all()
+    healed = seeded_db.get(SourceMaterialVersion, version.id)
+    assert healed is not None
+    assert healed.stage == "embedding"
+    assert healed.stage_seq == 5
+
+    reset_stage_on_requeue(seeded_db, job)
+    seeded_db.commit()
+    seeded_db.expire_all()
+    restarted = seeded_db.get(SourceMaterialVersion, version.id)
+    assert restarted is not None
+    assert restarted.stage == "received"
+    assert restarted.stage_message == RESTART_MESSAGE
+    assert restarted.stage_current is None
+    assert restarted.stage_total is None
+    assert restarted.stage_seq == 6
     get_settings.cache_clear()
 
 

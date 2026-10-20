@@ -66,10 +66,11 @@ def claim(session: Session, model: type[Any]) -> ClaimResult | None:
     if was_running and job.attempts >= job.max_attempts:
         return Exhausted(job_id)
     # Before attempts is incremented. A running job here has a missing or
-    # expired lease. A queued job with attempts already > 0 was requeued
-    # without refunding the attempt. A first queue (attempts == 0) is not a
-    # requeue. A token-checked lease release is a different path: it must call
-    # reset_stage_on_requeue only when its own update rowcount is 1.
+    # expired lease. A queued job with attempts already > 0 kept that attempt.
+    # A first queue (attempts == 0) is not a requeue. release_lease on PR #200
+    # (2a00407) matches id, running, attempts, and the last locked_until, and
+    # a graceful SIGTERM refunds the attempt. That path must call
+    # reset_stage_on_requeue only when its update rowcount is 1.
     requeued = was_running or int(job.attempts or 0) >= 1
     if getattr(model, "__tablename__", None) == "ingest_jobs" and requeued:
         reset_stage_on_requeue(session, job)

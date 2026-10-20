@@ -190,15 +190,21 @@ A first queue (`attempts == 0`) stays on `File received.` A `ready` or `failed`
 version is left alone. Repeating the reset while the message is already
 `Restarting...` does not burn another `seq`.
 
-This branch does not merge PR #200 and does not call `release_lease`. That
-function is being reworked: the release is conditional on a lease token
-(attempts plus the caller's last `locked_until`), so it is a no-op when another
-worker has reclaimed the job, and a graceful SIGTERM refunds the attempt.
-`reset_stage_on_requeue` stays a separate function. The release path must call
-it in the same transaction only when the release update rowcount is 1. A no-op
-release must not call it, or it would clear the stage another worker is writing.
-Until that call exists, claim and the snapshot reader still clear a stage when
-they see an expired lease or a queued job whose attempt was not refunded.
+This branch does not merge PR #200 and does not vendor `release_lease`.
+On `cursor/k3s-api-db-pool-f39d` at `2a00407` (same function in the later
+Postgres test commit `ecd2db0`), the release updates a row only when `id`,
+`status = running`, `attempts`, and the last-written `locked_until` all match.
+A miss is logged and leaves the row unchanged. A graceful SIGTERM refunds the
+attempt in that same update. #200 still includes the pool and deploy work and
+is sequenced after #197.
+
+`reset_stage_on_requeue` stays a separate function. Call it in that release
+transaction only when the update rowcount is 1, before commit. A miss must not
+call it, or it would clear the stage another worker is writing. Until that call
+exists, claim and the snapshot reader still clear a stage for an expired
+running lease or a queued job whose attempt was kept (`attempts >= 1`). A
+refunded first attempt (`queued`, `attempts == 0`, `locked_until` null) looks
+like a first queue to those paths, so they leave the stage in place.
 
 ## Generation stages
 
