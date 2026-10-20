@@ -2,9 +2,14 @@ name: CI
 
 on:
   pull_request:
+  # This branch has no pull request. Push runs the same quality job so the
+  # speedup can be timed. head_ref || ref_name keeps a later PR on one group.
+  push:
+    branches:
+      - cursor/ci-speedup
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -65,7 +70,7 @@ jobs:
           echo "::error::Postgres did not become ready after ${attempts} attempts (5s connect timeout each). localhost:5432/education_test is unreachable."
           exit 1
       - run: uv run alembic upgrade head
-      - run: uv run pytest
+      - run: uv run pytest -n 4 --dist loadfile
 
   frontend:
     runs-on: ubuntu-latest
