@@ -12,10 +12,15 @@ the heading row stays (the quiz cannot move onto a second subtopic) so its
 attempts are not dropped. Questions, outcomes, and materials still move.
 
 The function is idempotent: a second run finds nothing left to merge, apart from
-rows that were blocked because both quizzes have attempts.
+rows that were blocked because both quizzes have attempts. ``attempts_preserved``
+counts attempts on quizzes this run actually retargeted, or on a blocked heading
+whose questions, outcomes, or materials moved. A later run that only sees the
+blocked row again reports zero.
 
 A dry-run performs that same merge inside a savepoint and rolls it back, so the
-printed counts match ``--apply``. Pass ``subject`` (id or name) to limit the scan.
+printed counts match ``--apply``. Targets that receive a quiz during the run are
+remembered in memory as well, so a second heading folded into the same concept
+is blocked on both paths. Pass ``subject`` (id or name) to limit the scan.
 """
 
 from __future__ import annotations
@@ -165,8 +170,9 @@ def _cleanup(session: Session, subject: str | None) -> CleanupReport:
         skipped_no_sibling=len(skipped),
         folds=tuple(folds),
     )
+    claimed_quizzes: set[UUID] = set()
     for noise_id, target_id in pairs:
-        report = _merge_pair(session, report, noise_id, target_id)
+        report = _merge_pair(session, report, noise_id, target_id, claimed_quizzes)
     session.flush()
     return report
 
@@ -227,6 +233,7 @@ def _merge_pair(
     report: CleanupReport,
     noise_id: UUID,
     target_id: UUID,
+    claimed_quizzes: set[UUID],
 ) -> CleanupReport:
     questions = _count(session, Question.subtopic_id, noise_id)
     outcomes = _count(session, LearningOutcome.subtopic_id, noise_id)
@@ -237,18 +244,23 @@ def _merge_pair(
     target_quiz = session.scalar(
         select(CommonMasteryQuiz).where(CommonMasteryQuiz.subtopic_id == target_id)
     )
+    target_has_quiz = target_id in claimed_quizzes or target_quiz is not None
+    if target_has_quiz:
+        claimed_quizzes.add(target_id)
     noise_attempts = _quiz_attempts(session, noise_quiz)
-    blocked = noise_quiz is not None and target_quiz is not None
+    blocked = noise_quiz is not None and target_has_quiz
     if not blocked and _in_flight_job_conflict(session, noise_id, target_id):
         blocked = True
     retarget = noise_quiz is not None and not blocked
-    preserved = noise_attempts if noise_quiz is not None else 0
+    content_moved = questions > 0 or outcomes > 0 or materials > 0
+    preserved = noise_attempts if retarget or (blocked and content_moved) else 0
     _move_questions(session, noise_id, target_id)
     _move_outcomes(session, noise_id, target_id)
     _move_materials(session, noise_id, target_id)
     _retarget_references(session, noise_id, target_id)
     if retarget and noise_quiz is not None:
         noise_quiz.subtopic_id = target_id
+        claimed_quizzes.add(target_id)
         session.flush()
     if blocked:
         return _with_counts(
