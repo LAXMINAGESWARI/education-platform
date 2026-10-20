@@ -67,7 +67,9 @@ class Settings(BaseSettings):
     jev_model: str = "typesafe/jev-1.14"
     jev_timeout_seconds: float = 30.0
     jev_max_retries: int = 2
-    jev_judge_mode: str = "enforce"
+    # JEV_JUDGE_MODE wins. Unset falls back to the older JEV_MODE name, then enforce.
+    jev_judge_mode: str | None = None
+    jev_mode: str | None = None
     jev_noul_accept: float = 0.80
     jev_noul_reject: float = 0.35
     jev_confidence_accept: float = 0.55

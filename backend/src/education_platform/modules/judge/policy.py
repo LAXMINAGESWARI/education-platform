@@ -58,7 +58,9 @@ class PolicyOutcome:
 
 
 def judge_mode(settings: Settings | None = None) -> str:
-    value = (settings or get_settings()).jev_judge_mode.strip().lower()
+    cfg = settings or get_settings()
+    chosen = cfg.jev_judge_mode if cfg.jev_judge_mode else cfg.jev_mode
+    value = (chosen or "enforce").strip().lower()
     if value in {"off", "shadow", "enforce"}:
         return value
     return "enforce"

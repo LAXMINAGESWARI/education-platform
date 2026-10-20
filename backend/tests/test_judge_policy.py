@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from education_platform.core.config import Settings
 from education_platform.modules.judge.checks import (
     ItemTarget,
     LessonTarget,
@@ -15,6 +18,7 @@ from education_platform.modules.judge.policy import (
     DECISION_REVIEW,
     Thresholds,
     apply_policy,
+    judge_mode,
 )
 from education_platform.modules.judge.types import ChoiceAnswer, NoulAnswer, ScoreAnswer
 
@@ -155,3 +159,17 @@ def test_coverage_and_difficulty_rules() -> None:
     )
     assert matched.decision == DECISION_REJECT
     assert "easy" in matched.reasons[0]
+
+
+def test_legacy_jev_mode_env_is_not_silently_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JEV_JUDGE_MODE", raising=False)
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    assert judge_mode(Settings(_env_file=None)) == "enforce"
+
+    monkeypatch.setenv("JEV_MODE", "shadow")
+    legacy = Settings(_env_file=None)
+    assert legacy.jev_judge_mode is None
+    assert judge_mode(legacy) == "shadow"
+
+    monkeypatch.setenv("JEV_JUDGE_MODE", "enforce")
+    assert judge_mode(Settings(_env_file=None)) == "enforce"
