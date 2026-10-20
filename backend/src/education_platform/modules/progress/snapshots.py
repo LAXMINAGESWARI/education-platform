@@ -12,7 +12,6 @@ from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.generation import service as generation_service
 from education_platform.modules.generation.schemas import GenerationRunOut
 from education_platform.modules.materials.models import SourceMaterial, SourceMaterialVersion
-from education_platform.modules.progress.stage_store import heal_expired_ingest_stage
 from education_platform.modules.progress.types import (
     ProgressSnapshot,
     ProgressSubject,
@@ -82,9 +81,8 @@ class PostgresSnapshotReader:
         principal: Principal,
         version_id: UUID,
     ) -> MaterialVersionStatusOut | KnowledgeVersionStatusOut:
-        # Every read, not only the first. A lease can expire or be requeued
-        # mid-stream, and the reset is a no-op while a worker still holds it.
-        await heal_expired_ingest_stage(session, version_id)
+        # No write. Material and knowledge status apply effective_ingest_stage,
+        # so this snapshot and those GETs show the same stage for one row.
         row = (
             await session.execute(
                 select(SourceMaterialVersion, SourceMaterial)

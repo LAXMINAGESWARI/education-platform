@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.db.session import sync_session
-from education_platform.modules.progress.stage_store import reset_stage_on_requeue
+from education_platform.modules.progress.stage_store import (
+    lease_requires_stage_reset,
+    reset_stage_on_requeue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +68,15 @@ def claim(session: Session, model: type[Any]) -> ClaimResult | None:
     was_running = _is_running(job.status)
     if was_running and job.attempts >= job.max_attempts:
         return Exhausted(job_id)
-    # Before attempts is incremented. A running job here has a missing or
-    # expired lease. A queued job with attempts already > 0 kept that attempt.
-    # A first queue (attempts == 0) is not a requeue. release_lease on PR #200
-    # (2a00407) matches id, running, attempts, and the last locked_until, and
-    # a graceful SIGTERM refunds the attempt. That path must call
-    # reset_stage_on_requeue only when its update rowcount is 1.
-    requeued = was_running or int(job.attempts or 0) >= 1
-    if getattr(model, "__tablename__", None) == "ingest_jobs" and requeued:
+    # Same predicate as the status and stream reads. A running row here already
+    # failed the SQL lease check, so treat its lock as missing. A queued row
+    # resets only when it kept attempts >= 1. release_lease (PR #200, 2a00407)
+    # must call reset_stage_on_requeue only when its update rowcount is 1.
+    if getattr(model, "__tablename__", None) == "ingest_jobs" and lease_requires_stage_reset(
+        job_status="running" if was_running else _status_value(job.status),
+        attempts=int(job.attempts or 0),
+        locked_until=None if was_running else job.locked_until,
+    ):
         reset_stage_on_requeue(session, job)
     lease = get_settings().worker_lease_seconds
     job.attempts += 1
@@ -123,6 +127,10 @@ def _status(model: type[Any], value: str) -> Any:
     return enum_class(value)
 
 
-def _is_running(status: Any) -> bool:
+def _status_value(status: Any) -> str:
     value = status.value if isinstance(status, enum.Enum) else status
-    return str(value) == "running"
+    return str(value)
+
+
+def _is_running(status: Any) -> bool:
+    return _status_value(status) == "running"

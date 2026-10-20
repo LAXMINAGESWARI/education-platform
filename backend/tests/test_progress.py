@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from tests.progress_http import open_progress_server
 
 from education_platform.core.config import get_settings
 from education_platform.modules.academics.models import Subtopic
@@ -399,6 +403,49 @@ async def test_unchanged_resume_flushes_connected_before_heartbeat_wait() -> Non
     assert encoded == [b": connected\n\n"]
     await stream.aclose()
     assert waiter.closed is True
+
+
+@pytest.mark.regression
+def test_http_resume_first_byte_is_immediate(
+    client: TestClient, seeded_db: Session, admin_headers: dict[str, str]
+) -> None:
+    del client
+    settings = get_settings()
+    topic = seeded_db.scalar(select(Subtopic).where(Subtopic.slug == SEEDED_SLUG))
+    assert topic is not None
+    admin = seeded_db.scalar(select(User).where(User.email == settings.demo_admin_email))
+    assert admin is not None
+    run = ContentGenerationRun(
+        topic_id=topic.topic_id,
+        submitted_by_user_id=admin.id,
+        title="Open source",
+        phase=RunPhase.QA_REVIEW,
+        target_item_count=80,
+    )
+    seeded_db.add(run)
+    seeded_db.commit()
+    url = f"/api/v1/progress/runs/{run.id}"
+    with open_progress_server() as base, httpx.Client(base_url=base, timeout=5) as http:
+        with http.stream("GET", url, headers=admin_headers) as response:
+            assert response.status_code == 200
+            buffered = bytearray()
+            for chunk in response.iter_bytes():
+                buffered.extend(chunk)
+                if b"\n\n" in buffered and b"id:" in buffered:
+                    break
+        matched = re.search(rb"^id: (\S+)", bytes(buffered), re.MULTILINE)
+        assert matched is not None
+        started = time.perf_counter()
+        with http.stream(
+            "GET",
+            url,
+            headers={**admin_headers, "Last-Event-ID": matched.group(1).decode()},
+        ) as response:
+            assert response.status_code == 200
+            first = next(response.iter_bytes())
+        elapsed = time.perf_counter() - started
+    assert elapsed < 1
+    assert first.startswith(b": connected")
 
 
 def test_reconnects_with_last_event_id_write_one_audit_event(

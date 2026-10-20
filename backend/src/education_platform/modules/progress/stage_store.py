@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -34,6 +35,18 @@ from education_platform.modules.rag.models import (
 
 type VersionRow = SourceMaterialVersion | KnowledgeDocumentVersion
 _RESTART_STAGE = "received"
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveIngestStage:
+    """Stage fields a status or stream read should return."""
+
+    stage: str | None
+    stage_seq: int
+    stage_current: int | None
+    stage_total: int | None
+    stage_message: str | None
+    stage_updated_at: datetime | None
 
 
 def persist_upload_stage(
@@ -152,24 +165,85 @@ def reset_stage_on_requeue(session: Session, job: Any) -> None:
         publish_wake(session, *_subjects_sync(session, job))
 
 
-def ingest_lease_needs_stage_reset(job: IngestJob, *, now: datetime | None = None) -> bool:
-    """True when a live worker is not holding this job and its stage may be stale.
+def lease_requires_stage_reset(
+    *,
+    job_status: str | None,
+    attempts: int,
+    locked_until: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    """True when no live worker holds the job and a stored stage would be stale.
 
-    A first queue has ``attempts == 0`` and is left alone. A running job with a
-    missing or expired lease matches. A queued job that already has attempts
-    matches a requeue that kept the attempt count. PR #200's release (2a00407)
-    refunds a graceful SIGTERM and is a no-op unless id, running, attempts, and
-    the last ``locked_until`` match. That path is not detected here; it calls
-    ``reset_stage_on_requeue`` itself only when its update rowcount is 1.
+    A running job with a missing or expired lease matches. A queued job that
+    kept ``attempts >= 1`` matches. A first queue (``attempts == 0``) does not.
+    A graceful SIGTERM that refunds the attempt also does not: that release
+    calls ``reset_stage_on_requeue`` only when its own update rowcount is 1.
     """
     moment = now or datetime.now(UTC)
-    if job.status is IngestJobStatus.RUNNING:
-        if job.locked_until is None:
+    if job_status == IngestJobStatus.RUNNING.value:
+        if locked_until is None:
             return True
-        return _as_utc(job.locked_until) < moment
-    if job.status is IngestJobStatus.QUEUED:
-        return int(job.attempts or 0) >= 1
+        return _as_utc(locked_until) < moment
+    if job_status == IngestJobStatus.QUEUED.value:
+        return attempts >= 1
     return False
+
+
+def effective_ingest_stage(
+    *,
+    stage: str | None,
+    stage_seq: int,
+    stage_current: int | None,
+    stage_total: int | None,
+    stage_message: str | None,
+    stage_updated_at: datetime | None,
+    job_status: str | None,
+    attempts: int,
+    locked_until: datetime | None,
+    now: datetime | None = None,
+) -> EffectiveIngestStage:
+    """Progress a reader should show. Does not write.
+
+    An expired running lease or a kept-attempt requeue is shown as
+    ``Restarting...`` so the status API and the stream cannot disagree.
+    ``stage_updated_at`` stays the stored value so repeated reads keep one id.
+    """
+    stored = EffectiveIngestStage(
+        stage=stage,
+        stage_seq=stage_seq,
+        stage_current=stage_current,
+        stage_total=stage_total,
+        stage_message=stage_message,
+        stage_updated_at=stage_updated_at,
+    )
+    if not lease_requires_stage_reset(
+        job_status=job_status,
+        attempts=attempts,
+        locked_until=locked_until,
+        now=now,
+    ):
+        return stored
+    if stage == _RESTART_STAGE and stage_message == RESTART_MESSAGE:
+        return stored
+    return EffectiveIngestStage(
+        stage=_RESTART_STAGE,
+        stage_seq=stage_seq + 1,
+        stage_current=None,
+        stage_total=None,
+        stage_message=RESTART_MESSAGE,
+        stage_updated_at=stage_updated_at,
+    )
+
+
+def ingest_lease_needs_stage_reset(job: IngestJob, *, now: datetime | None = None) -> bool:
+    """True when ``job`` matches :func:`lease_requires_stage_reset`."""
+    status = job.status.value if isinstance(job.status, IngestJobStatus) else str(job.status)
+    return lease_requires_stage_reset(
+        job_status=status,
+        attempts=int(job.attempts or 0),
+        locked_until=job.locked_until,
+        now=now,
+    )
 
 
 async def heal_expired_ingest_stage(session: AsyncSession, version_id: UUID) -> None:

@@ -5,12 +5,15 @@ from __future__ import annotations
 import enum
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.modules.audit.models import AuditEvent
+
+SUBSCRIBE_AUDIT_WINDOW = timedelta(minutes=10)
 
 
 class AuditAction(str, enum.Enum):
@@ -54,6 +57,24 @@ async def record_event(
     return event
 
 
+def progress_subscribe_dedupe_key(
+    *,
+    institution_id: UUID,
+    actor_user_id: UUID | None,
+    entity_type: str,
+    detail: str,
+    now: datetime,
+    window: timedelta = SUBSCRIBE_AUDIT_WINDOW,
+) -> str:
+    """Bucket a progress subscribe so one window can hold only one audit row."""
+    seconds = int(window.total_seconds())
+    if seconds <= 0:
+        raise ValueError("window must be positive")
+    bucket = int(now.timestamp()) // seconds
+    actor = "none" if actor_user_id is None else str(actor_user_id)
+    return f"{institution_id}:{actor}:{entity_type}:{detail}:{bucket}"
+
+
 async def record_event_within_window(
     session: AsyncSession,
     *,
@@ -66,33 +87,42 @@ async def record_event_within_window(
     entity_id: UUID | None = None,
     payload: dict[str, Any] | None = None,
 ) -> AuditEvent | None:
-    """Insert one event unless the same actor already recorded this match inside ``window``.
+    """Insert one subscribe audit per dedupe key. A conflict inserts nothing.
 
-    Looks up ``audit_events`` (no extra table). A hit returns None and writes nothing.
+    The unique ``dedupe_key`` makes concurrent subscribes race-proof. A later
+    window uses a new key, so the next subscribe is audited again.
     """
     event_name = event_type.value if isinstance(event_type, AuditAction) else str(event_type)
-    cutoff = datetime.now(UTC) - window
-    filters = [
-        AuditEvent.institution_id == institution_id,
-        AuditEvent.actor_user_id == actor_user_id,
-        AuditEvent.event_type == event_name,
-        AuditEvent.entity_type == entity_type,
-        AuditEvent.created_at >= cutoff,
-    ]
-    for key, value in match_payload.items():
-        filters.append(AuditEvent.payload[key].as_string() == value)
-    existing = await session.scalar(select(AuditEvent.id).where(*filters).limit(1))
-    if existing is not None:
-        return None
-    return await record_event(
-        session,
+    moment = datetime.now(UTC)
+    key = progress_subscribe_dedupe_key(
         institution_id=institution_id,
         actor_user_id=actor_user_id,
-        event_type=event_name,
         entity_type=entity_type,
-        entity_id=entity_id,
-        payload=payload,
+        detail=match_payload.get("detail", ""),
+        now=moment,
+        window=window,
     )
+    event_id = uuid4()
+    stmt = (
+        pg_insert(AuditEvent)
+        .values(
+            id=event_id,
+            institution_id=institution_id,
+            actor_user_id=actor_user_id,
+            event_type=event_name,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload or {},
+            dedupe_key=key,
+            created_at=moment,
+        )
+        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .returning(AuditEvent.id)
+    )
+    inserted = (await session.execute(stmt)).scalar_one_or_none()
+    if inserted is None:
+        return None
+    return await session.get(AuditEvent, inserted)
 
 
 async def list_events(

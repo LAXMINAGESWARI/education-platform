@@ -74,9 +74,14 @@ Rules:
 - `progress` is sent only when the snapshot has a stage. It uses the same `id` as the
   snapshot it was built from. `Last-Event-ID` dedupes the pair.
 - On connect, the server reads the current row and emits that one snapshot and that
-  one `progress` event. It does not replay earlier stages. There is no gap and no
-  history log.
-- If `Last-Event-ID` equals the current id, nothing is sent until the row changes.
+  one `progress` event. It does not replay earlier stages. There is no history log.
+- Each `progress` event is the full current state, not a delta. `seq` is monotonic
+  per subject but may skip values: a client that connects after two quick writes
+  sees only the latest row, and a throttled write never consumes a number. Clients
+  must not assume contiguous `seq`.
+- If `Last-Event-ID` equals the current id, the server sends `: connected`
+  immediately so the response headers flush, then waits for the row to change.
+  It still does not replay an older id.
 - A terminal snapshot (`ready`, `failed`, `published`, and the generation terminal
   phases) is followed by `event: close` with `{"reason":"terminal"}`.
 - Heartbeats stay comment frames (`: heartbeat`) every 15 seconds. They are not
@@ -96,7 +101,7 @@ Public enum: `received`, `parsing`, `chunking`, `embedding`, `extracting_topics`
 | `received` | running | File is stored and the job is queued or has just been claimed. | null |
 | `parsing` | running | Docling is converting the PDF. | null today; see below |
 | `chunking` | running | Text is split into chunks. | `current` = `total` = chunk count, `unit` = `chunk`, once splitting has finished |
-| `embedding` | running | Chunk vectors are being computed. | `current` of `total` chunks, `unit` = `chunk` |
+| `embedding` | running | Chunk vectors are being computed. The first report is the first finished batch, not `0 of N`, so chunking stays visible until that batch lands. | `current` of `total` chunks, `unit` = `chunk` |
 | `extracting_topics` | running | Section headings already on the chunks are noted. This does not call a model. | `current` = chunks that have a heading, `total` = chunk count, `unit` = null |
 | `done` | done | Version is `ready`. | null, `percent` = 100 |
 | `failed` | failed | Ingest stopped. | null, `percent` = null, `message` = the friendly reason |
@@ -163,10 +168,13 @@ Stage changes are stored on the version row (`stage`, `stage_current`, `stage_to
 subscriber can see them before the chunk transaction commits. Chunk and vector
 writes stay in one transaction.
 
-A stage boundary always writes. Inside a stage, a write happens when the overall
+A stage boundary always writes, except embedding does not force a `0 of N`
+write before the first batch. Inside a stage, a write happens when the overall
 percent has moved by at least 5 points, or at least 1 second has passed since the
-previous write. Each write increments `seq`, sets `updated_at`, and fires the
-existing Postgres wake. The 15-second heartbeat is unchanged.
+previous write. Each persisted write increments `seq`. A skipped write leaves a
+gap, which clients tolerate because every event is the full state. The write
+also sets `updated_at` and fires the existing Postgres wake. The 15-second
+heartbeat is unchanged.
 
 ## Stale stages
 
@@ -180,11 +188,17 @@ A lease that expired or was released must not keep showing the dead worker's sta
 - `message` = `Restarting...`
 - `seq` = previous + 1
 
-It runs from `workers/lease.py` `claim()`, and from the version snapshot reader on
-every read. Both use the same predicate:
+`lease_requires_stage_reset` is the one predicate, and `effective_ingest_stage`
+is the pure view both readers use:
 
 - the job is `running` and `locked_until` is null or already past, or
 - the job is `queued` and `attempts >= 1`
+
+The material status GET, the knowledge status GET, and the version stream all
+apply that view and do not write. A crashed worker whose lease has expired
+therefore shows `Restarting...` on the status API before anyone opens the
+stream. `claim()` persists the same reset when it reclaims the job, using the
+same predicate, so the next stage write starts from that row.
 
 A first queue (`attempts == 0`) stays on `File received.` A `ready` or `failed`
 version is left alone. Repeating the reset while the message is already
@@ -201,10 +215,10 @@ is sequenced after #197.
 `reset_stage_on_requeue` stays a separate function. Call it in that release
 transaction only when the update rowcount is 1, before commit. A miss must not
 call it, or it would clear the stage another worker is writing. Until that call
-exists, claim and the snapshot reader still clear a stage for an expired
-running lease or a queued job whose attempt was kept (`attempts >= 1`). A
-refunded first attempt (`queued`, `attempts == 0`, `locked_until` null) looks
-like a first queue to those paths, so they leave the stage in place.
+exists, a refunded first attempt (`queued`, `attempts == 0`, `locked_until`
+null) looks like a first queue, so the status API and the stream leave its
+stage in place. Subscribe audits are one row per principal, subject, and
+10-minute bucket. The next bucket records another row.
 
 ## Generation stages
 

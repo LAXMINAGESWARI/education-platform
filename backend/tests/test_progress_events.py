@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from tests.progress_http import open_progress_server
 
 from education_platform.core.config import get_settings
-from education_platform.db.session import get_session_factory
 from education_platform.modules.academics.models import Subtopic
+from education_platform.modules.audit.models import AuditEvent
+from education_platform.modules.audit.service import (
+    SUBSCRIBE_AUDIT_WINDOW,
+    progress_subscribe_dedupe_key,
+)
+from education_platform.modules.auth.models import User
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.materials.models import (
@@ -32,7 +45,6 @@ from education_platform.modules.progress.events import (
 )
 from education_platform.modules.progress.sse import iter_sse
 from education_platform.modules.progress.stage_store import (
-    heal_expired_ingest_stage,
     persist_upload_stage,
     reset_stage_on_requeue,
 )
@@ -48,10 +60,17 @@ from education_platform.modules.progress.types import (
 from education_platform.modules.progress.wake import WakeResult
 from education_platform.modules.rag import storage
 from education_platform.modules.rag.chunking import TextChunk, content_hash
-from education_platform.modules.rag.models import IngestJob, IngestJobStatus
+from education_platform.modules.rag.models import (
+    IngestJob,
+    IngestJobStatus,
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+    KnowledgeDocumentVersionStatus,
+)
 from education_platform.modules.rag.schemas import MaterialVersionStatusOut
 from education_platform.workers.ingest import process_ingest_job_sync
 from education_platform.workers.lease import Claimed, claim
+from education_platform.workers.runner import poll_once
 from test_rag_ingest import TINY_PDF
 
 SEEDED_SLUG = "rectangles_squares_properties"
@@ -369,7 +388,7 @@ def test_successful_ingest_emits_monotonic_stages(
     assert stages[:3] == ["received", "parsing", "chunking"]
     assert stages[-1] == "extracting_topics"
     embedding = [item for item in seen if item[0] == "embedding"]
-    assert embedding[0][1:] == (0, 4, embedding[0][3])
+    assert [item[1] for item in embedding] == [1, 2, 3, 4]
     assert embedding[-1][1] == 4
     assert embedding[-1][2] == 4
     seqs = [item[3] for item in seen]
@@ -580,11 +599,15 @@ def test_fresh_queue_is_not_restarted(
     get_settings.cache_clear()
 
 
-@pytest.mark.asyncio
-async def test_sigterm_requeue_shape_resets_on_read_and_claim(
-    seeded_db: Session, seeded_subtopic_id: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_sigterm_requeue_shape_resets_on_read_and_claim(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """A requeue that kept its attempt still clears the stage on read and claim.
+    """A requeue that kept its attempt is shown as Restarting without a write.
 
     PR #200 at 2a00407 does not leave this shape on a graceful SIGTERM: that
     release refunds the attempt. This covers a queued row whose attempt was kept.
@@ -603,25 +626,18 @@ async def test_sigterm_requeue_shape_resets_on_read_and_claim(
         status=IngestJobStatus.QUEUED,
         locked_until=None,
     )
-    factory = get_session_factory()
-    async with factory() as session:
-        await heal_expired_ingest_stage(session, version.id)
-        await session.commit()
+    status = client.get(f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers)
+    assert status.status_code == 200, status.text
+    body = status.json()
+    assert body["stage"] == "received"
+    assert body["stage_message"] == RESTART_MESSAGE
+    assert body["stage_current"] is None
+    assert body["stage_seq"] == 6
     seeded_db.expire_all()
-    healed = seeded_db.get(SourceMaterialVersion, version.id)
-    assert healed is not None
-    assert healed.stage == "received"
-    assert healed.stage_message == RESTART_MESSAGE
-    assert healed.stage_current is None
-    assert healed.stage_seq == 6
-
-    async with factory() as session:
-        await heal_expired_ingest_stage(session, version.id)
-        await session.commit()
-    seeded_db.expire_all()
-    again = seeded_db.get(SourceMaterialVersion, version.id)
-    assert again is not None
-    assert again.stage_seq == 6
+    stored = seeded_db.get(SourceMaterialVersion, version.id)
+    assert stored is not None
+    assert stored.stage == "embedding"
+    assert stored.stage_seq == 5
     finished = seeded_db.get(IngestJob, first_job.id)
     assert finished is not None
     finished.status = IngestJobStatus.SUCCEEDED
@@ -651,9 +667,13 @@ async def test_sigterm_requeue_shape_resets_on_read_and_claim(
     get_settings.cache_clear()
 
 
-@pytest.mark.asyncio
-async def test_refunded_sigterm_stays_until_release_resets(
-    seeded_db: Session, seeded_subtopic_id: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_refunded_sigterm_stays_until_release_resets(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A refunded attempt looks like a first queue, so only the release may reset it."""
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
@@ -670,15 +690,10 @@ async def test_refunded_sigterm_stays_until_release_resets(
         status=IngestJobStatus.QUEUED,
         locked_until=None,
     )
-    factory = get_session_factory()
-    async with factory() as session:
-        await heal_expired_ingest_stage(session, version.id)
-        await session.commit()
-    seeded_db.expire_all()
-    healed = seeded_db.get(SourceMaterialVersion, version.id)
-    assert healed is not None
-    assert healed.stage == "embedding"
-    assert healed.stage_seq == 5
+    status = client.get(f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers)
+    assert status.status_code == 200, status.text
+    assert status.json()["stage"] == "embedding"
+    assert status.json()["stage_seq"] == 5
 
     reset_stage_on_requeue(seeded_db, job)
     seeded_db.commit()
@@ -716,3 +731,377 @@ def admin_headers(client: TestClient) -> dict[str, str]:
     )
     assert login.status_code == 200, login.text
     return {"Authorization": "Bearer " + login.json()["access_token"]}
+
+
+def _expire_running(
+    session: Session,
+    version: SourceMaterialVersion | KnowledgeDocumentVersion,
+    job: IngestJob,
+) -> None:
+    version.stage = "embedding"
+    version.stage_seq = 4
+    version.stage_current = 16
+    version.stage_total = 64
+    version.stage_message = "Embedding 16 of 64 chunks."
+    version.stage_updated_at = datetime.now(UTC)
+    job.status = IngestJobStatus.RUNNING
+    job.attempts = 1
+    job.locked_until = datetime.now(UTC) - timedelta(minutes=5)
+    session.commit()
+
+
+@pytest.mark.regression
+def test_status_api_after_lease_expiry_without_a_stream(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    material, material_job = _store_version(seeded_db, subtopic_id=seeded_subtopic_id)
+    _expire_running(seeded_db, material, material_job)
+    admin = seeded_db.scalar(select(User).where(User.email == get_settings().demo_admin_email))
+    assert admin is not None
+    document = KnowledgeDocument(
+        institution_id=admin.institution_id,
+        title="Expired handbook",
+        slug=f"expired-{uuid4().hex[:8]}",
+        doc_type="handbook",
+        required_roles=["administrator"],
+    )
+    seeded_db.add(document)
+    seeded_db.flush()
+    object_key = storage.build_object_key(
+        institution_id=document.institution_id,
+        kind="knowledge_documents",
+        filename="handbook.pdf",
+    )
+    storage.store_bytes(object_key, TINY_PDF)
+    knowledge = KnowledgeDocumentVersion(
+        document_id=document.id,
+        version_number=1,
+        lifecycle_status=KnowledgeDocumentVersionStatus.PROCESSING,
+        blob_object_key=object_key,
+        blob_content_type="application/pdf",
+        checksum=storage.sha256_hex(TINY_PDF),
+    )
+    seeded_db.add(knowledge)
+    seeded_db.flush()
+    knowledge_job = IngestJob(knowledge_document_version_id=knowledge.id)
+    seeded_db.add(knowledge_job)
+    seeded_db.commit()
+    _expire_running(seeded_db, knowledge, knowledge_job)
+
+    material_status = client.get(
+        f"/api/v1/admin/material-versions/{material.id}", headers=admin_headers
+    )
+    knowledge_status = client.get(
+        f"/api/v1/admin/knowledge-document-versions/{knowledge.id}",
+        headers=admin_headers,
+    )
+    assert material_status.status_code == 200, material_status.text
+    assert knowledge_status.status_code == 200, knowledge_status.text
+    for body in (material_status.json(), knowledge_status.json()):
+        assert body["stage"] == "received"
+        assert body["stage_message"] == RESTART_MESSAGE
+        assert body["stage_current"] is None
+        assert body["stage_total"] is None
+        assert body["stage_seq"] == 5
+    seeded_db.expire_all()
+    stored_material = seeded_db.get(SourceMaterialVersion, material.id)
+    stored_knowledge = seeded_db.get(KnowledgeDocumentVersion, knowledge.id)
+    assert stored_material is not None and stored_material.stage == "embedding"
+    assert stored_knowledge is not None and stored_knowledge.stage == "embedding"
+    assert stored_material.stage_message == "Embedding 16 of 64 chunks."
+    get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_two_quick_stage_writes_show_the_latest_state(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version, job = _store_version(seeded_db, subtopic_id=seeded_subtopic_id)
+    now = datetime.now(UTC)
+    first = persist_upload_stage(
+        version,
+        job,
+        stage="chunking",
+        message="Splitting the document into 4 sections.",
+        current=4,
+        total=4,
+        now=now,
+        force=True,
+    )
+    second = persist_upload_stage(
+        version,
+        job,
+        stage="embedding",
+        message="Embedding 1 of 4 chunks.",
+        current=1,
+        total=4,
+        now=now + timedelta(milliseconds=5),
+        force=True,
+    )
+    assert first == 1
+    assert second == 2
+    url = f"/api/v1/progress/versions/{version.id}"
+    with (
+        open_progress_server() as base,
+        httpx.Client(base_url=base, timeout=5) as http,
+        http.stream("GET", url, headers=admin_headers) as response,
+    ):
+        assert response.status_code == 200
+        body = bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if b"event: progress" in body:
+                break
+    payloads = _progress_payloads(body.decode())
+    assert len(payloads) == 1
+    assert payloads[0]["stage"] == "embedding"
+    assert payloads[0]["seq"] == 2
+    assert payloads[0]["current"] == 1
+    assert payloads[0]["seq"] != first
+    get_settings.cache_clear()
+
+
+def _failed_version_for_audit(
+    session: Session, subtopic_id: object, tmp_path: Path
+) -> SourceMaterialVersion:
+    version, job = _store_version(
+        session,
+        subtopic_id=subtopic_id,
+        stage="failed",
+        stage_seq=2,
+        stage_message="The upload could not be processed.",
+        status=IngestJobStatus.FAILED,
+    )
+    version.lifecycle_status = SourceMaterialVersionStatus.FAILED
+    job.status = IngestJobStatus.FAILED
+    session.commit()
+    del tmp_path
+    return version
+
+
+@pytest.mark.regression
+def test_concurrent_subscribes_write_one_audit_row(
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version = _failed_version_for_audit(seeded_db, seeded_subtopic_id, tmp_path)
+    url = f"/api/v1/progress/versions/{version.id}"
+    headers = {**admin_headers, "Last-Event-ID": f"version:{version.id}:stale"}
+    errors: list[BaseException] = []
+    ready = threading.Barrier(6)
+
+    def once(base: str) -> None:
+        try:
+            ready.wait(timeout=10)
+            with (
+                httpx.Client(base_url=base, timeout=15) as http,
+                http.stream("GET", url, headers=headers) as response,
+            ):
+                assert response.status_code == 200
+                response.read()
+        except BaseException as exc:  # noqa: BLE001 — collected for the assertion
+            errors.append(exc)
+
+    with open_progress_server() as base:
+        threads = [threading.Thread(target=once, args=(base,)) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    seeded_db.expire_all()
+    rows = seeded_db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "data.scoped_read",
+            AuditEvent.entity_type == "progress.version",
+        )
+    ).all()
+    matched = [row for row in rows if row.payload.get("detail") == f"version:{version.id}"]
+    assert len(matched) == 1
+    get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_subscribe_audits_again_after_the_window(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version = _failed_version_for_audit(seeded_db, seeded_subtopic_id, tmp_path)
+    url = f"/api/v1/progress/versions/{version.id}"
+    headers = {**admin_headers, "Last-Event-ID": f"version:{version.id}:stale"}
+    with client.stream("GET", url, headers=headers) as response:
+        assert response.status_code == 200
+        b"".join(response.iter_bytes())
+    admin = seeded_db.scalar(select(User).where(User.email == get_settings().demo_admin_email))
+    assert admin is not None
+    seeded_db.expire_all()
+    row = seeded_db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.entity_type == "progress.version",
+            AuditEvent.actor_user_id == admin.id,
+        )
+    )
+    assert row is not None
+    row.dedupe_key = progress_subscribe_dedupe_key(
+        institution_id=admin.institution_id,
+        actor_user_id=admin.id,
+        entity_type="progress.version",
+        detail=f"version:{version.id}",
+        now=datetime.now(UTC) - SUBSCRIBE_AUDIT_WINDOW,
+    )
+    row.created_at = datetime.now(UTC) - SUBSCRIBE_AUDIT_WINDOW - timedelta(seconds=1)
+    seeded_db.commit()
+    with client.stream("GET", url, headers=headers) as response:
+        assert response.status_code == 200
+        b"".join(response.iter_bytes())
+    seeded_db.expire_all()
+    rows = seeded_db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "data.scoped_read",
+            AuditEvent.entity_type == "progress.version",
+            AuditEvent.actor_user_id == admin.id,
+        )
+    ).all()
+    matched = [item for item in rows if item.payload.get("detail") == f"version:{version.id}"]
+    assert len(matched) == 2
+    get_settings.cache_clear()
+
+
+_BLOCKING_WORKER = """
+import os
+import time
+
+from education_platform.workers.runner import poll_once
+
+def block(_path: str) -> list[object]:
+    with open(os.environ["WORKER_READY_FILE"], "w", encoding="utf-8") as handle:
+        handle.write("ready")
+    time.sleep(120)
+    return []
+
+poll_once(parse_pdf=block)
+"""
+
+
+@pytest.mark.regression
+def test_sigkill_reclaim_resets_status_and_stream(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    version, job = _store_version(seeded_db, subtopic_id=seeded_subtopic_id)
+    ready = tmp_path / "worker-ready"
+    env = os.environ.copy()
+    env["WORKER_READY_FILE"] = str(ready)
+    worker = subprocess.Popen(
+        [sys.executable, "-c", _BLOCKING_WORKER],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 60
+    try:
+        while time.monotonic() < deadline and not ready.exists():
+            if worker.poll() is not None:
+                stderr = worker.stderr.read().decode() if worker.stderr is not None else ""
+                raise AssertionError(f"worker exited early: {stderr}")
+            time.sleep(0.05)
+        assert ready.exists()
+        os.kill(worker.pid, signal.SIGKILL)
+        worker.wait(timeout=5)
+    finally:
+        if worker.poll() is None:
+            os.kill(worker.pid, signal.SIGKILL)
+            worker.wait(timeout=5)
+
+    seeded_db.expire_all()
+    running = seeded_db.get(IngestJob, job.id)
+    stored = seeded_db.get(SourceMaterialVersion, version.id)
+    assert running is not None and stored is not None
+    assert running.status is IngestJobStatus.RUNNING
+    assert stored.stage == "parsing"
+    running.locked_until = datetime.now(UTC) - timedelta(minutes=5)
+    seeded_db.commit()
+
+    seen = bytearray()
+
+    def read_stream(base: str) -> None:
+        with (
+            httpx.Client(base_url=base, timeout=20) as http,
+            http.stream(
+                "GET",
+                f"/api/v1/progress/versions/{version.id}",
+                headers=admin_headers,
+            ) as response,
+        ):
+            assert response.status_code == 200
+            for chunk in response.iter_bytes():
+                seen.extend(chunk)
+                if b'"stage":"done"' in seen:
+                    return
+
+    with open_progress_server() as base:
+        reader = threading.Thread(target=read_stream, args=(base,))
+        reader.start()
+        try:
+            stream_deadline = time.monotonic() + 5
+            while time.monotonic() < stream_deadline and RESTART_MESSAGE.encode() not in seen:
+                time.sleep(0.05)
+            assert RESTART_MESSAGE.encode() in seen
+
+            status = client.get(
+                f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers
+            )
+            assert status.status_code == 200, status.text
+            assert status.json()["stage_message"] == RESTART_MESSAGE
+            seeded_db.expire_all()
+            before_reclaim = seeded_db.get(SourceMaterialVersion, version.id)
+            assert before_reclaim is not None
+            assert before_reclaim.stage == "parsing"
+
+            monkeypatch.setattr(
+                "education_platform.workers.ingest.embed_texts",
+                lambda texts: [[0.02] * 384 for _ in texts],
+            )
+            poll_once(parse_pdf=lambda _path: _chunks(2))
+        finally:
+            reader.join(timeout=20)
+    assert not reader.is_alive()
+    text = seen.decode()
+    assert text.index(RESTART_MESSAGE) < text.index('"stage":"done"')
+    after = client.get(f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers)
+    assert after.status_code == 200, after.text
+    assert after.json()["stage"] == "done"
+    get_settings.cache_clear()

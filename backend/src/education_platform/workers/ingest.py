@@ -675,17 +675,13 @@ def process_ingest_job_sync(
 
 
 def _embed_texts(version: _VersionRow, job: IngestJob, texts: list[str]) -> list[list[float]]:
-    """Embed in batches so chunk counts can move without committing chunk rows."""
+    """Embed in batches so chunk counts can move without committing chunk rows.
+
+    The first report is the first finished batch. A forced ``0 of N`` write
+    would replace chunking a few milliseconds later, and a subscriber only
+    reads the latest row.
+    """
     total = len(texts)
-    _note_stage(
-        version,
-        job,
-        stage="embedding",
-        message=embedding_message(0, total),
-        current=0,
-        total=total,
-        force=True,
-    )
     vectors: list[list[float]] = []
     step = EMBEDDING_PROGRESS_BATCH
     for start in range(0, total, step):
