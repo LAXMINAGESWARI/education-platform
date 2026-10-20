@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+import warnings
 from collections.abc import Iterator
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import Engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import Pool
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.db.session import (
     create_general_sync_engine,
+    dispose_engines,
     get_engine,
     get_sync_engine,
     get_text_to_sql_engine,
@@ -256,11 +260,62 @@ async def test_lifespan_disposes_the_shared_sync_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
-    reset_engine()
+    await dispose_engines()
     try:
         first = get_sync_engine()
         async with lifespan(app):
             assert get_sync_engine() is first
         assert get_sync_engine() is not first
     finally:
+        await dispose_engines()
+
+
+async def test_dispose_engines_awaits_async_pools_without_missing_greenlet(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = get_engine()
+    text_engine = get_text_to_sql_engine()
+    sync_engine = get_sync_engine()
+    async_calls: list[object] = []
+    sync_calls: list[object] = []
+
+    async def _async_dispose(self: AsyncEngine, close: bool = True) -> None:
+        del close
+        async_calls.append(self)
+
+    def _sync_dispose(self: Engine, close: bool = True) -> None:
+        del close
+        sync_calls.append(self)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", _async_dispose)
+    monkeypatch.setattr(Engine, "dispose", _sync_dispose)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with caplog.at_level(logging.DEBUG):
+            await dispose_engines()
+    assert async_calls == [engine, text_engine]
+    assert sync_calls == [sync_engine]
+    assert engine.sync_engine not in sync_calls
+    assert text_engine.sync_engine not in sync_calls
+    assert "MissingGreenlet" not in caplog.text
+    assert not any("MissingGreenlet" in str(item.message) for item in caught)
+
+
+async def test_dispose_engines_real_pools_do_not_log_missing_greenlet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    get_engine()
+    get_sync_engine()
+    get_text_to_sql_engine()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with caplog.at_level(logging.DEBUG):
+            await dispose_engines()
+    blob = caplog.text + "".join(str(item.message) for item in caught)
+    assert "MissingGreenlet" not in blob
+
+
+async def test_reset_engine_refuses_a_running_loop() -> None:
+    with pytest.raises(RuntimeError, match="dispose_engines"):
         reset_engine()

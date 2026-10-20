@@ -11,7 +11,7 @@ from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
 from education_platform.core.health import readiness_response
 from education_platform.db import models as _models
-from education_platform.db.session import create_general_sync_engine, reset_engine
+from education_platform.db.session import create_general_sync_engine, dispose_engines
 from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.router import router as academics_router
 from education_platform.modules.assessments.router import router as assessments_router
@@ -57,7 +57,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.exception("Startup seeding failed; continuing")
     yield
-    reset_engine()
+    await dispose_engines()
 
 
 def cors_origin_regex(origin_regex: str) -> str | None:
