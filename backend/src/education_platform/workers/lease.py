@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
@@ -88,6 +89,29 @@ def heartbeat(model: type[Any], job_id: UUID) -> Iterator[None]:
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+def release_lease(model: type[Any], job_id: UUID) -> None:
+    """Requeue a running job and clear its lease so another worker can claim it.
+
+    There is no lease-owner column; ``locked_until`` is the lease. A row that
+    is no longer ``running`` is left as the worker finished it.
+    """
+    session = sync_session()
+    try:
+        result = session.execute(
+            update(model)
+            .where(model.id == job_id, model.status == _status(model, "running"))
+            .values(status=_status(model, "queued"), locked_until=None)
+        )
+        session.commit()
+        if isinstance(result, CursorResult) and result.rowcount:
+            logger.info("Requeued %s %s after shutdown", model.__name__, job_id)
+    except Exception:
+        logger.exception("Lease release failed for %s", job_id)
+        session.rollback()
+    finally:
+        session.close()
 
 
 def _extend_lease(model: type[Any], job_id: UUID) -> None:

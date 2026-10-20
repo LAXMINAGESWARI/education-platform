@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300
+    # After SIGTERM, finish the current job for this long, then requeue its lease.
+    # Stays under Kubernetes' default terminationGracePeriodSeconds of 30.
+    worker_shutdown_grace_seconds: float = Field(default=25.0, ge=0)
     # Stronger than the writer default (gpt-4o-mini) and a different model id, so the
     # check is not grading items in the same voice that wrote them. Override with
     # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
