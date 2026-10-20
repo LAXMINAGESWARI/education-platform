@@ -36,7 +36,7 @@ from education_platform.workers.ingest import (
     fail_exhausted_ingest_job,
     process_ingest_job_sync,
 )
-from education_platform.workers.lease import Claimed, Exhausted, claim, heartbeat
+from education_platform.workers.lease import Claimed, Exhausted, OwnedLease, claim, heartbeat
 from education_platform.workers.shutdown import WorkerShutdown
 
 _ = _orm_tables  # register FK targets (users) for the worker process
@@ -65,25 +65,58 @@ def claim_next_job(session: Session) -> UUID | None:
     return None
 
 
+class _ShutdownRequested:
+    """Stop was set in the instant before a claim."""
+
+
+_SHUTDOWN = _ShutdownRequested()
+
+
 def _run_claimed(
     shutdown: WorkerShutdown | None,
-    model: type[Any],
-    job_id: UUID,
+    lease: OwnedLease,
     process: Callable[[], None],
 ) -> UUID | None:
-    """Run one claimed job, or put it back when shutdown already started."""
-    if shutdown is not None and shutdown.stop.is_set():
-        shutdown.release_job(model, job_id)
+    """Run one claimed job, or refund it when shutdown won the race.
+
+    ``begin_job`` checks the stop flag under the same lock that records the
+    lease. A signal that arrives after the claim and before that check releases
+    the row immediately and refunds the attempt.
+    """
+    if shutdown is not None and not shutdown.begin_job(lease):
+        shutdown.release_job(lease)
         return None
-    if shutdown is None:
-        process()
-        return job_id
-    shutdown.begin_job(model, job_id)
     try:
         process()
     finally:
-        shutdown.finish_job()
-    return job_id
+        if shutdown is not None:
+            shutdown.finish_job()
+    return lease.job_id
+
+
+def _claim_one(
+    db: Session,
+    model: type[Any],
+    shutdown: WorkerShutdown | None,
+    fail_exhausted: Callable[[Session, UUID], None],
+    process: Callable[[UUID], None],
+) -> UUID | None | _ShutdownRequested:
+    """Claim one row, or return ``_SHUTDOWN`` without claiming when stop is set."""
+    if shutdown is not None and shutdown.stop.is_set():
+        return _SHUTDOWN
+    result = claim(db, model)
+    if result is None:
+        return None
+    if isinstance(result, Exhausted):
+        fail_exhausted(db, result.job_id)
+        return result.job_id
+    lease = OwnedLease.from_claimed(model, result)
+
+    def _run() -> None:
+        with heartbeat(lease):
+            process(lease.job_id)
+
+    return _run_claimed(shutdown, lease, _run)
 
 
 def poll_once(
@@ -101,71 +134,65 @@ def poll_once(
 
     Feedback prose is short and student-visible, so it is claimed before a PDF
     ingest that can hold the worker for a long parse. Once shutdown is requested,
-    this returns without claiming.
+    this returns without opening a session. Each claim also rechecks the stop
+    flag immediately before ``claim()``.
     """
     if shutdown is not None and shutdown.stop.is_set():
         return None
     owns_session = session is None
     db = session or _sync_session()
     try:
-        feedback = claim(db, FeedbackSummaryJob)
-        if isinstance(feedback, Exhausted):
-            fail_exhausted_feedback_summary_job(db, feedback.job_id)
-            return feedback.job_id
-        if isinstance(feedback, Claimed):
-            feedback_id = feedback.job_id
-
-            def _run_feedback() -> None:
-                with heartbeat(FeedbackSummaryJob, feedback_id):
-                    process_feedback_summary_job_sync(feedback_id)
-
-            return _run_claimed(shutdown, FeedbackSummaryJob, feedback_id, _run_feedback)
-        ingest = claim(db, IngestJob)
-        if isinstance(ingest, Exhausted):
-            fail_exhausted_ingest_job(db, ingest.job_id)
-            return ingest.job_id
-        if isinstance(ingest, Claimed):
-            ingest_id = ingest.job_id
-
-            def _run_ingest() -> None:
-                with heartbeat(IngestJob, ingest_id):
-                    process_ingest_job_sync(str(ingest_id), parse_pdf=parse_pdf)
-
-            return _run_claimed(shutdown, IngestJob, ingest_id, _run_ingest)
-        generation = claim(db, GenerationJob)
-        if isinstance(generation, Exhausted):
-            fail_exhausted_generation_job(db, generation.job_id)
-            return generation.job_id
-        if isinstance(generation, Claimed):
-            generation_id = generation.job_id
-
-            def _run_generation() -> None:
-                with heartbeat(GenerationJob, generation_id):
-                    process_generation_job_sync(
-                        generation_id,
-                        write_outline=write_outline,
-                        write_items=write_items,
-                        write_lesson=write_lesson,
-                        blind_solver=blind_solver,
-                    )
-
-            return _run_claimed(shutdown, GenerationJob, generation_id, _run_generation)
-        if curriculum_runner is not None:
-            curriculum = claim(db, CurriculumGenerationJob)
-            if isinstance(curriculum, Exhausted):
-                fail_exhausted_curriculum_job(db, curriculum.job_id)
-                return curriculum.job_id
-            if isinstance(curriculum, Claimed):
-                curriculum_id = curriculum.job_id
-
-                def _run_curriculum() -> None:
-                    with heartbeat(CurriculumGenerationJob, curriculum_id):
-                        process_curriculum_job_sync(curriculum_id, runner=curriculum_runner)
-
-                return _run_claimed(
-                    shutdown, CurriculumGenerationJob, curriculum_id, _run_curriculum
-                )
-        return None
+        feedback = _claim_one(
+            db,
+            FeedbackSummaryJob,
+            shutdown,
+            fail_exhausted_feedback_summary_job,
+            process_feedback_summary_job_sync,
+        )
+        if isinstance(feedback, _ShutdownRequested):
+            return None
+        if feedback is not None:
+            return feedback
+        ingest = _claim_one(
+            db,
+            IngestJob,
+            shutdown,
+            fail_exhausted_ingest_job,
+            lambda job_id: process_ingest_job_sync(str(job_id), parse_pdf=parse_pdf),
+        )
+        if isinstance(ingest, _ShutdownRequested):
+            return None
+        if ingest is not None:
+            return ingest
+        generation = _claim_one(
+            db,
+            GenerationJob,
+            shutdown,
+            fail_exhausted_generation_job,
+            lambda job_id: process_generation_job_sync(
+                job_id,
+                write_outline=write_outline,
+                write_items=write_items,
+                write_lesson=write_lesson,
+                blind_solver=blind_solver,
+            ),
+        )
+        if isinstance(generation, _ShutdownRequested):
+            return None
+        if generation is not None:
+            return generation
+        if curriculum_runner is None:
+            return None
+        curriculum = _claim_one(
+            db,
+            CurriculumGenerationJob,
+            shutdown,
+            fail_exhausted_curriculum_job,
+            lambda job_id: process_curriculum_job_sync(job_id, runner=curriculum_runner),
+        )
+        if isinstance(curriculum, _ShutdownRequested):
+            return None
+        return curriculum
     finally:
         if owns_session:
             db.close()
@@ -180,8 +207,9 @@ def run_forever(
     """Poll feedback summaries, then ingest jobs, then generation jobs.
 
     SIGTERM and SIGINT stop new claims. The current job may finish inside
-    ``WORKER_SHUTDOWN_GRACE_SECONDS``; otherwise its lease is requeued and the
-    process exits 0.
+    ``WORKER_SHUTDOWN_GRACE_SECONDS``. Otherwise its lease is requeued (the
+    attempt is refunded) and the in-flight job is cancelled so its ``finally``
+    blocks run. The process then returns and exits 0.
     """
     state = shutdown if shutdown is not None else WorkerShutdown()
     if shutdown is None:
@@ -191,9 +219,12 @@ def run_forever(
         "Worker started (poll every %.1fs; feedback, then ingest, then generation)",
         poll_interval_seconds,
     )
-    while not state.stop.is_set():
-        claimed = poll() if poll is not None else poll_once(shutdown=state)
-        if state.stop.is_set():
-            break
-        if claimed is None and state.stop.wait(poll_interval_seconds):
-            break
+    try:
+        while not state.stop.is_set():
+            claimed = poll() if poll is not None else poll_once(shutdown=state)
+            if state.stop.is_set():
+                break
+            if claimed is None and state.stop.wait(poll_interval_seconds):
+                break
+    except KeyboardInterrupt:
+        logger.info("Worker shutdown cancelled the in-flight job after releasing its lease")

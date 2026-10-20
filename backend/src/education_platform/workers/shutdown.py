@@ -1,26 +1,30 @@
 """Stop claiming work on SIGTERM and requeue the in-flight job after a grace period.
 
 tini forwards SIGTERM to the child, so the handler is registered on this process
-and the worker does not need to be PID 1.
+and the worker does not need to be PID 1. A second signal does not move the
+deadline or release twice.
+
+After the grace period the lease is released and committed first. The watch
+thread then interrupts the main thread so the job's ``finally`` blocks run.
+``os._exit`` is not used: it would skip those blocks and drop a job that was
+about to commit.
 """
 
 from __future__ import annotations
 
-import os
+import _thread
 import signal
 import threading
 import time
 from collections.abc import Callable
 from types import FrameType
-from typing import Any
-from uuid import UUID
 
 from education_platform.core.config import get_settings
-from education_platform.workers.lease import release_lease
+from education_platform.workers.lease import OwnedLease, release_lease
 
 Clock = Callable[[], float]
 WaitFn = Callable[[threading.Event, float], bool]
-ReleaseFn = Callable[[type[Any], UUID], None]
+ReleaseFn = Callable[[OwnedLease], object]
 ExitFn = Callable[[int], None]
 
 
@@ -47,11 +51,11 @@ class WorkerShutdown:
         self._clock = clock if clock is not None else time.monotonic
         self._wait = wait if wait is not None else _wait_for_event
         self._release = release if release is not None else release_lease
-        self._exit = exit if exit is not None else os._exit
+        self._exit = exit
         self.stop = threading.Event()
         self._job_finished = threading.Event()
         self._lock = threading.Lock()
-        self._current: tuple[type[Any], UUID] | None = None
+        self._current: OwnedLease | None = None
         self._signaled = False
         self._handled = False
         self._deadline_at: float | None = None
@@ -82,25 +86,35 @@ class WorkerShutdown:
             self._signaled = True
             self._deadline_at = self._clock() + self.grace_seconds
 
-    def begin_job(self, model: type[Any], job_id: UUID) -> None:
-        self._job_finished.clear()
+    def begin_job(self, lease: OwnedLease) -> bool:
+        """Record ``lease`` as in flight. False when shutdown already won the race.
+
+        The stop flag and the current lease are updated under one lock, so a
+        signal cannot land between the check and the claim record.
+        """
         with self._lock:
-            self._current = (model, job_id)
+            if self.stop.is_set():
+                return False
+            self._job_finished.clear()
+            self._current = lease
+            return True
 
     def finish_job(self) -> None:
         with self._lock:
             self._current = None
         self._job_finished.set()
 
-    def release_job(self, model: type[Any], job_id: UUID) -> None:
-        """Return a claimed job to the queue without running it."""
-        self._release(model, job_id)
+    def release_job(self, lease: OwnedLease) -> None:
+        """Requeue a claimed job that will not run, refunding its attempt."""
+        self._release(lease)
 
     def watch(self) -> None:
         """After the signal, wait out the grace period or requeue the current job.
 
         Returns when the in-flight job finishes in time. Otherwise releases its
-        lease and exits 0. A second call is a no-op.
+        lease (the release commits before this returns) and, on the watch
+        thread, interrupts the main thread so ``finally`` blocks run. A second
+        call is a no-op.
         """
         self.stop.wait()
         with self._lock:
@@ -117,7 +131,10 @@ class WorkerShutdown:
         with self._lock:
             if self._current is None or self._job_finished.is_set():
                 return
-            model, job_id = self._current
+            lease = self._current
             self._current = None
-        self._release(model, job_id)
-        self._exit(0)
+        self._release(lease)
+        if threading.current_thread() is not threading.main_thread():
+            _thread.interrupt_main()
+        if self._exit is not None:
+            self._exit(0)

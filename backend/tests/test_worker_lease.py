@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -19,7 +20,15 @@ from education_platform.modules.generation.types import (
     RunPhase,
 )
 from education_platform.modules.generation.worker import claim_next_generation_job
-from education_platform.workers.lease import Claimed, claim, heartbeat
+from education_platform.workers.lease import (
+    Claimed,
+    Exhausted,
+    OwnedLease,
+    _extend_lease,
+    claim,
+    heartbeat,
+    release_lease,
+)
 from test_generation import SEEDED_SLUG
 
 
@@ -147,10 +156,238 @@ def test_heartbeat_extends_locked_until(
     before = seeded_db.get(GenerationJob, job.id)
     assert before is not None and before.locked_until is not None
     started = before.locked_until
-    with heartbeat(GenerationJob, job.id):
+    with heartbeat(OwnedLease.from_claimed(GenerationJob, result)):
         time.sleep(1.5)
     seeded_db.expire_all()
     after = seeded_db.get(GenerationJob, job.id)
     assert after is not None and after.locked_until is not None
     assert after.locked_until > started
     get_settings.cache_clear()
+
+
+class _QueuedJob:
+    def __init__(self, *, attempts: int, max_attempts: int = 3) -> None:
+        self.id = uuid4()
+        self.status = GenerationJobStatus.QUEUED
+        self.attempts = attempts
+        self.max_attempts = max_attempts
+        self.locked_until: datetime | None = None
+
+
+class _ClaimSession:
+    def __init__(self, job: _QueuedJob) -> None:
+        self.job = job
+        self.commits = 0
+
+    def scalar(self, _statement: object) -> _QueuedJob:
+        return self.job
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def refresh(self, _job: _QueuedJob) -> None:
+        return None
+
+
+class JobRow:
+    def __init__(
+        self,
+        job_id: object,
+        *,
+        status: GenerationJobStatus,
+        attempts: int,
+        locked_until: datetime | None,
+    ) -> None:
+        self.job_id = job_id
+        self.status = status
+        self.attempts = attempts
+        self.locked_until = locked_until
+
+
+class _ReleaseResult:
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+class ReleaseSession:
+    """Apply the ownership WHERE from a compiled release UPDATE onto one row."""
+
+    def __init__(self, row: JobRow) -> None:
+        self.row = row
+        self.commits = 0
+        self.executed = 0
+
+    def execute(self, statement: object) -> _ReleaseResult:
+        compile_params = getattr(statement, "compile", None)
+        assert compile_params is not None
+        params = statement.compile().params  # type: ignore[attr-defined]
+        matched = (
+            params["id_1"] == self.row.job_id
+            and params["status_1"] is self.row.status
+            and params["attempts_2"] == self.row.attempts
+            and params["locked_until_1"] == self.row.locked_until
+        )
+        self.executed += 1
+        if not matched:
+            return _ReleaseResult(0)
+        self.row.status = params["status"]
+        self.row.locked_until = params["locked_until"]
+        self.row.attempts -= params["attempts_1"]
+        return _ReleaseResult(1)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_claim_enforces_max_attempts_on_queued_rows() -> None:
+    job = _QueuedJob(attempts=3, max_attempts=3)
+    session = _ClaimSession(job)
+    result = claim(session, GenerationJob)  # type: ignore[arg-type]
+    assert isinstance(result, Exhausted)
+    assert result.job_id == job.id
+    assert job.status is GenerationJobStatus.QUEUED
+    assert job.attempts == 3
+    assert session.commits == 0
+
+
+def test_release_after_another_worker_reclaimed_is_a_logged_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    job_id = uuid4()
+    ours = datetime(2026, 10, 20, 1, tzinfo=UTC)
+    theirs = datetime(2026, 10, 20, 2, tzinfo=UTC)
+    row = JobRow(
+        job_id,
+        status=GenerationJobStatus.RUNNING,
+        attempts=4,
+        locked_until=theirs,
+    )
+    before = (row.status, row.attempts, row.locked_until)
+    monkeypatch.setattr(
+        "education_platform.workers.lease.sync_session",
+        lambda: ReleaseSession(row),
+    )
+    lease = OwnedLease(
+        model=GenerationJob,
+        job_id=job_id,
+        attempts=3,
+        locked_until=ours,
+    )
+    with caplog.at_level("INFO", logger="education_platform.workers.lease"):
+        assert release_lease(lease) is False
+    assert (row.status, row.attempts, row.locked_until) == before
+    assert "unchanged" in caplog.text
+    assert lease.lost is True
+
+
+def test_graceful_release_refunds_and_repeated_cycles_stay_under_max_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = uuid4()
+    row = JobRow(job_id, status=GenerationJobStatus.QUEUED, attempts=0, locked_until=None)
+    monkeypatch.setattr(
+        "education_platform.workers.lease.sync_session",
+        lambda: ReleaseSession(row),
+    )
+    max_attempts = 3
+    for _cycle in range(10):
+        assert row.attempts < max_attempts
+        row.attempts += 1
+        row.status = GenerationJobStatus.RUNNING
+        locked_until = datetime(2026, 10, 20, tzinfo=UTC)
+        row.locked_until = locked_until
+        lease = OwnedLease(
+            model=GenerationJob,
+            job_id=job_id,
+            attempts=row.attempts,
+            locked_until=locked_until,
+        )
+        assert release_lease(lease) is True
+        assert row.status is GenerationJobStatus.QUEUED
+        assert row.locked_until is None
+        assert row.attempts == 0
+    crashes = 0
+    while crashes < max_attempts:
+        assert row.attempts < max_attempts
+        row.attempts += 1
+        crashes += 1
+    assert row.attempts == max_attempts
+    exhausted = _QueuedJob(attempts=row.attempts, max_attempts=max_attempts)
+    assert isinstance(claim(_ClaimSession(exhausted), GenerationJob), Exhausted)  # type: ignore[arg-type]
+
+
+def test_heartbeat_stops_when_the_lease_is_no_longer_owned(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _Lost:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    class _Session:
+        def execute(self, _statement: object) -> _Lost:
+            return _Lost()
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("education_platform.workers.lease.sync_session", _Session)
+    lease = OwnedLease(
+        model=GenerationJob,
+        job_id=uuid4(),
+        attempts=1,
+        locked_until=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+    with caplog.at_level("INFO", logger="education_platform.workers.lease"):
+        assert _extend_lease(lease) is False
+    assert lease.lost is True
+    assert "Heartbeat stopped" in caplog.text
+
+    def _unexpected() -> None:
+        raise AssertionError("heartbeat must not extend a lost lease")
+
+    monkeypatch.setattr("education_platform.workers.lease.sync_session", _unexpected)
+    assert _extend_lease(lease) is False
+    assert release_lease(lease) is False
+
+
+def test_heartbeat_keeps_the_lease_after_a_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Down:
+        def execute(self, _statement: object) -> None:
+            raise RuntimeError("database unavailable")
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("education_platform.workers.lease.sync_session", _Down)
+    locked_until = datetime(2026, 10, 20, tzinfo=UTC)
+    lease = OwnedLease(
+        model=GenerationJob,
+        job_id=uuid4(),
+        attempts=1,
+        locked_until=locked_until,
+    )
+    assert _extend_lease(lease) is True
+    assert lease.lost is False
+    assert lease.locked_until == locked_until

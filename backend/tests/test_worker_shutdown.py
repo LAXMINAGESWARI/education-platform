@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import threading
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import yaml
 from pydantic import ValidationError
-from sqlalchemy.sql.dml import Update
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.modules.generation.models import GenerationJob
 from education_platform.modules.generation.types import GenerationJobStatus
+from education_platform.workers.lease import OwnedLease, release_lease
 from education_platform.workers.runner import _run_claimed, poll_once, run_forever
 from education_platform.workers.shutdown import WorkerShutdown
+from test_worker_lease import JobRow, ReleaseSession
 
 
 class FakeClock:
@@ -27,36 +30,18 @@ class FakeClock:
         return self.now
 
 
-class _LeaseSession:
-    def __init__(self, job: dict[str, Any], job_id: Any, executed: list[int]) -> None:
-        self._job = job
-        self._job_id = job_id
-        self._executed = executed
-
-    def execute(self, statement: Update) -> _LeaseResult:
-        params = statement.compile().params
-        assert params["status"] is GenerationJobStatus.QUEUED
-        assert params["locked_until"] is None
-        assert params["status_1"] is GenerationJobStatus.RUNNING
-        assert params["id_1"] == self._job_id
-        self._executed.append(1)
-        if self._job["status"] is GenerationJobStatus.RUNNING:
-            self._job["status"] = GenerationJobStatus.QUEUED
-            self._job["locked_until"] = None
-        return _LeaseResult()
-
-    def commit(self) -> None:
-        return None
-
-    def rollback(self) -> None:
-        return None
-
-    def close(self) -> None:
-        return None
-
-
-class _LeaseResult:
-    rowcount = 1
+def _lease(
+    job_id: object | None = None,
+    *,
+    attempts: int = 1,
+    locked_until: datetime | None = None,
+) -> OwnedLease:
+    return OwnedLease(
+        model=GenerationJob,
+        job_id=job_id or uuid4(),
+        attempts=attempts,
+        locked_until=locked_until or datetime(2026, 10, 20, tzinfo=UTC),
+    )
 
 
 def test_shutdown_grace_defaults_and_parses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,7 +49,7 @@ def test_shutdown_grace_defaults_and_parses(monkeypatch: pytest.MonkeyPatch) -> 
     get_settings.cache_clear()
     try:
         assert Settings(_env_file=None).worker_shutdown_grace_seconds == 25.0
-        state = WorkerShutdown(release=lambda *_args: None, exit=lambda _code: None)
+        state = WorkerShutdown(release=lambda _lease: None, exit=lambda _code: None)
         assert state.grace_seconds == 25.0
         monkeypatch.setenv("WORKER_SHUTDOWN_GRACE_SECONDS", "10")
         assert Settings(_env_file=None).worker_shutdown_grace_seconds == 10.0
@@ -78,7 +63,7 @@ def test_signal_stops_claiming(monkeypatch: pytest.MonkeyPatch) -> None:
     state = WorkerShutdown(
         grace_seconds=25,
         clock=FakeClock(),
-        release=lambda *_args: None,
+        release=lambda _lease: None,
         exit=lambda _code: None,
     )
     state.note_signal(signal.SIGTERM, None)
@@ -100,26 +85,26 @@ def test_signal_stops_claiming(monkeypatch: pytest.MonkeyPatch) -> None:
     run_forever(poll_interval_seconds=60, shutdown=state, poll=_poll)
     assert calls == []
 
-    job_id = uuid4()
+    lease = _lease()
     ran: list[bool] = []
-    released: list[object] = []
+    released: list[OwnedLease] = []
     stopped = WorkerShutdown(
         grace_seconds=25,
         clock=FakeClock(),
-        release=lambda model, claimed_id: released.append((model, claimed_id)),
+        release=released.append,
         exit=lambda _code: None,
     )
     stopped.note_signal(signal.SIGINT, None)
-    assert _run_claimed(stopped, GenerationJob, job_id, lambda: ran.append(True)) is None
+    assert _run_claimed(stopped, lease, lambda: ran.append(True)) is None
     assert ran == []
-    assert released == [(GenerationJob, job_id)]
+    assert released == [lease]
 
 
 def test_signal_during_a_poll_does_not_claim_again() -> None:
     state = WorkerShutdown(
         grace_seconds=25,
         clock=FakeClock(),
-        release=lambda *_args: None,
+        release=lambda _lease: None,
         exit=lambda _code: None,
     )
     calls: list[int] = []
@@ -135,11 +120,8 @@ def test_signal_during_a_poll_does_not_claim_again() -> None:
 
 def test_job_finishing_within_grace_is_marked_done(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
-    job_id = uuid4()
-    job: dict[str, Any] = {
-        "status": GenerationJobStatus.RUNNING,
-        "locked_until": datetime.now(UTC),
-    }
+    lease = _lease()
+    job = {"status": GenerationJobStatus.RUNNING}
     exits: list[int] = []
 
     class _Session:
@@ -162,7 +144,6 @@ def test_job_finishing_within_grace_is_marked_done(monkeypatch: pytest.MonkeyPat
         assert timeout == 25
         clock.now += 5
         job["status"] = GenerationJobStatus.SUCCEEDED
-        job["locked_until"] = None
         holder[0].finish_job()
         return True
 
@@ -173,7 +154,7 @@ def test_job_finishing_within_grace_is_marked_done(monkeypatch: pytest.MonkeyPat
         state.note_signal(signal.SIGTERM, None)
         state.watch()
 
-    assert _run_claimed(state, GenerationJob, job_id, _process) == job_id
+    assert _run_claimed(state, lease, _process) == lease.job_id
     assert job["status"] is GenerationJobStatus.SUCCEEDED
     assert clock.now == 5
     assert exits == []
@@ -183,20 +164,19 @@ def test_job_finishing_within_grace_is_marked_done(monkeypatch: pytest.MonkeyPat
     assert exits == []
 
 
-def test_job_past_grace_is_requeued(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_job_past_grace_is_requeued_and_refunded(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
     job_id = uuid4()
-    job: dict[str, Any] = {
-        "status": GenerationJobStatus.RUNNING,
-        "locked_until": datetime.now(UTC),
-    }
-    executed: list[int] = []
+    locked_until = datetime(2026, 10, 20, tzinfo=UTC)
+    row = JobRow(
+        job_id,
+        status=GenerationJobStatus.RUNNING,
+        attempts=1,
+        locked_until=locked_until,
+    )
+    session = ReleaseSession(row)
     exits: list[int] = []
-
-    def _session() -> _LeaseSession:
-        return _LeaseSession(job, job_id, executed)
-
-    monkeypatch.setattr("education_platform.workers.lease.sync_session", _session)
+    monkeypatch.setattr("education_platform.workers.lease.sync_session", lambda: session)
     waits: list[float] = []
 
     def _wait(_event: threading.Event, timeout: float) -> bool:
@@ -205,6 +185,7 @@ def test_job_past_grace_is_requeued(monkeypatch: pytest.MonkeyPatch) -> None:
         return False
 
     state = WorkerShutdown(grace_seconds=25, clock=clock, wait=_wait, exit=exits.append)
+    lease = _lease(job_id, attempts=1, locked_until=locked_until)
 
     def _process() -> None:
         state.note_signal(signal.SIGTERM, None)
@@ -212,17 +193,108 @@ def test_job_past_grace_is_requeued(monkeypatch: pytest.MonkeyPatch) -> None:
         state.note_signal(signal.SIGTERM, None)
         state.watch()
 
-    _run_claimed(state, GenerationJob, job_id, _process)
+    _run_claimed(state, lease, _process)
     assert waits == [24]
     assert clock.now == 25
-    assert job["status"] is GenerationJobStatus.QUEUED
-    assert job["locked_until"] is None
-    assert executed == [1]
+    assert row.status is GenerationJobStatus.QUEUED
+    assert row.locked_until is None
+    assert row.attempts == 0
+    assert session.executed == 1
+    assert session.commits == 1
     assert exits == [0]
     state.note_signal(signal.SIGINT, None)
     state.watch()
-    assert executed == [1]
+    assert session.executed == 1
     assert exits == [0]
+
+
+def test_stop_between_claim_and_begin_refunds(monkeypatch: pytest.MonkeyPatch) -> None:
+    job_id = uuid4()
+    locked_until = datetime(2026, 10, 20, 3, tzinfo=UTC)
+    row = JobRow(
+        job_id,
+        status=GenerationJobStatus.RUNNING,
+        attempts=2,
+        locked_until=locked_until,
+    )
+    monkeypatch.setattr(
+        "education_platform.workers.lease.sync_session",
+        lambda: ReleaseSession(row),
+    )
+    state = WorkerShutdown(grace_seconds=25, clock=FakeClock(), exit=lambda _code: None)
+    state.note_signal(signal.SIGTERM, None)
+    lease = _lease(job_id, attempts=2, locked_until=locked_until)
+    ran: list[bool] = []
+    assert _run_claimed(state, lease, lambda: ran.append(True)) is None
+    assert ran == []
+    assert row.status is GenerationJobStatus.QUEUED
+    assert row.locked_until is None
+    assert row.attempts == 1
+
+
+def test_grace_expiry_releases_before_interrupting_and_does_not_os_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[object] = []
+    monkeypatch.setattr(os, "_exit", lambda code: order.append(("os_exit", code)))
+    monkeypatch.setattr(
+        "education_platform.workers.shutdown._thread.interrupt_main",
+        lambda: order.append("interrupt"),
+    )
+    job_id = uuid4()
+    locked_until = datetime(2026, 10, 20, 4, tzinfo=UTC)
+    row = JobRow(
+        job_id,
+        status=GenerationJobStatus.RUNNING,
+        attempts=1,
+        locked_until=locked_until,
+    )
+    monkeypatch.setattr(
+        "education_platform.workers.lease.sync_session",
+        lambda: ReleaseSession(row),
+    )
+
+    def _release(lease: OwnedLease) -> None:
+        order.append("release")
+        assert release_lease(lease) is True
+        assert row.attempts == 0
+        assert row.status is GenerationJobStatus.QUEUED
+
+    state = WorkerShutdown(grace_seconds=0, clock=FakeClock(), release=_release)
+    lease = _lease(job_id, attempts=1, locked_until=locked_until)
+    assert state.begin_job(lease) is True
+    state.note_signal(signal.SIGTERM, None)
+    thread = threading.Thread(target=state.watch)
+    thread.start()
+    thread.join(timeout=1)
+    assert thread.is_alive() is False
+    assert order == ["release", "interrupt"]
+    assert row.locked_until is None
+
+
+def test_keyboard_interrupt_runs_the_job_finally() -> None:
+    finished: list[str] = []
+    state = WorkerShutdown(grace_seconds=25, clock=FakeClock(), release=lambda _lease: None)
+    lease = _lease()
+
+    def _process() -> None:
+        try:
+            raise KeyboardInterrupt
+        finally:
+            finished.append("finally")
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_claimed(state, lease, _process)
+    assert finished == ["finally"]
+
+
+def test_run_forever_returns_after_keyboard_interrupt() -> None:
+    state = WorkerShutdown(grace_seconds=25, clock=FakeClock(), release=lambda _lease: None)
+
+    def _poll() -> None:
+        raise KeyboardInterrupt
+
+    run_forever(poll_interval_seconds=60, shutdown=state, poll=_poll)
 
 
 def test_signal_handlers_are_registered_on_the_child_process(
@@ -252,7 +324,7 @@ def test_signal_handlers_are_registered_on_the_child_process(
     state = WorkerShutdown(
         grace_seconds=25,
         clock=FakeClock(),
-        release=lambda *_args: None,
+        release=lambda _lease: None,
         exit=lambda _code: None,
     )
     state.install_signals()
@@ -263,3 +335,16 @@ def test_signal_handlers_are_registered_on_the_child_process(
     state.note_signal(signal.SIGTERM, None)
     state.note_signal(signal.SIGINT, None)
     assert state.stop.is_set()
+
+
+def test_compose_worker_stop_grace_period_is_at_least_40_seconds() -> None:
+    path = Path(__file__).resolve().parents[2] / "deploy" / "docker-compose.prod.yml"
+    document = yaml.safe_load(path.read_text())
+    raw = document["services"]["worker"]["stop_grace_period"]
+    if isinstance(raw, int):
+        seconds = raw
+    else:
+        text = str(raw).strip()
+        assert text.endswith("s")
+        seconds = int(text[:-1])
+    assert seconds >= 40
