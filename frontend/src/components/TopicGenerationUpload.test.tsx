@@ -823,7 +823,7 @@ describe("TopicGenerationUpload", () => {
     expect(screen.queryByRole("region", { name: "Indexing PDF" })).not.toBeInTheDocument();
   });
 
-  it("shows Reconnecting while the run stream retries and clears it when the socket returns", async () => {
+  it("shows Reconnecting while the run stream retries and clears it on the first frame", async () => {
     vi.mocked(listTopicGenerationRuns).mockResolvedValue([
       run({ phase: "indexing", outline: null }),
     ]);

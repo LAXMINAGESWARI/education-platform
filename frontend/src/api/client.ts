@@ -42,7 +42,18 @@ function isFormDataBody(body: unknown): body is FormData {
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function refreshAccessToken(): Promise<boolean> {
+function abortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function performRefresh(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) {
+    throw abortError();
+  }
   const refresh = getRefreshToken();
   if (!refresh) {
     return false;
@@ -52,18 +63,66 @@ async function refreshAccessToken(): Promise<boolean> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refresh }),
+      signal,
     });
+    if (signal?.aborted) {
+      throw abortError();
+    }
     if (!res.ok) {
       clearTokens();
       return false;
     }
     const data = (await res.json()) as TokenResponse;
+    if (signal?.aborted) {
+      throw abortError();
+    }
     setTokens(data);
     return true;
-  } catch {
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw abortError();
+    }
     clearTokens();
     return false;
   }
+}
+
+function waitForRefresh(pending: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (signal === undefined) {
+    return pending;
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function refreshAccessToken(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) {
+    return Promise.reject(abortError());
+  }
+  if (refreshPromise === null) {
+    refreshPromise = performRefresh(signal).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return waitForRefresh(refreshPromise, signal);
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -89,12 +148,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   });
 
   if (res.status === 401 && auth && !skipRefresh) {
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
-    }
-    const ok = await refreshPromise;
+    const ok = await refreshAccessToken(signal);
     if (ok) {
       return apiRequest<T>(path, { ...options, skipRefresh: true });
     }
@@ -146,12 +200,7 @@ export async function apiStream(
     signal: options.signal,
   });
   if (res.status === 401 && !options.skipRefresh) {
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
-    }
-    const ok = await refreshPromise;
+    const ok = await refreshAccessToken(options.signal);
     if (ok) {
       return apiStream(path, { ...options, skipRefresh: true });
     }

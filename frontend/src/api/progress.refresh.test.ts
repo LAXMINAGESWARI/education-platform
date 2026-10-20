@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { clearTokens, setTokens } from "./client";
+import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "./client";
 import { progressReconnectDelayMs, runSubject, subscribeProgress } from "./progress";
 
 type FetchCall = {
@@ -125,5 +125,99 @@ describe("progress reconnect token refresh", () => {
       lastEventId: "run-1:abc",
     });
     expect(phases).toEqual(["indexing", "outlining"]);
+  });
+
+  it("aborts a token refresh without leaving tokens half-updated", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+
+    const abort = new AbortController();
+    let progressCount = 0;
+    let refreshCount = 0;
+    let releaseRefresh = false;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCount += 1;
+        if (!releaseRefresh) {
+          return new Promise((_resolve, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new DOMException("Aborted", "AbortError"));
+              return;
+            }
+            signal?.addEventListener(
+              "abort",
+              () => {
+                reject(new DOMException("Aborted", "AbortError"));
+              },
+              { once: true },
+            );
+          });
+        }
+        return jsonResponse(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
+      }
+      progressCount += 1;
+      if (progressCount === 1) {
+        return sseResponse([
+          'id: run-1:abc\nevent: snapshot\ndata: {"id":"run-1","phase":"indexing"}\n\n',
+        ]);
+      }
+      if (progressCount === 2 || progressCount === 3) {
+        return jsonResponse(401, { detail: "token expired" });
+      }
+      return sseResponse([
+        'id: run-1:def\nevent: snapshot\ndata: {"id":"run-1","phase":"outlining"}\n\n',
+        'event: close\ndata: {"reason":"terminal"}\n\n',
+      ]);
+    });
+
+    const pending = subscribeProgress(runSubject("run-1"), {
+      signal: abort.signal,
+      onSnapshot: () => undefined,
+    }).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    expect(progressCount).toBe(2);
+    expect(refreshCount).toBe(1);
+    expect(getAccessToken()).toBe("old-access");
+    expect(getRefreshToken()).toBe("refresh-1");
+
+    abort.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ name: "AbortError" });
+    }
+    expect(getAccessToken()).toBe("old-access");
+    expect(getRefreshToken()).toBe("refresh-1");
+    expect(progressCount).toBe(2);
+
+    releaseRefresh = true;
+    const phases: string[] = [];
+    const resumed = subscribeProgress(runSubject("run-1"), {
+      onSnapshot: (snapshot) => {
+        if ("phase" in snapshot) phases.push(snapshot.phase);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await resumed;
+    expect(refreshCount).toBe(2);
+    expect(getAccessToken()).toBe("new-access");
+    expect(getRefreshToken()).toBe("refresh-2");
+    expect(phases).toEqual(["outlining"]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

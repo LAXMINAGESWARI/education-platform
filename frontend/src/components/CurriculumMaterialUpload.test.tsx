@@ -55,7 +55,7 @@ describe("CurriculumMaterialUpload", () => {
     expect(signal?.aborted).toBe(true);
   });
 
-  it("shows Reconnecting while the material stream retries and clears it when the socket returns", async () => {
+  it("shows Reconnecting while the material stream retries and clears it on the first frame", async () => {
     let reconnected: (() => void) | undefined;
     vi.mocked(watchMaterialVersionStatus).mockImplementation((_versionId, options) => {
       options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
