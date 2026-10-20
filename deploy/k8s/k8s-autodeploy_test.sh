@@ -20,6 +20,10 @@ EOF
 cat > "${tmp}/bin/helm" << 'EOF'
 #!/usr/bin/env bash
 printf 'helm %s\n' "$*" >> "${STUB_LOG}"
+if [[ "${HELM_FAIL:-0}" == 1 && "$1" == "upgrade" ]]; then
+  echo "helm upgrade failed" >&2
+  exit 1
+fi
 exit 0
 EOF
 
@@ -54,6 +58,7 @@ advance_remote() {
 
 run_deploy() {
   local clone="$1"
+  shift
   local code=0
   : > "${tmp}/log"
   env \
@@ -62,6 +67,7 @@ run_deploy() {
     STATE_FILE="${tmp}/state/sha" \
     LOCK_FILE="${tmp}/state/lock" \
     STUB_LOG="${tmp}/log" \
+    "$@" \
     "${script}" > "${tmp}/out" 2>&1 || code=$?
   printf '%s' "${code}"
 }
@@ -114,11 +120,15 @@ if ! grep -q 'notes.txt' "${tmp}/out"; then
   cat "${tmp}/out"
 fi
 
-# Clean clone is behind origin/main. It must end detached at that SHA,
-# and the image tag must be HEAD.
+# Stale clone: HEAD is the parent of origin/main, so the build must use
+# origin/main's SHA, not the commit that was checked out before fetch.
 make_remote "${tmp}/remote-clean"
 git clone -q "${tmp}/remote-clean" "${tmp}/clone-clean"
+stale_head="$(git -C "${tmp}/clone-clean" rev-parse HEAD)"
 advance_remote "${tmp}/remote-clean"
+if [[ "$(git -C "${tmp}/remote-clean" rev-parse HEAD)" == "${stale_head}" ]]; then
+  fail "stale fixture did not move origin/main"
+fi
 clean_code="$(run_deploy "${tmp}/clone-clean")"
 if [[ "${clean_code}" -ne 0 ]]; then
   fail "clean tree exit ${clean_code}, expected 0"
@@ -142,6 +152,61 @@ if ! grep -q "^docker build -f deploy/Dockerfile.web -t curioed-web:${head_sha} 
 fi
 if ! grep -q "api.image.tag=${head_sha}" "${tmp}/log"; then
   fail "helm api tag is not HEAD ${head_sha}"
+  cat "${tmp}/log"
+fi
+if [[ "$(cat "${tmp}/state/sha")" != "${head_sha}" ]]; then
+  fail "state file was not written with HEAD after the upgrade"
+fi
+
+# HEAD after checkout is not origin/main. The script must abort before build
+# and must not write the state file.
+real_git="$(command -v git)"
+cat > "${tmp}/bin/git" << EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "rev-parse" && "\${2:-}" == "HEAD" ]]; then
+  printf '%s\\n' "0000000000000000000000000000000000000000"
+  exit 0
+fi
+exec ${real_git} "\$@"
+EOF
+chmod +x "${tmp}/bin/git"
+make_remote "${tmp}/remote-mismatch"
+git clone -q "${tmp}/remote-mismatch" "${tmp}/clone-mismatch"
+advance_remote "${tmp}/remote-mismatch"
+rm -f "${tmp}/state/mismatch"
+mismatch_code="$(run_deploy "${tmp}/clone-mismatch" STATE_FILE="${tmp}/state/mismatch")"
+rm -f "${tmp}/bin/git"
+if [[ "${mismatch_code}" -eq 0 ]]; then
+  fail "HEAD mismatch exited 0"
+  cat "${tmp}/out"
+fi
+if ! grep -q 'left HEAD at' "${tmp}/out"; then
+  fail "HEAD mismatch did not say HEAD disagreed"
+  cat "${tmp}/out"
+fi
+if grep -q '^docker ' "${tmp}/log"; then
+  fail "HEAD mismatch still built an image"
+  cat "${tmp}/log"
+fi
+if [[ -f "${tmp}/state/mismatch" ]]; then
+  fail "HEAD mismatch wrote the state file"
+fi
+
+# Helm upgrade failure must not record the SHA.
+make_remote "${tmp}/remote-helm"
+git clone -q "${tmp}/remote-helm" "${tmp}/clone-helm"
+advance_remote "${tmp}/remote-helm"
+rm -f "${tmp}/state/helm-fail"
+helm_code="$(run_deploy "${tmp}/clone-helm" HELM_FAIL=1 STATE_FILE="${tmp}/state/helm-fail")"
+if [[ "${helm_code}" -eq 0 ]]; then
+  fail "failed helm upgrade exited 0"
+  cat "${tmp}/out"
+fi
+if [[ -f "${tmp}/state/helm-fail" ]]; then
+  fail "failed helm upgrade wrote the state file"
+fi
+if ! grep -q '^docker build ' "${tmp}/log"; then
+  fail "failed helm upgrade did not reach the build"
   cat "${tmp}/log"
 fi
 
