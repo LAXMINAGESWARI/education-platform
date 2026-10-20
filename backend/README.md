@@ -160,7 +160,8 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
 | `JEV_GUARD_TIMEOUT_SECONDS` | `5` | Chat-guard Decisions API timeout. Does not inherit `JEV_TIMEOUT_SECONDS` |
 | `GUARD_JEV_BLOCK_THRESHOLD` | `0.6` | Noul probability treated as the old classifier's `true` |
-| `GUARD_JEV_MODEL` | unset (uses `JEV_MODEL`) | Decisions model posted by the chat guard only |
+| `GUARD_JEV_MODEL` | `typesafe/jev-1.14` | Decisions model posted by the chat guard. Does not follow `JEV_MODEL` |
+| `JEV_DECISIONS_URL` | derived from `OPENROUTER_BASE_URL` | Decisions route shared by the lesson judge and the chat guard |
 | `GUARD_AUDIT_STORE_PREVIEW` | `false` | Store a 160-character message preview on refusal audits |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |

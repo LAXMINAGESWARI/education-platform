@@ -97,13 +97,12 @@ def load_dataset(
 
 
 def load_xlsx_rows(path: Path, *, off_topic_ids: frozenset[int] = frozenset()) -> list[Row]:
-    """Text-to-SQL golden eval sheet ("Eval Questions", data from row 3; column 0 = id,
-    3 = question, 11 = validated SQL, the same columns ``eval_live._xlsx_rows`` reads).
+    """Text-to-SQL golden eval sheet ("Eval Questions", data from row 3).
 
-    Ids 35-38 are attacks and are kept even without validated SQL (``eval_live`` skips
-    rows without SQL, which can drop the attacks, and tags every row ``injection``). Ids in
-    ``off_topic_ids`` (``--xlsx-off-topic-ids``) are labelled off_topic for the data
-    surface. Every other row with validated SQL is a benign data question.
+    Column 0 is the id, column 3 is the question, and column 11 is the validated SQL.
+    Ids 35-38 are attacks and are kept even when the validated-SQL cell is empty.
+    Ids in ``off_topic_ids`` (``--xlsx-off-topic-ids``) are labelled off_topic for the
+    data surface. Every other row with validated SQL is a benign data question.
     """
     import openpyxl  # type: ignore[import-untyped]  # transitive dep via docling
 

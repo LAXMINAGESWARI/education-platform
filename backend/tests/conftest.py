@@ -14,6 +14,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
+from tests.postgres_connect import (
+    async_connect_args,
+    install_test_connect_timeouts,
+    sync_connect_args,
+)
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
@@ -27,6 +32,9 @@ from education_platform.modules.text_to_sql.nodes.load_schema import (
 )
 
 _ = _models
+
+# Test-process only. Production session engines are unchanged.
+install_test_connect_timeouts()
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -89,7 +97,7 @@ def migrated_database() -> Iterator[str]:
     get_settings.cache_clear()
     reset_engine()
 
-    engine = create_engine(sync_url, pool_pre_ping=True)
+    engine = create_engine(sync_url, pool_pre_ping=True, connect_args=sync_connect_args())
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -138,7 +146,7 @@ def clean_db(migrated_database: str, tmp_path: Path) -> Iterator[str]:
     get_settings.cache_clear()
     reset_engine()
 
-    engine = create_engine(sync_url, pool_pre_ping=True)
+    engine = create_engine(sync_url, pool_pre_ping=True, connect_args=sync_connect_args())
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -163,7 +171,9 @@ def clean_db(migrated_database: str, tmp_path: Path) -> Iterator[str]:
 
 @pytest.fixture()
 def db_session(clean_db: str) -> Iterator[Session]:
-    engine = create_engine(to_sync_url(clean_db), pool_pre_ping=True)
+    engine = create_engine(
+        to_sync_url(clean_db), pool_pre_ping=True, connect_args=sync_connect_args()
+    )
     with Session(engine) as session:
         yield session
     engine.dispose()
@@ -179,7 +189,11 @@ def seeded_db(db_session: Session) -> Session:
 
 @pytest_asyncio.fixture()
 async def async_db_session(clean_db: str) -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(to_async_url(clean_db), pool_pre_ping=True)
+    engine = create_async_engine(
+        to_async_url(clean_db),
+        pool_pre_ping=True,
+        connect_args=async_connect_args(),
+    )
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with session_factory() as session:
         yield session
@@ -190,7 +204,11 @@ async def async_db_session(clean_db: str) -> AsyncIterator[AsyncSession]:
 def client(seeded_db: Session, clean_db: str) -> Iterator[TestClient]:
     """HTTP client bound to a migrated + seeded Postgres database."""
     _ = seeded_db
-    engine = create_async_engine(to_async_url(clean_db), pool_pre_ping=True)
+    engine = create_async_engine(
+        to_async_url(clean_db),
+        pool_pre_ping=True,
+        connect_args=async_connect_args(),
+    )
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
     async def _override_session() -> AsyncIterator[AsyncSession]:
