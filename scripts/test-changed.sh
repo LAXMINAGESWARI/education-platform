@@ -29,18 +29,16 @@ if ((${#changed[@]} == 0)); then
   exit 0
 fi
 
-# Tests that import torch, docling, or the ingest worker. Piece 2 marks these
-# with `ml`; until then, workers/ changes run the files directly.
+# Same filenames conftest marks with `ml`.
 ml_files=(
-  tests/test_rag_ingest.py
-  tests/test_prefetch_docling_models.py
-  tests/test_selective_contracts.py
-  tests/test_worker_bootstrap.py
-  tests/test_generation.py
   tests/test_assistant_chat.py
   tests/test_feedback.py
+  tests/test_generation.py
   tests/test_generation_curriculum.py
-  tests/test_worker_lease.py
+  tests/test_prefetch_docling_models.py
+  tests/test_rag_ingest.py
+  tests/test_selective_contracts.py
+  tests/test_worker_bootstrap.py
 )
 
 fallback=0

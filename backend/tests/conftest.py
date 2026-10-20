@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
 import re
 import time
@@ -60,12 +61,74 @@ _WORKER_DATABASE_URL: str | None = None
 _CLONE_WAIT_SECONDS = 60
 
 
+# Docling, torch, or embedding imports, from the speedup plan and its timings.
+# test_generation is mostly database time, but it imports the ingest worker.
+_ML_TEST_FILES = frozenset(
+    {
+        "test_assistant_chat.py",
+        "test_feedback.py",
+        "test_generation.py",
+        "test_generation_curriculum.py",
+        "test_prefetch_docling_models.py",
+        "test_rag_ingest.py",
+        "test_selective_contracts.py",
+        "test_worker_bootstrap.py",
+    }
+)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register markers here. The pytest markers block in pyproject stays untouched."""
     config.addinivalue_line(
         "markers",
-        "ml: imports torch, docling, or the ingest worker (excluded from test-fast)",
+        "ml: docling, torch, or embedding tests (excluded from the fast CI shards)",
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    mark = pytest.mark.ml
+    for item in items:
+        if item.path.name in _ML_TEST_FILES:
+            item.add_marker(mark)
+    _keep_this_shard(config, items)
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Clone this worker's database before xdist assigns any tests.
+
+    An idle worker still collects, then blocks inside xdist's run loop and never
+    executes session fixtures. Cloning here means every worker, including one that
+    is later given no tests, publishes its ready file before any test can connect
+    to the template database.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker:
+        _activate_worker_database(worker)
+
+
+def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep one deterministic file-hash shard when CI sets PYTEST_SHARD."""
+    raw_index = os.environ.get("PYTEST_SHARD")
+    raw_count = os.environ.get("PYTEST_SHARD_COUNT")
+    if raw_index is None and raw_count is None:
+        return
+    if raw_index is None or raw_count is None:
+        raise pytest.UsageError("Set both PYTEST_SHARD and PYTEST_SHARD_COUNT")
+    index = int(raw_index)
+    count = int(raw_count)
+    if count < 1 or not 0 <= index < count:
+        raise pytest.UsageError(f"PYTEST_SHARD must be in 0..{count - 1}, got {index}")
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        bucket = int(hashlib.sha256(item.path.name.encode()).hexdigest()[:8], 16) % count
+        if bucket == index:
+            selected.append(item)
+        else:
+            deselected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
 
 
 @pytest.fixture(autouse=True)
@@ -200,6 +263,18 @@ def _wait_for_worker_clones(ready_dir: Path, worker_count: int) -> None:
     )
 
 
+def _activate_worker_database(worker: str) -> None:
+    global _WORKER_DATABASE_URL
+    if _WORKER_DATABASE_URL is not None:
+        return
+    base_url = os.environ.get("DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+    worker_url = _clone_worker_database(base_url, worker)
+    _WORKER_DATABASE_URL = worker_url
+    os.environ["DATABASE_URL"] = worker_url
+    get_settings.cache_clear()
+    reset_engine()
+
+
 def _clone_worker_database(base_url: str, worker: str) -> str:
     """Migrate the shared test database once, then give this worker its own copy.
 
@@ -247,20 +322,19 @@ def _test_database_url() -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def _xdist_worker_database() -> Iterator[None]:
-    """One private database per xdist worker. No-op when pytest runs in-process."""
+    """One private database per xdist worker. No-op when pytest runs in-process.
+
+    The clone normally happens in ``pytest_collection_finish``. This fixture still
+    applies that URL for the session and covers a worker that reached tests without
+    one.
+    """
     global _WORKER_DATABASE_URL
     worker = os.environ.get("PYTEST_XDIST_WORKER")
-    if not worker:
-        yield
-        return
-    base_url = os.environ.get("DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
-    worker_url = _clone_worker_database(base_url, worker)
-    _WORKER_DATABASE_URL = worker_url
-    os.environ["DATABASE_URL"] = worker_url
-    get_settings.cache_clear()
-    reset_engine()
+    if worker:
+        _activate_worker_database(worker)
     yield
-    _WORKER_DATABASE_URL = None
+    if worker:
+        _WORKER_DATABASE_URL = None
 
 
 @pytest.fixture(scope="session")
