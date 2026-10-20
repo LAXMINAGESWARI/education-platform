@@ -71,18 +71,19 @@ def test_retire_archives_duplicate_and_keeps_the_quiz_row(seeded_db: Session) ->
     ]
     assert len(shared) == 1
     kept_id = _keeper(shared[0]).question_version_id
+    invalid_ids = {item.question_version_id for item in report.invalid}
+    # A duplicate keeper is archived only when that same version is also invalid.
+    assert kept_id not in report.retire_ids or kept_id in invalid_ids
     changed = retire_flagged(seeded_db, report)
     seeded_db.commit()
     assert changed >= 1
     seeded_db.refresh(keeper)
     seeded_db.refresh(extra)
-    # uuid4 ids decide the keeper, and other seeded stems can join the group,
-    # so the second quiz item is not always the row that gets archived.
     for row in (keeper, extra):
-        if row.id == kept_id:
-            assert row.lifecycle_status is not QuestionVersionStatus.ARCHIVED
-        else:
+        if row.id in report.retire_ids:
             assert row.lifecycle_status is QuestionVersionStatus.ARCHIVED
+        else:
+            assert row.lifecycle_status is QuestionVersionStatus.PUBLISHED
     still_linked = seeded_db.get(QuizItem, items[1].id)
     assert still_linked is not None
     assert still_linked.question_version_id == extra.id
