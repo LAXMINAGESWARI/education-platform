@@ -5,6 +5,7 @@ import {
   watchKnowledgeDocumentVersionStatus,
   uploadKnowledgeDocument,
 } from "../../api/adminIngest";
+import { ProgressReconnectError } from "../../api/progress";
 import { ApiError, type KnowledgeDocumentListItem } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { DEMO_ADMIN } from "../../auth/demoAccounts";
@@ -51,9 +52,18 @@ export function AdminDocumentsPage() {
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const dragDepth = useRef(0);
+  const watchAbortRef = useRef<AbortController | null>(null);
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
+    return () => {
+      watchAbortRef.current?.abort();
+    };
+  }, []);
+
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     if (isDevMockSession) {
       setDocs(null);
       setListError(MOCK_SESSION_DOCS_ERROR);
@@ -62,21 +72,27 @@ export function AdminDocumentsPage() {
     }
     setLoading(true);
     try {
-      const items = await listKnowledgeDocuments();
+      const items = await listKnowledgeDocuments(signal);
+      if (signal?.aborted) return;
       setDocs(items);
       setListError(null);
     } catch (err) {
+      if (signal?.aborted) return;
       setDocs(null);
       setListError(
         err instanceof ApiError ? err.message : "Could not load knowledge documents.",
       );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [isDevMockSession]);
 
   useEffect(() => {
-    void refresh();
+    const abort = new AbortController();
+    void refresh(abort.signal);
+    return () => {
+      abort.abort();
+    };
   }, [refresh]);
 
   function chooseFile(next: File | null, fromDrop = false) {
@@ -131,7 +147,12 @@ export function AdminDocumentsPage() {
 
     setBusy(true);
     setUploadError(null);
+    setReconnecting(false);
     setUploadStatus("processing");
+
+    watchAbortRef.current?.abort();
+    const abort = new AbortController();
+    watchAbortRef.current = abort;
 
     try {
       const accepted = await uploadKnowledgeDocument({
@@ -140,20 +161,38 @@ export function AdminDocumentsPage() {
         docType,
         requiredRoles,
       });
+      if (abort.signal.aborted) return;
       setUploadStatus(accepted.lifecycle_status);
-      const settled = await watchKnowledgeDocumentVersionStatus(accepted.version_id);
+      const settled = await watchKnowledgeDocumentVersionStatus(accepted.version_id, {
+        signal: abort.signal,
+        onReconnecting: () => {
+          if (!abort.signal.aborted) setReconnecting(true);
+        },
+        onReconnected: () => {
+          // First frame, not response headers, so the banner does not flicker.
+          if (!abort.signal.aborted) setReconnecting(false);
+        },
+      });
+      if (abort.signal.aborted) return;
+      setReconnecting(false);
       setUploadStatus(settled.lifecycle_status);
       if (settled.failure_reason) {
         setUploadError(settled.failure_reason);
       }
       setFile(null);
       setTitle("");
-      await refresh();
+      await refresh(abort.signal);
     } catch (err) {
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setUploadStatus(null);
-      setUploadError(err instanceof ApiError ? err.message : "Upload failed. Try again.");
+      setReconnecting(false);
+      const message =
+        err instanceof ProgressReconnectError || err instanceof ApiError
+          ? err.message
+          : "Upload failed. Try again.";
+      setUploadError(message);
     } finally {
-      setBusy(false);
+      if (!abort.signal.aborted) setBusy(false);
     }
   }
 
@@ -260,6 +299,11 @@ export function AdminDocumentsPage() {
               {uploadError && (
                 <p className="form__error" role="alert">
                   {uploadError}
+                </p>
+              )}
+              {reconnecting && (
+                <p className="admin-upload__status" role="status">
+                  Reconnecting…
                 </p>
               )}
               {uploadStatus && (
