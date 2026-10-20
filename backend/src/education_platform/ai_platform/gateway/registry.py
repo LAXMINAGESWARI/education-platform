@@ -77,7 +77,8 @@ class StepProfile:
 
 
 # Temperatures are the values passed today (chat_completion defaults to 0.0).
-# ADK steps keep ``adk_model`` (the LiteLLM id) until that path is migrated.
+# ADK settings store a LiteLLM id (``openrouter/openai/...``). The gateway sends
+# the plain OpenRouter id.
 _STEPS: dict[str, _Step] = {
     "policy_chat.answer": _Step(
         "policy_chat", _ModelSource.OPENROUTER, 0.2, _TimeoutKind.CHAT, "interactive", _Tier.MINI
@@ -167,14 +168,24 @@ def resolve(step: str, settings: Settings) -> StepProfile:
     )
 
 
+def openrouter_model_id(model: str) -> str:
+    """Strip a LiteLLM ``openrouter/`` provider prefix. OpenRouter rejects it."""
+    prefix = "openrouter/"
+    if model.startswith(prefix):
+        return model[len(prefix) :]
+    return model
+
+
 def _model(source: _ModelSource, settings: Settings) -> str:
     if source is _ModelSource.OPENROUTER:
-        return settings.openrouter_model
-    if source is _ModelSource.ADK:
-        return settings.adk_model
-    if source is _ModelSource.BLIND:
-        return settings.blind_solver_model
-    raise OpenRouterError(f"Unknown model source: {source}")
+        raw = settings.openrouter_model
+    elif source is _ModelSource.ADK:
+        raw = settings.adk_model
+    elif source is _ModelSource.BLIND:
+        raw = settings.blind_solver_model
+    else:
+        raise OpenRouterError(f"Unknown model source: {source}")
+    return openrouter_model_id(raw)
 
 
 def _timeout(kind: _TimeoutKind, settings: Settings) -> float:

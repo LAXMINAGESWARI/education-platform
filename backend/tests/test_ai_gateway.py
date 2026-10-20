@@ -39,7 +39,7 @@ from education_platform.ai_platform.gateway.client import (
 from education_platform.ai_platform.gateway.control import reset_controls
 from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.ai_platform.gateway.models import LlmGatewayCall
-from education_platform.ai_platform.gateway.registry import resolve, step_ids
+from education_platform.ai_platform.gateway.registry import openrouter_model_id, resolve, step_ids
 from education_platform.ai_platform.gateway.usage import UsageRecord, write_usage
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import _OPENROUTER_HEADERS, OpenRouterError
@@ -171,11 +171,11 @@ def test_registry_defaults_match_todays_models() -> None:
         "text_to_sql.validator": settings.openrouter_model,
         "text_to_sql.intent": settings.openrouter_model,
         "generation.outline": settings.openrouter_model,
-        "generation.lesson": settings.adk_model,
-        "generation.items.writer": settings.adk_model,
+        "generation.lesson": openrouter_model_id(settings.adk_model),
+        "generation.items.writer": openrouter_model_id(settings.adk_model),
         "generation.items.blind_solve": settings.blind_solver_model,
         "generation.vision": settings.openrouter_model,
-        "generation.curriculum": settings.adk_model,
+        "generation.curriculum": openrouter_model_id(settings.adk_model),
         "feedback.summary": settings.openrouter_model,
         "review_chat.reply": settings.openrouter_model,
         "authoring.questions": settings.openrouter_model,
@@ -262,7 +262,8 @@ async def test_retries_backoff_on_provider_status(
     )
     assert result.text == "recovered"
     assert len(script.requests) == 3
-    assert slept == [0.2, 0.4]
+    assert 0.1 <= slept[0] <= 0.2
+    assert 0.2 <= slept[1] <= 0.4
     assert _PROMPT not in str(result)
 
 
@@ -324,7 +325,7 @@ async def test_retries_connection_errors(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     assert result.text == "ok"
     assert calls["n"] == 2
-    assert slept == [0.2]
+    assert 0.1 <= slept[0] <= 0.2
 
 
 @pytest.mark.asyncio
@@ -932,3 +933,266 @@ def test_flags_parse_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert gateway_enabled("text_to_sql", settings) is True
     assert gateway_enabled("generation", settings) is False
     assert gateway_enabled(" feedback ", settings) is False
+
+
+def test_backoff_jitter_is_half_to_full_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(ai_gateway_retry_base_seconds=0.2, ai_gateway_retry_max_seconds=8)
+    draws = iter((0.0, 1.0))
+    monkeypatch.setattr(api.random, "random", lambda: next(draws))
+    assert api._delay(0, TimeoutError(), settings) == 0.1
+    assert api._delay(1, TimeoutError(), settings) == 0.4
+
+
+@pytest.mark.asyncio
+async def test_step_deadline_bounds_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"t": 0.0}
+    monkeypatch.setattr(api, "_monotonic", lambda: clock["t"])
+    timeouts: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(float(request.headers["x-stainless-read-timeout"]))
+        clock["t"] += 12
+        return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
+
+    _bind_async(handler)
+    settings = _settings(
+        ai_gateway_max_retries=8,
+        ai_gateway_timeout_chat_answer_seconds=30,
+        ai_gateway_retry_base_seconds=0,
+    )
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "hi"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    assert timeouts == [30.0, 18.0, 6.0]
+
+    clock["t"] = 100.0
+    guard_calls = {"n": 0}
+
+    def slow_guard(request: httpx.Request) -> httpx.Response:
+        guard_calls["n"] += 1
+        clock["t"] += float(request.headers["x-stainless-read-timeout"])
+        return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
+
+    _bind_async(slow_guard)
+    bounded = _settings(ai_gateway_max_retries=4, ai_gateway_retry_base_seconds=0)
+    for step in ("policy_chat.guard", "policy_chat.validator", "policy_chat.answer"):
+        with pytest.raises(OpenRouterError):
+            await complete(
+                step,
+                [{"role": "user", "content": "hi"}],
+                ctx=_ctx("policy_chat", bounded),
+            )
+    assert guard_calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_fallback_failure_does_not_extend_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=1,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        seen.append(str(body["model"]))
+        if body["model"] == primary and len(seen) > 1:
+            return httpx.Response(200, json=_completion("back", model=primary))
+        return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
+
+    _bind_async(handler)
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "open"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1020.0
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "fallback fails"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1030.0
+    recovered = await complete(
+        "policy_chat.answer",
+        [{"role": "user", "content": "probe"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert seen[0] == primary
+    assert seen[1] != primary
+    assert seen[2] == primary
+    assert recovered.text == "back"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_failure_reopens_for_one_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=3,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        model = str(body["model"])
+        seen.append(model)
+        if model == primary:
+            return httpx.Response(500, json={"error": {"message": "down", "type": "server"}})
+        return httpx.Response(200, json=_completion("fb", model=model))
+
+    _bind_async(handler)
+    for _ in range(3):
+        with pytest.raises(OpenRouterError):
+            await complete(
+                "policy_chat.answer",
+                [{"role": "user", "content": "trip"}],
+                ctx=_ctx("policy_chat", settings),
+            )
+    clock["t"] = 1030.0
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "probe fails"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1059.0
+    cooled = await complete(
+        "policy_chat.answer",
+        [{"role": "user", "content": "still open"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert cooled.text == "fb"
+    assert seen[-1] != primary
+
+    clock["t"] = 1060.0
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    models: list[str] = []
+
+    class _Gate(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            model = str(body["model"])
+            models.append(model)
+            if model == primary:
+                entered.set()
+                await release.wait()
+            return httpx.Response(200, json=_completion("ok", model=model))
+
+    reset_clients()
+    bind_http_clients(async_client=httpx.AsyncClient(transport=_Gate()))
+    probe = asyncio.create_task(
+        complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "one probe"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    )
+    await entered.wait()
+    other = asyncio.create_task(
+        complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "not the probe"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    )
+    await other
+    release.set()
+    await probe
+    assert models.count(primary) == 1
+    assert any(model != primary for model in models)
+
+
+def test_generation_steps_strip_the_litellm_prefix() -> None:
+    settings = _settings(adk_model="openrouter/openai/gpt-4o-mini")
+    for step in ("generation.lesson", "generation.items.writer", "generation.curriculum"):
+        assert resolve(step, settings).model == "openai/gpt-4o-mini"
+    assert resolve("generation.outline", settings).model == settings.openrouter_model
+    assert not resolve("generation.lesson", settings).model.startswith("openrouter/")
+
+
+def test_async_client_and_semaphore_follow_each_event_loop() -> None:
+    settings = _settings()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        return httpx.Response(200, json=_completion("ok", model=str(body["model"])))
+
+    bind_http_clients(async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    def once() -> str:
+        async def inner() -> str:
+            result = await complete(
+                "policy_chat.answer",
+                [{"role": "user", "content": "hi"}],
+                ctx=_ctx("policy_chat", settings),
+            )
+            control.async_semaphore("interactive", 4)
+            return result.text
+
+        return asyncio.run(inner())
+
+    assert once() == "ok"
+    assert once() == "ok"
+
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+
+
+def test_sync_semaphore_is_released_when_the_call_raises() -> None:
+    settings = _settings(ai_gateway_concurrency_interactive=1, ai_gateway_max_retries=0)
+    _bind_sync(_Script([500]))
+    with pytest.raises(OpenRouterError):
+        complete_sync(
+            "policy_chat.answer",
+            [{"role": "user", "content": "fail"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    _bind_sync(_Script([200], content="after"))
+    done = threading.Event()
+    box: dict[str, str] = {}
+
+    def second() -> None:
+        try:
+            box["text"] = complete_sync(
+                "policy_chat.answer",
+                [{"role": "user", "content": "again"}],
+                ctx=_ctx("policy_chat", settings),
+            ).text
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    assert done.wait(2)
+    thread.join(timeout=1)
+    assert box["text"] == "after"

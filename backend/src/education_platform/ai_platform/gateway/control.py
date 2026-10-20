@@ -1,25 +1,35 @@
 """Per-process concurrency caps and a small circuit breaker.
 
-The breaker counts exhausted provider failures, not each retry. While it is
-open the next calls skip the primary model and use the first fallback until
-the cooldown ends.
+The breaker counts exhausted provider failures, not each retry. Open skips the
+primary model. After the cooldown, one half-open probe may try the primary.
+Fallback failures do not move that cooldown.
 """
 
 from __future__ import annotations
 
 import asyncio
+import enum
 import threading
 import time
+from weakref import WeakKeyDictionary
 
 from education_platform.core.llm import OpenRouterError
 
 _guard = threading.Lock()
-_async_semaphores: dict[str, asyncio.Semaphore] = {}
+_async_semaphores: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]] = (
+    WeakKeyDictionary()
+)
 _sync_semaphores: dict[str, threading.BoundedSemaphore] = {}
 
 
 def _now() -> float:
     return time.monotonic()
+
+
+class _CircuitState(enum.Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 
 class CircuitBreaker:
@@ -28,22 +38,47 @@ class CircuitBreaker:
         self._cooldown = cooldown_seconds
         self._consecutive = 0
         self._open_until = 0.0
+        self._state = _CircuitState.CLOSED
         self._lock = threading.Lock()
 
     def primary_allowed(self) -> bool:
+        """True when this caller should use the primary model.
+
+        The open state refuses the primary. Once the cooldown has elapsed, the
+        first caller becomes the single half-open probe and later callers stay
+        on the fallback until that probe finishes.
+        """
         with self._lock:
-            return _now() >= self._open_until
+            if self._state is _CircuitState.CLOSED:
+                return True
+            if self._state is _CircuitState.HALF_OPEN:
+                return False
+            if _now() < self._open_until:
+                return False
+            self._state = _CircuitState.HALF_OPEN
+            return True
 
     def record_success(self) -> None:
         with self._lock:
             self._consecutive = 0
             self._open_until = 0.0
+            self._state = _CircuitState.CLOSED
 
     def record_failure(self) -> None:
         with self._lock:
+            if self._state is _CircuitState.OPEN:
+                return
+            if self._state is _CircuitState.HALF_OPEN:
+                self._trip()
+                return
             self._consecutive += 1
             if self._consecutive >= self._threshold:
-                self._open_until = _now() + self._cooldown
+                self._trip()
+
+    def _trip(self) -> None:
+        self._state = _CircuitState.OPEN
+        self._consecutive = 0
+        self._open_until = _now() + self._cooldown
 
 
 _breakers: dict[str, CircuitBreaker] = {}
@@ -59,14 +94,24 @@ def breaker_for(step: str, *, threshold: int, cooldown_seconds: float) -> Circui
 
 
 def async_semaphore(name: str, limit: int) -> asyncio.Semaphore:
+    """Return the semaphore for this concurrency class on the running loop.
+
+    An ``asyncio.Semaphore`` is bound to the loop that created it. Workers that
+    each call ``asyncio.run`` need their own.
+    """
+    loop = asyncio.get_running_loop()
     with _guard:
-        existing = _async_semaphores.get(name)
+        bucket = _async_semaphores.get(loop)
+        if bucket is None:
+            bucket = {}
+            _async_semaphores[loop] = bucket
+        existing = bucket.get(name)
         if existing is not None:
             return existing
         if limit < 1:
             raise OpenRouterError(f"Concurrency limit for {name} must be at least 1")
         created = asyncio.Semaphore(limit)
-        _async_semaphores[name] = created
+        bucket[name] = created
         return created
 
 

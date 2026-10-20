@@ -48,6 +48,11 @@ def test_single_head() -> None:
     assert len(heads) == 1
     assert len(script.get_bases()) == 1
 
+    gateway = script.get_revision("b3c4d5e6f7a8")
+    assert gateway is not None
+    # b3c4d5e6f7a8 must revise d6e7f8a9b0c1. Revising c5d6e7f8a9b0 forks a second head.
+    assert gateway.down_revision == "d6e7f8a9b0c1"
+
     head_id = heads[0]
     reachable: set[str] = set()
     pending = [head_id]

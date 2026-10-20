@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future
@@ -72,11 +73,11 @@ async def complete(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
     except Exception as exc:
-        _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
+        await _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
-    _schedule_meter(_ok_record(profile, usage, served, _latency_ms(started)))
+    await _schedule_meter(_ok_record(profile, usage, served, _latency_ms(started)))
     parsed = _parse_json(text) if response_format is not None else None
     return Completion(text=text, parsed_json=parsed, usage=usage, served_model=served)
 
@@ -120,13 +121,19 @@ async def _execute_async(
         cooldown_seconds=settings.ai_gateway_circuit_cooldown_seconds,
     )
     skipped = not breaker.primary_allowed() and bool(profile.fallback_models)
+    using_primary = not skipped
     selected = profile.fallback_models[0] if skipped else profile.model
     semaphore = async_semaphore(
         profile.concurrency_class, _limit(profile.concurrency_class, settings)
     )
     client = get_async_client(settings)
     attempts = profile.max_retries + 1
+    deadline = _monotonic() + profile.timeout_seconds
     for attempt in range(attempts):
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            _note_primary(breaker, using_primary=using_primary, provider_failure=True)
+            raise OpenRouterError("OpenRouter call exceeded its deadline")
         try:
             async with semaphore:
                 text, usage, served = await _once_async(
@@ -137,16 +144,19 @@ async def _execute_async(
                     skipped_primary=skipped,
                     response_format=response_format,
                     stream=stream,
+                    timeout=_attempt_timeout(profile.timeout_seconds, remaining),
                 )
         except Exception as exc:
-            if _retryable(exc) and attempt + 1 < attempts:
-                await _async_sleep(_delay(attempt, exc, settings))
+            if _can_retry(exc, attempt, attempts, deadline):
+                await _async_sleep(_capped_delay(attempt, exc, settings, deadline))
                 continue
-            if _provider_failure(exc):
-                breaker.record_failure()
+            _note_primary(
+                breaker,
+                using_primary=using_primary,
+                provider_failure=_provider_failure(exc),
+            )
             raise
-        if not skipped:
-            breaker.record_success()
+        _note_primary(breaker, using_primary=using_primary, provider_failure=False)
         return text, usage, served or selected
     raise OpenRouterError("OpenRouter retry loop exited without a result")
 
@@ -165,13 +175,23 @@ def _execute_sync(
         cooldown_seconds=settings.ai_gateway_circuit_cooldown_seconds,
     )
     skipped = not breaker.primary_allowed() and bool(profile.fallback_models)
+    using_primary = not skipped
     selected = profile.fallback_models[0] if skipped else profile.model
     semaphore = sync_semaphore(
         profile.concurrency_class, _limit(profile.concurrency_class, settings)
     )
     client = get_sync_client(settings)
     attempts = profile.max_retries + 1
+    deadline = _monotonic() + profile.timeout_seconds
     for attempt in range(attempts):
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            _note_primary(breaker, using_primary=using_primary, provider_failure=True)
+            raise OpenRouterError("OpenRouter call exceeded its deadline")
+        error: Exception | None = None
+        text = ""
+        usage = TokenUsage()
+        served = ""
         semaphore.acquire()
         try:
             text, usage, served = _once_sync(
@@ -182,19 +202,24 @@ def _execute_sync(
                 skipped_primary=skipped,
                 response_format=response_format,
                 stream=stream,
+                timeout=_attempt_timeout(profile.timeout_seconds, remaining),
             )
         except Exception as exc:
+            error = exc
+        finally:
             semaphore.release()
-            if _retryable(exc) and attempt + 1 < attempts:
-                _sync_sleep(_delay(attempt, exc, settings))
-                continue
-            if _provider_failure(exc):
-                breaker.record_failure()
-            raise
-        semaphore.release()
-        if not skipped:
-            breaker.record_success()
-        return text, usage, served or selected
+        if error is None:
+            _note_primary(breaker, using_primary=using_primary, provider_failure=False)
+            return text, usage, served or selected
+        if _can_retry(error, attempt, attempts, deadline):
+            _sync_sleep(_capped_delay(attempt, error, settings, deadline))
+            continue
+        _note_primary(
+            breaker,
+            using_primary=using_primary,
+            provider_failure=_provider_failure(error),
+        )
+        raise error
     raise OpenRouterError("OpenRouter retry loop exited without a result")
 
 
@@ -207,6 +232,7 @@ async def _once_async(
     skipped_primary: bool,
     response_format: Mapping[str, Any] | None,
     stream: bool,
+    timeout: float,
 ) -> tuple[str, TokenUsage, str]:
     kwargs = _request_kwargs(
         profile,
@@ -215,6 +241,7 @@ async def _once_async(
         skipped_primary=skipped_primary,
         response_format=response_format,
         stream=stream,
+        timeout=timeout,
     )
     create = client.chat.completions.create
     if stream:
@@ -231,6 +258,7 @@ def _once_sync(
     skipped_primary: bool,
     response_format: Mapping[str, Any] | None,
     stream: bool,
+    timeout: float,
 ) -> tuple[str, TokenUsage, str]:
     kwargs = _request_kwargs(
         profile,
@@ -239,6 +267,7 @@ def _once_sync(
         skipped_primary=skipped_primary,
         response_format=response_format,
         stream=stream,
+        timeout=timeout,
     )
     create = client.chat.completions.create
     if stream:
@@ -254,12 +283,13 @@ def _request_kwargs(
     skipped_primary: bool,
     response_format: Mapping[str, Any] | None,
     stream: bool,
+    timeout: float,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": selected,
         "messages": list(messages),
         "temperature": profile.temperature,
-        "timeout": profile.timeout_seconds,
+        "timeout": timeout,
         "extra_headers": {"HTTP-Referer": HTTP_REFERER, "X-Title": profile.title},
         "extra_body": {
             "models": _model_chain(profile, selected, skipped_primary=skipped_primary),
@@ -368,12 +398,51 @@ def _provider_failure(exc: BaseException) -> bool:
     return _retryable(exc)
 
 
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _attempt_timeout(step_timeout: float, remaining: float) -> float:
+    """First attempt keeps the step timeout; later attempts use what is left."""
+    if remaining >= step_timeout - 0.05:
+        return step_timeout
+    return remaining
+
+
+def _can_retry(exc: BaseException, attempt: int, attempts: int, deadline: float) -> bool:
+    return _retryable(exc) and attempt + 1 < attempts and deadline - _monotonic() > 0
+
+
+def _capped_delay(attempt: int, exc: BaseException, settings: Settings, deadline: float) -> float:
+    remaining = deadline - _monotonic()
+    if remaining <= 0:
+        return 0.0
+    return min(_delay(attempt, exc, settings), remaining)
+
+
+def _note_primary(breaker: Any, *, using_primary: bool, provider_failure: bool) -> None:
+    """Record the primary's outcome. Fallback calls leave the cooldown alone."""
+    if not using_primary:
+        return
+    if provider_failure:
+        breaker.record_failure()
+        return
+    breaker.record_success()
+
+
 def _delay(attempt: int, exc: BaseException, settings: Settings) -> float:
     retry_after = _retry_after(exc)
     if retry_after is not None:
         return min(retry_after, settings.ai_gateway_retry_max_seconds)
     growth = float(settings.ai_gateway_retry_base_seconds) * (2**attempt)
-    return float(min(growth, settings.ai_gateway_retry_max_seconds))
+    return _jitter(float(min(growth, settings.ai_gateway_retry_max_seconds)))
+
+
+def _jitter(delay: float) -> float:
+    """Spread exponential backoff across half to all of ``delay``."""
+    if delay <= 0:
+        return 0.0
+    return delay * (0.5 + 0.5 * random.random())
 
 
 def _retry_after(exc: BaseException) -> float | None:
@@ -466,42 +535,47 @@ def _safe_meter(record: UsageRecord) -> None:
 _meter_futures: set[Future[None]] = set()
 
 
-def _schedule_meter(record: UsageRecord) -> None:
-    """Insert usage on a worker thread and return without waiting.
+async def _schedule_meter(record: UsageRecord) -> None:
+    """Insert usage off the event loop and return without waiting for the database.
 
+    ``asyncio.to_thread`` runs the sync insert. One yield lets that thread start.
     Database errors stay inside ``write_usage``, which logs the step and the
     error class. An unexpected failure is logged here. Neither one fails the
     completion.
     """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         _safe_meter(record)
         return
     box: Future[None] = Future()
 
-    def _run() -> None:
-        try:
-            write_usage(record)
-        except Exception as exc:
-            logger.warning(
-                "LLM gateway metering failed step=%s error_class=%s",
-                record.step,
-                type(exc).__name__,
-            )
+    async def _run() -> None:
+        def _write() -> None:
+            try:
+                write_usage(record)
+            except Exception as exc:
+                logger.warning(
+                    "LLM gateway metering failed step=%s error_class=%s",
+                    record.step,
+                    type(exc).__name__,
+                )
+                if not box.done():
+                    box.set_exception(exc)
+                return
             if not box.done():
-                box.set_exception(exc)
-            return
-        if not box.done():
-            box.set_result(None)
+                box.set_result(None)
 
-    scheduled = loop.run_in_executor(None, _run)
+        await asyncio.to_thread(_write)
+
+    task = asyncio.create_task(_run())
     _meter_futures.add(box)
     box.add_done_callback(_meter_futures.discard)
-    scheduled.add_done_callback(_retrieve_executor_error)
+    task.add_done_callback(_retrieve_task_error)
+    await asyncio.sleep(0)
 
 
-def _retrieve_executor_error(done: asyncio.Future[None]) -> None:
+def _retrieve_task_error(done: asyncio.Task[None]) -> None:
     try:
         done.exception()
     except asyncio.CancelledError:
