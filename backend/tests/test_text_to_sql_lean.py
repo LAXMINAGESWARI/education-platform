@@ -139,7 +139,6 @@ def _gpt_allows_after_jev(monkeypatch: pytest.MonkeyPatch) -> None:
             parsed = {}
         return _completion("{}", parsed)
 
-    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", allow)
     monkeypatch.setattr(_INJECTION, "legacy_gpt_flag", allow)
     monkeypatch.setattr(_VALIDATOR, "legacy_gpt_flag", allow)
     monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
@@ -657,7 +656,8 @@ async def test_unconfigured_batch_does_not_call_jev(monkeypatch: pytest.MonkeyPa
 
 def test_pipeline_mode_and_gateway_selection() -> None:
     assert pipeline_mode(_settings(text_to_sql_pipeline="lean")) == LEAN
-    assert pipeline_mode(_settings(text_to_sql_pipeline="nope")) == "legacy"
+    assert pipeline_mode(_settings(text_to_sql_pipeline="legacy")) == "legacy"
+    assert pipeline_mode(_settings(text_to_sql_pipeline=" LEAN ")) == LEAN
     lean_state = _state(pipeline=LEAN)
     legacy_state = _state(pipeline="legacy")
     assert use_text_to_sql_gateway(_settings(), lean_state) is True

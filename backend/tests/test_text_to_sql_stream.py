@@ -381,6 +381,7 @@ def test_stream_route_rejects_non_teachers_and_streams_the_envelope(
         return state
 
     monkeypatch.setattr(stream_mod, "run_lean", paced)
+    monkeypatch.setattr(router_mod, "pipeline_mode", lambda _settings: "lean")
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
 

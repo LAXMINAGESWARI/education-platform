@@ -17,7 +17,8 @@ import httpx
 import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from pydantic import ValidationError
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 import education_platform.modules.text_to_sql.guards as guards_mod
@@ -26,16 +27,24 @@ import education_platform.modules.text_to_sql.stream as stream_mod
 from education_platform.ai_platform.gateway.api import Completion
 from education_platform.ai_platform.gateway.usage import TokenUsage
 from education_platform.core.config import Settings
+from education_platform.db.session import get_engine, get_session_factory
 from education_platform.modules.audit.models import AuditEvent
 from education_platform.modules.judge.types import DecisionResult, NoulAnswer
 from education_platform.modules.text_to_sql import router as router_mod
-from education_platform.modules.text_to_sql.lean import run_lean
+from education_platform.modules.text_to_sql.lean import (
+    Speculative,
+    push_speculative,
+    reset_speculative,
+    run_lean,
+)
 from education_platform.modules.text_to_sql.nodes.audit_log import audit_log as write_audit
 from education_platform.modules.text_to_sql.run_store import DbRunStore, MemoryRunStore
 from education_platform.modules.text_to_sql.state import (
+    INJECTION_BLOCKED,
     OFF_TOPIC_REJECTED,
     TextToSQLState,
     error_category,
+    format_error,
 )
 from education_platform.modules.text_to_sql.stream import HEARTBEAT, iter_ask_stream
 from evals.guard.dataset import DEFAULT_DATASET, load_dataset
@@ -351,7 +360,6 @@ async def test_nothing_streams_before_guard_verdicts(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(guards_mod, "get_settings", lambda: settings)
     monkeypatch.setattr(guards_mod, "post_decisions", post)
-    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", allow)
     monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
     _patch_pipeline(monkeypatch, run_data_guards=guards_mod.run_data_guards)
 
@@ -621,7 +629,6 @@ async def test_jev_pass_and_gpt_off_topic_refuses_before_sql(
 
     monkeypatch.setattr(guards_mod, "get_settings", lambda: settings)
     monkeypatch.setattr(guards_mod, "post_decisions", post)
-    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", gpt)
     monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
     _patch_pipeline(monkeypatch, run_data_guards=guards_mod.run_data_guards, execute_sql=execute)
 
@@ -689,3 +696,279 @@ async def test_cancelled_stream_logs_disconnect_without_a_traceback(
         background.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _checked_out() -> int:
+    return int(get_engine().sync_engine.pool.checkedout())
+
+
+async def _hold_connection(state: TextToSQLState, held: asyncio.Event) -> TextToSQLState:
+    factory = get_session_factory()
+    async with factory() as session:
+        await session.execute(text("SELECT 1"))
+        held.set()
+        await asyncio.Event().wait()
+    return state
+
+
+async def _hang(state: TextToSQLState) -> TextToSQLState:
+    await asyncio.Event().wait()
+    return state
+
+
+def _release_background() -> None:
+    pending = list(stream_mod._BACKGROUND)
+    for background in pending:
+        background.cancel()
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("kind", ["injection", "off_topic"])
+def test_jev_zero_and_gpt_flag_refuses_on_ask_and_stream(
+    client: TestClient,
+    bench: fixture_mod.BenchSchool,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    del bench
+    settings = Settings(
+        _env_file=None,
+        openrouter_api_key="test-key",
+        text_to_sql_pipeline="lean",
+        text_to_sql_guard_batch=True,
+    )
+    executed = {"n": 0}
+
+    async def post(**_kwargs: Any) -> DecisionResult:
+        return _decision(0.0, 0.0)
+
+    async def complete(step: str, _messages: list[dict[str, Any]], **_kwargs: Any) -> Completion:
+        if step == "text_to_sql.guard":
+            return _completion({"injection": kind == "injection"})
+        if step == "text_to_sql.validator":
+            return _completion({"off_topic": kind == "off_topic"})
+        raise AssertionError(step)
+
+    async def execute(state: TextToSQLState) -> TextToSQLState:
+        executed["n"] += 1
+        return state
+
+    monkeypatch.setattr(router_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(guards_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(guards_mod, "post_decisions", post)
+    monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
+    monkeypatch.setattr(nodes, "execute_sql", execute)
+    monkeypatch.setattr(nodes, "intent_router", _hang)
+    monkeypatch.setattr(nodes, "load_schema", _hang)
+
+    meera = _login(client, fixture_mod.TEACHER_EMAIL)
+    asked = client.post(_ASK, json={"question": "How many students do I teach?"}, headers=meera)
+    assert asked.status_code == 200, asked.text
+    answer = asked.json()["natural_answer"]
+    if kind == "injection":
+        assert answer.startswith("I can't process that request")
+    else:
+        assert answer.startswith("I can only help with questions about your school's students")
+    assert executed["n"] == 0
+
+    request_id = str(uuid4())
+    with client.stream(
+        "POST",
+        _STREAM,
+        json={"question": "How many students do I teach?", "request_id": request_id},
+        headers=meera,
+    ) as response:
+        assert response.status_code == 200
+        frames = _parse(b"".join(response.iter_bytes()))
+    names = [name for name, _ in frames]
+    assert "table" not in names
+    assert "answer_delta" not in names
+    assert "final" not in names
+    assert frames[-1][0] == "refusal"
+    assert executed["n"] == 0
+    _release_background()
+
+
+@pytest.mark.regression
+def test_ask_stream_is_404_when_the_pipeline_is_legacy(
+    client: TestClient,
+    bench: fixture_mod.BenchSchool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del bench
+    settings = Settings(_env_file=None, text_to_sql_pipeline="legacy")
+    monkeypatch.setattr(router_mod, "get_settings", lambda: settings)
+    meera = _login(client, fixture_mod.TEACHER_EMAIL)
+    response = client.post(
+        _STREAM,
+        json={"question": "How many students do I teach?", "request_id": str(uuid4())},
+        headers=meera,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == router_mod.STREAM_UNAVAILABLE_DETAIL
+    assert "/api/v1/text-to-sql/ask" in response.json()["detail"]
+
+
+@pytest.mark.regression
+def test_unknown_text_to_sql_pipeline_fails_at_startup() -> None:
+    with pytest.raises(ValidationError, match="text_to_sql_pipeline"):
+        Settings(_env_file=None, text_to_sql_pipeline="leen")
+    parsed = Settings(_env_file=None, text_to_sql_pipeline=" LEAN ")
+    assert parsed.text_to_sql_pipeline == "lean"
+
+
+@pytest.mark.regression
+async def test_audit_write_failure_emits_no_data_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "audit-fail-row-9f3c"
+
+    async def execute(state: TextToSQLState) -> TextToSQLState:
+        return {
+            **state,
+            "query_result": [{"name": secret}],
+            "result_row_count": 1,
+            "error": None,
+        }
+
+    async def audit(state: TextToSQLState) -> TextToSQLState:
+        return {
+            **state,
+            "natural_answer": "not recorded",
+            "error": format_error("AUDIT_ERROR", "audit_log: failed to persist"),
+        }
+
+    async def compose(state: TextToSQLState) -> TextToSQLState:
+        raise AssertionError("compose ran before the audit write succeeded")
+
+    _patch_pipeline(monkeypatch, execute_sql=execute, audit_log=audit, compose_answer=compose)
+    request_id = str(uuid4())
+    frames = await _collect(
+        _state(stream_request_id=request_id),
+        request_id,
+        store=MemoryRunStore(),
+    )
+    names = [name for name, _ in frames]
+    assert "table" not in names
+    assert "answer_delta" not in names
+    assert "final" not in names
+    assert frames[-1][0] == "error"
+    assert secret not in json.dumps(frames)
+
+
+@pytest.mark.regression
+async def test_disconnect_cancels_speculative_tasks_and_releases_the_pool(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del db_session
+    baseline = _checked_out()
+    held = asyncio.Event()
+    spec = Speculative()
+    token = push_speculative(spec)
+
+    async def load_schema(state: TextToSQLState) -> TextToSQLState:
+        return await _hold_connection(state, held)
+
+    async def guards(state: TextToSQLState) -> TextToSQLState:
+        await held.wait()
+        return await _hang(state)
+
+    _patch_pipeline(
+        monkeypatch,
+        run_data_guards=guards,
+        load_schema=load_schema,
+        intent_router=_hang,
+    )
+    request_id = str(uuid4())
+    store = MemoryRunStore()
+
+    async def drive() -> None:
+        async for _chunk in iter_ask_stream(
+            _state(stream_request_id=request_id),
+            request_id=request_id,
+            timeout_seconds=5,
+            timeout_message="timeout",
+            unexpected_message="unexpected",
+            store=store,
+        ):
+            pass
+
+    task = asyncio.create_task(drive())
+    try:
+        await asyncio.wait_for(held.wait(), timeout=2)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+        assert spec.tasks
+        assert all(item.cancelled() for item in spec.tasks)
+        assert _checked_out() == baseline
+    finally:
+        reset_speculative(token)
+        _release_background()
+        pending = list(stream_mod._BACKGROUND)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.regression
+async def test_guard_exception_cancels_speculative_tasks_and_releases_the_pool(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del db_session
+    baseline = _checked_out()
+    held = asyncio.Event()
+    spec = Speculative()
+    token = push_speculative(spec)
+
+    async def load_schema(state: TextToSQLState) -> TextToSQLState:
+        return await _hold_connection(state, held)
+
+    async def guards(state: TextToSQLState) -> TextToSQLState:
+        await held.wait()
+        raise RuntimeError("guard failed")
+
+    _patch_pipeline(
+        monkeypatch,
+        run_data_guards=guards,
+        load_schema=load_schema,
+        intent_router=_hang,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="guard failed"):
+            await run_lean(_state())
+        assert spec.tasks
+        assert all(item.cancelled() for item in spec.tasks)
+        assert _checked_out() == baseline
+    finally:
+        reset_speculative(token)
+
+
+@pytest.mark.regression
+async def test_guard_refusal_cancels_speculative_tasks(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del db_session
+    baseline = _checked_out()
+    held = asyncio.Event()
+    spec = Speculative()
+    token = push_speculative(spec)
+
+    async def load_schema(state: TextToSQLState) -> TextToSQLState:
+        return await _hold_connection(state, held)
+
+    async def guards(state: TextToSQLState) -> TextToSQLState:
+        await held.wait()
+        return {**state, "error": format_error(INJECTION_BLOCKED, "blocked")}
+
+    _patch_pipeline(
+        monkeypatch,
+        run_data_guards=guards,
+        load_schema=load_schema,
+        intent_router=_hang,
+    )
+    try:
+        result = await run_lean(_state())
+        assert error_category(result.get("error")) == INJECTION_BLOCKED
+        assert spec.tasks
+        assert all(item.cancelled() for item in spec.tasks)
+        assert _checked_out() == baseline
+    finally:
+        reset_speculative(token)

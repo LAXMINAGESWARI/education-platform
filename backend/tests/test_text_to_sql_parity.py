@@ -162,7 +162,6 @@ def parity(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     async def gpt_allows(**_kwargs: Any) -> bool:
         return False
 
-    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", gpt_allows)
     monkeypatch.setattr(_INJECTION, "legacy_gpt_flag", gpt_allows)
     monkeypatch.setattr(_VALIDATOR, "legacy_gpt_flag", gpt_allows)
 
@@ -218,10 +217,28 @@ async def test_security_nodes_match(parity: dict[str, list[Any]], question: str)
     lean_security = _security(lean_log)
     if question == _TEMPLATE_Q:
         assert legacy_security[:1] != ["load_schema"]
-        assert lean_security[0] == "load_schema"
-        assert lean_security[2:] == legacy_security
+        assert lean_security[:2] == ["load_schema", "link_schema"]
+        assert legacy_security == [
+            "validate_sql",
+            "apply_role_scope",
+            "execute_sql",
+            "sanity_check",
+            "audit_log",
+        ]
+        # Lean writes the audit row immediately after execute, before sanity.
+        assert lean_security[2:] == [
+            "validate_sql",
+            "apply_role_scope",
+            "execute_sql",
+            "audit_log",
+            "sanity_check",
+        ]
     else:
-        assert lean_security == legacy_security
+        assert [name for name in lean_security if name != "audit_log"] == [
+            name for name in legacy_security if name != "audit_log"
+        ]
+        assert lean_security[lean_security.index("execute_sql") + 1] == "audit_log"
+        assert legacy_security[-1] == "audit_log"
         assert lean_security.count("load_schema") == 1
     assert legacy_sql == lean_sql
     assert legacy_sql and "count" in legacy_sql[0].lower()
@@ -238,4 +255,47 @@ async def test_guard_block_never_validates_or_executes(
     for log in (legacy_log, parity["log"]):
         assert "validate_sql" not in log
         assert "execute_sql" not in log
+        assert "audit_log" in log
+
+
+@pytest.mark.parametrize(
+    ("injection", "off_topic"),
+    [(True, False), (False, True)],
+)
+async def test_gpt_only_flag_blocks_both_pipelines(
+    parity: dict[str, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    injection: bool,
+    off_topic: bool,
+) -> None:
+    """Jev 0 with a GPT flag refuses on legacy and lean. SQL does not run."""
+
+    async def gpt(**kwargs: Any) -> bool:
+        if kwargs.get("field") == "injection":
+            return injection
+        return off_topic
+
+    async def complete(step: str, _messages: list[dict[str, Any]], **_kwargs: Any) -> Any:
+        if step == "text_to_sql.guard":
+            parsed: dict[str, Any] = {"injection": injection}
+        elif step == "text_to_sql.validator":
+            parsed = {"off_topic": off_topic}
+        else:
+            parsed = {}
+        return Completion(
+            text="{}", parsed_json=parsed, usage=TokenUsage(1, 1), served_model="test"
+        )
+
+    monkeypatch.setattr(_INJECTION, "legacy_gpt_flag", gpt)
+    monkeypatch.setattr(_VALIDATOR, "legacy_gpt_flag", gpt)
+    monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
+
+    question = "How many students do I teach in total?"
+    await _legacy(question)
+    legacy_log = list(parity["log"])
+    parity["log"].clear()
+    await _lean(question)
+    for log in (legacy_log, parity["log"]):
+        assert "execute_sql" not in log
+        assert "validate_sql" not in log
         assert "audit_log" in log
