@@ -7,7 +7,12 @@ cd backend
 uv run python scripts/eval_chat_guard.py --dry-run                 # rows + cost, no network
 uv run python scripts/eval_chat_guard.py --live --max-usd 2.00     # the paid run
 uv run python scripts/eval_chat_guard.py --rescore evals/guard/results/<run>/raw_scores.jsonl
+uv run python scripts/eval_chat_guard.py --rescore evals/guard/datasets/raw_scores_a0b00a3.jsonl --threshold 0.85 --surfaces policy
 ```
+
+`datasets/raw_scores_a0b00a3.jsonl` is the paid run on `a0b00a3`, replayed with no network.
+At both 0.85 and the 0.6 default the policy pipeline refuses 68/69 injections, 91/92 end to end,
+and 2/30 policy benign rows (`bl-02`, `bl-09`). The injection miss is `ii-09`.
 
 The key is read by `Settings` from `OPENROUTER_API_KEY` (environment, or `backend/.env`) in
 `--live` mode only. It is never printed or written. Models: `JEV_MODEL` (default
