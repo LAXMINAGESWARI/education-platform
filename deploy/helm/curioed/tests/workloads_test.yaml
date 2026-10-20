@@ -69,6 +69,15 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
       - isNull:
           path: spec.template.spec.containers[0].securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.securityContext.runAsGroup
+      - isNull:
+          path: spec.template.spec.securityContext.fsGroup
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
       - equal:
           path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
           value: false
@@ -117,6 +126,12 @@ tests:
           value: false
       - isNull:
           path: spec.template.spec.securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.securityContext.runAsGroup
+      - isNull:
+          path: spec.template.spec.securityContext.fsGroup
+      - isNull:
+          path: spec.template.spec.volumes
       - equal:
           path: spec.template.spec.containers[0].securityContext.capabilities.add
           value:

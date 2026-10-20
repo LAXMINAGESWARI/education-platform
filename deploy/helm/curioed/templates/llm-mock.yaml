@@ -69,10 +69,12 @@ spec:
           volumeMounts:
             - name: script
               mountPath: /opt/mock
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.llmMock.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.llmMock.resources | nindent 12 }}
       volumes:
         - name: script
           configMap:
             name: {{ include "curioed.fullname" . }}-llm-mock
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.llmMock.securityContext) | nindent 8 }}
 {{- end }}

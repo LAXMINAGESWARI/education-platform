@@ -42,6 +42,11 @@ spec:
           image: {{ include "curioed.imageRef" .Values.web.image }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.web.securityContext "add" .Values.web.addCapabilities) | nindent 10 }}
+          {{- $webMounts := include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.web.securityContext "nginx" true) | trim }}
+          {{- if $webMounts }}
+          volumeMounts:
+            {{- $webMounts | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.web.service.port }}
@@ -61,3 +66,8 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+      {{- $webVolumes := include "curioed.tmpVolumes" (dict "root" . "security" .Values.web.securityContext "nginx" true) | trim }}
+      {{- if $webVolumes }}
+      volumes:
+        {{- $webVolumes | nindent 8 }}
+      {{- end }}

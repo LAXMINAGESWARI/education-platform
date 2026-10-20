@@ -38,6 +38,16 @@ spec:
           {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
+          {{- $seedMounts := include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.curriculumSeed.securityContext) | trim }}
+          {{- if $seedMounts }}
+          volumeMounts:
+            {{- $seedMounts | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.curriculumSeed.resources | nindent 12 }}
+      {{- $seedVolumes := include "curioed.tmpVolumes" (dict "root" . "security" .Values.curriculumSeed.securityContext) | trim }}
+      {{- if $seedVolumes }}
+      volumes:
+        {{- $seedVolumes | nindent 8 }}
+      {{- end }}
 {{- end }}

@@ -158,10 +158,11 @@ dbPool:
 
 revisionHistoryLimit: 3
 
-# Shared hardening. runAsNonRoot and runAsUser are set on each workload.
-# readOnlyRootFilesystem stays false. Turn it on only after /tmp and the HF
-# cache are writable emptyDirs or volumes for that image. Nginx also writes
-# its pid and cache under /var.
+# Shared hardening. runAsNonRoot, runAsUser, runAsGroup, and fsGroup are set
+# on each workload. A null user, group, or fsGroup is omitted.
+# readOnlyRootFilesystem stays false here. A workload can set its own bool.
+# When that bool is true the pod mounts an emptyDir on /tmp. Nginx also mounts
+# /var/cache/nginx and /var/run. The defaults below stay false.
 podSecurity:
   seccompProfile: RuntimeDefault
   allowPrivilegeEscalation: false
@@ -233,6 +234,9 @@ api:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   replicaCount: 1
   service:
     port: 8000
@@ -278,6 +282,9 @@ web:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   service:
     port: 80
   # Official nginx listens on port 80 and its entrypoint chowns cache
@@ -314,6 +321,9 @@ workerDocling:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   # This is the compose `worker`: python -m education_platform.workers,
   # same volumes and app env, no db_ping healthcheck. It drains every queue
   # until WORKER_QUEUES exists. 600s covers a long ingest.
@@ -339,6 +349,9 @@ workers:
     securityContext:
       runAsNonRoot: false
       runAsUser: null
+      runAsGroup: null
+      fsGroup: null
+      readOnlyRootFilesystem: false
     # Off in prod until WORKER_QUEUES exists. Same all-queue command as
     # docling, so a Docling job claimed here can exceed this limit.
     # Shutdown grace stays 25. Pod grace stays at least 40.
@@ -358,6 +371,9 @@ migrate:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   # pre-install runs before this chart's Cluster and backup PVC exist.
   # First install disables this and curriculumSeed, then the upgrade enables both.
   hooks: pre-install,pre-upgrade
@@ -383,6 +399,9 @@ curriculumSeed:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   hooks: pre-install,pre-upgrade
   weight: "10"
   deletePolicy: before-hook-creation,hook-succeeded
@@ -556,6 +575,9 @@ llmMock:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   pullPolicy: IfNotPresent
   latencyMinSeconds: "1"
   latencyMaxSeconds: "2"
@@ -575,6 +597,9 @@ demoData:
   securityContext:
     runAsNonRoot: false
     runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
   backoffLimit: 1
   activeDeadlineSeconds: 1800
   resources:

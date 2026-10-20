@@ -59,6 +59,7 @@ spec:
               mountPath: /scripts
             - name: backups
               mountPath: /backups
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.migrate.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.migrate.resources | nindent 12 }}
       volumes:
@@ -68,4 +69,5 @@ spec:
         - name: backups
           persistentVolumeClaim:
             claimName: {{ include "curioed.backupClaim" . }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.migrate.securityContext) | nindent 8 }}
 {{- end }}

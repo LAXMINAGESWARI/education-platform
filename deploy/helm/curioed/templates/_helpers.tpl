@@ -145,15 +145,57 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end }}
 
-{{/* .security is the workload's runAsNonRoot / runAsUser. Omit runAsUser when null. */}}
+{{/* .security is the workload identity. Omit user, group, and fsGroup when null. */}}
 {{- define "curioed.podSecurityContext" -}}
 securityContext:
   runAsNonRoot: {{ .security.runAsNonRoot }}
   {{- with .security.runAsUser }}
   runAsUser: {{ . | int64 }}
   {{- end }}
+  {{- with .security.runAsGroup }}
+  runAsGroup: {{ . | int64 }}
+  {{- end }}
+  {{- with .security.fsGroup }}
+  fsGroup: {{ . | int64 }}
+  {{- end }}
   seccompProfile:
     type: {{ .root.Values.podSecurity.seccompProfile }}
+{{- end }}
+
+{{/* Per-workload bool wins. Otherwise the chart-level podSecurity flag. */}}
+{{- define "curioed.readOnlyRootFilesystem" -}}
+{{- if kindIs "bool" .security.readOnlyRootFilesystem -}}
+{{- .security.readOnlyRootFilesystem -}}
+{{- else -}}
+{{- .root.Values.podSecurity.readOnlyRootFilesystem -}}
+{{- end -}}
+{{- end }}
+
+{{/* Writable dirs for a read-only root. Nginx also needs its cache and pid dir. */}}
+{{- define "curioed.tmpVolumeMounts" -}}
+{{- if eq (include "curioed.readOnlyRootFilesystem" .) "true" }}
+- name: tmp
+  mountPath: /tmp
+{{- if .nginx }}
+- name: nginx-cache
+  mountPath: /var/cache/nginx
+- name: nginx-run
+  mountPath: /var/run
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "curioed.tmpVolumes" -}}
+{{- if eq (include "curioed.readOnlyRootFilesystem" .) "true" }}
+- name: tmp
+  emptyDir: {}
+{{- if .nginx }}
+- name: nginx-cache
+  emptyDir: {}
+- name: nginx-run
+  emptyDir: {}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{- define "curioed.containerSecurityContext" -}}
@@ -163,7 +205,10 @@ securityContext:
   {{- with .security.runAsUser }}
   runAsUser: {{ . | int64 }}
   {{- end }}
-  readOnlyRootFilesystem: {{ .root.Values.podSecurity.readOnlyRootFilesystem }}
+  {{- with .security.runAsGroup }}
+  runAsGroup: {{ . | int64 }}
+  {{- end }}
+  readOnlyRootFilesystem: {{ include "curioed.readOnlyRootFilesystem" . | trim }}
   capabilities:
     drop:
       {{- toYaml .root.Values.podSecurity.dropCapabilities | nindent 6 }}

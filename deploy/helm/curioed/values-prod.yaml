@@ -83,8 +83,11 @@ workers:
 migrate:
   enabled: true
 
+# PR #197 supplies `python -m education_platform.modules.materials.seed`.
+# Hook weight 10 runs after migrate (weight 5). On the first install, disable
+# this and migrate with --set until the CNPG Cluster exists, then upgrade.
 curriculumSeed:
-  enabled: false
+  enabled: true
 
 cloudflared:
   enabled: true

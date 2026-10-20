@@ -11,7 +11,7 @@ Image tags are `api.image.tag` and `web.image.tag`. Helm `required` rejects an e
 | File | Namespace | What it is |
 | --- | --- | --- |
 | `values.yaml` | chosen at install | Hardened defaults. API HPA 1–4 at 65% CPU. Web fixed at 2 replicas, HPA off. Docling on. LLM worker off. |
-| `values-prod.yaml` | `curioed` | Compose replacement. API and web HPA 1–6 at 60%. Docling and the Compose-shaped LLM worker on. Real OpenRouter. Tunnel replicas 0 until cutover. |
+| `values-prod.yaml` | `curioed` | Compose replacement. API HPA 1–4 and web HPA 1–6 at 60%. Docling on. LLM worker off until `WORKER_QUEUES` exists. Curriculum seed on (PR #197). Real OpenRouter. Tunnel replicas 0 until cutover. |
 | `values-loadtest.yaml` | `curioed-loadtest` | Same HPA shape, no workers, llm-mock, demo-data Job, k6 Job. |
 
 ## Pod security
@@ -28,26 +28,26 @@ kubectl label namespace curioed \
 
 `enforce=baseline` is required. Restricted enforce does not fit the current images or CloudNativePG.
 
-`runAsNonRoot` and `runAsUser` are set per workload.
+`runAsNonRoot`, `runAsUser`, `runAsGroup`, and `fsGroup` are set per workload. Null user, group, and fsGroup are omitted. `readOnlyRootFilesystem` defaults to false on each of api, web, workers, migrate, seed, llm-mock, and demo-data. Setting one of those to true mounts an emptyDir on `/tmp`. Web also mounts emptyDirs on `/var/cache/nginx` and `/var/run`. The defaults stay false until the images run as non-root.
 
 | Workload | runAsNonRoot | runAsUser | Why |
 | --- | --- | --- | --- |
 | api, docling, llm worker, migrate, curriculum seed, demo-data | false | unset | `deploy/Dockerfile.api` has no `USER`. `python:3.12-slim-bookworm` image config User is empty. **TODO:** add a `USER` line in `Dockerfile.api` (aushak's OK) before turning this on. |
-| web | false | unset | `nginx:1.27-alpine` has no `USER` and listens on port 80. `NET_BIND_SERVICE` is added back. |
+| web | false | unset | `nginx:1.27-alpine` has no `USER` and listens on port 80. `CHOWN`, `SETUID`, `SETGID`, and `NET_BIND_SERVICE` are added back. |
 | llm-mock | false | unset | `python:3.12.7-slim-bookworm` image config User is empty. |
 | cloudflared | true | 65532 | `cloudflare/cloudflared:2026.10.1` image config User is `65532:65532`. |
 | k6 | true | 12345 | `grafana/k6:0.57.0` adds uid 12345 and sets `USER k6`. |
 | CNPG | not set by this chart | 26 via the operator | Image config User is 26. The operator sets `runAsNonRoot` and `runAsUser`. The chart does not override that. |
 
-Other defaults: `allowPrivilegeEscalation: false`, capabilities `drop: [ALL]`, `seccompProfile: RuntimeDefault`. `readOnlyRootFilesystem` stays false. Turn it on only for a container that has a writable emptyDir for `/tmp` and, for the API, the Hugging Face cache. Nginx also writes under `/var`.
+Other defaults: `allowPrivilegeEscalation: false`, capabilities `drop: [ALL]`, `seccompProfile: RuntimeDefault`. `readOnlyRootFilesystem` stays false. The API Hugging Face cache, uploads, and inductor cache are already volumes. Nginx still writes under `/var` when the flag is on, via the emptyDirs above.
 
-The curriculum seed Job is off by default. When enabled it requests 100m CPU and 256Mi, with limits of 1 CPU and 1Gi, same as the migrate hook. The LimitRange still covers any pod that forgets resources.
+The curriculum seed Job is off by default. Prod turns it on. The command is `python -m education_platform.modules.materials.seed` from PR #197. Hook weight 10 runs after the migrate hook at weight 5. It requests 100m CPU and 256Mi, with limits of 1 CPU and 1Gi, same as the migrate hook. The LimitRange still covers any pod that forgets resources. On the first install, disable migrate and the seed with `--set` until the CNPG Cluster exists.
 
 The CNPG Cluster and every PVC (uploads, hf-cache, inductor, backups) carry `helm.sh/resource-policy: keep`.
 
 ## API
 
-CPU HPA is on by default (65%, min 1, max 4, scale-up window 0, scale-down 300). Raise `minReplicas` to 2 once the database is warm. Prod and load-test values use 1–6 at 60% and a 1 CPU / 1Gi limit. Requests stay 250m / 512Mi.
+CPU HPA is on by default (65%, min 1, max 4, scale-up window 0, scale-down 300). Raise `minReplicas` to 2 once the database is warm. Prod and load-test values use 1–4 at 60% until the deployed image includes PR #200, and a 1 CPU / 1Gi limit. Requests stay 250m / 512Mi.
 
 `uvicorn --limit-concurrency` defaults to 200. SSE streams count toward that cap.
 
@@ -61,7 +61,7 @@ A PodDisruptionBudget with `maxUnavailable: 1` is rendered only when the replica
 
 No liveness and no readiness. A database ping would kill a parse, and neither worker has a Service. A heartbeat file is still a TODO; this chart does not change application code to add one.
 
-`terminationGracePeriodSeconds` is 600 for docling and 300 for the LLM worker. Both are above `WORKER_SHUTDOWN_GRACE_SECONDS` (25) plus 5 seconds. Once Coder's worker image is deployed, the process releases its lease on SIGTERM. Until that image is what the cluster runs, Python is PID 1 and ignores SIGTERM.
+`terminationGracePeriodSeconds` is 600 for docling and 300 for the LLM worker. Docling sets `WORKER_SHUTDOWN_GRACE_SECONDS` to 570. The LLM worker keeps 25, and its pod grace stays at least 40. Once Coder's worker image is deployed, the process releases its lease on SIGTERM. Until that image is what the cluster runs, Python is PID 1 and ignores SIGTERM.
 
 Compose (`deploy/docker-compose.prod.yml` service `worker`) is one container: image `education-platform-api`, command `python -m education_platform.workers`, the same env and uploads/HF/inductor volumes as the API, `stop_grace_period: 30s`, and a `db_ping.py` healthcheck. Prod `workers.llm` is that process (the ping is not copied). Prod also runs `worker-docling` at 1 replica, 3Gi request and limit, 2 CPU request and limit. Both still drain every queue until `WORKER_QUEUES` exists. KEDA stays off for that reason.
 
@@ -79,9 +79,9 @@ Set on the API and both workers. Text-to-SQL pool env is API only. Workers do no
 | `DB_POOL_RECYCLE_SECONDS` | 1800 | 1800 |
 | `TEXT_TO_SQL_DB_POOL_SIZE` | 5 | API 2 |
 | `TEXT_TO_SQL_DB_MAX_OVERFLOW` | 5 | API 3 |
-| `WORKER_SHUTDOWN_GRACE_SECONDS` | 25 | workers 25 |
+| `WORKER_SHUTDOWN_GRACE_SECONDS` | 25 | docling 570, llm worker 25 |
 
-These names come from Coder's PR #200 (head `1989159`). The running app ignores them until that PR merges. Worst case is about 30 connections per API pod once every engine is counted, so 180 at HPA max 6, plus the workers and one SSE `LISTEN` connection per stream. That fits under `max_connections` 300. There is no PgBouncer, because `LISTEN` needs a direct connection. Worker `terminationGracePeriodSeconds` stays at least 30: docling 600, llm 300.
+These names come from Coder's PR #200 (head `1989159`). The running app ignores them until that PR merges. Worst case is about 30 connections per API pod once every engine is counted, so 180 at HPA max 6, plus the workers and one SSE `LISTEN` connection per stream. That fits under `max_connections` 300. There is no PgBouncer, because `LISTEN` needs a direct connection. Worker `terminationGracePeriodSeconds` stays at least 40: docling 600, llm 300. The imported image still uses the old pools, so prod and load-test keep the API max at 4 until that image includes #200.
 
 `config.extraEnv` stays an empty map for later names. `config.extraSecretEnv` is a list of `secretKeyRef` entries. No secret values belong in git.
 
@@ -229,7 +229,7 @@ docker save curioed-api:demo curioed-web:demo | sudo k3s ctr images import -
 
 `limits.cpu` is omitted unless set. The chart default is memory requests 8Gi and limits 14Gi. Steady state with the API at its minimum fits. The API at max 4 plus one surge pod does not fit that 14Gi limit, and the chart default is not raised to hide it.
 
-Prod sets cpu 8, requests 9Gi, limits 16Gi. Load-test sets cpu 8, requests 6Gi, limits 12Gi. Those limits overcommit on purpose. `collect.sh` aborting below 3Gi `MemAvailable` is the real guard, and prod and load-test never run at the same time because the load-test namespace is deleted before prod comes up. With the API HPA max still 6 and `maxSurge` 1, both profiles fit that peak. LimitRange defaults keep a container that forgot resources from being rejected. The numbers printed by `render-check.sh` are the ones to trust after a values change.
+Prod sets CPU requests 6 and limits 16, memory requests 9Gi and limits 16Gi. Load-test sets CPU requests 5 and limits 14, memory requests 6Gi and limits 12Gi. Those limits overcommit on purpose. `collect.sh` aborting below 3Gi `MemAvailable` is the real guard, and prod and load-test never run at the same time because the load-test namespace is deleted before prod comes up. `render-check.sh` sums CPU and memory for the API at `maxReplicas` plus one surge pod, plus the migrate hook when that Job is rendered. Both profiles fit that peak. LimitRange defaults keep a container that forgot resources from being rejected. The numbers printed by `render-check.sh` are the ones to trust after a values change.
 
 Load-test sets `JEV_JUDGE_MODE=off`. Prod leaves that value unset, which the app treats as shadow. The hardcoded decisions URL in `judge/client.py` is a Coder follow-up.
 

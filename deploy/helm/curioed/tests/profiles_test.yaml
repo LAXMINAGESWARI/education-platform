@@ -37,7 +37,7 @@ tests:
       - equal:
           path: spec.strategy.rollingUpdate.maxUnavailable
           value: 0
-  - it: prod quota is 16Gi and 9Gi with 8 cpu
+  - it: prod quota is cpu 6/16 and memory 9Gi/16Gi
     values:
       - ../values-prod.yaml
     template: resourcequota.yaml
@@ -192,3 +192,37 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+  - it: prod curriculum seed runs after migrate and has resources
+    values:
+      - ../values-prod.yaml
+    template: seed-job.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "10"
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value:
+            - python
+            - -m
+            - education_platform.modules.materials.seed
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 100m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 256Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: "1"
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 1Gi
+  - it: prod migrate hook is ordered before the seed hook
+    values:
+      - ../values-prod.yaml
+    template: migrate-job.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "5"

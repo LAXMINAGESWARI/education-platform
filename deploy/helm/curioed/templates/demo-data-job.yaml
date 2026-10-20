@@ -44,6 +44,7 @@ spec:
           volumeMounts:
             - name: script
               mountPath: /scripts
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.demoData.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.demoData.resources | nindent 12 }}
       volumes:
@@ -51,4 +52,5 @@ spec:
           configMap:
             name: {{ include "curioed.fullname" . }}-demo-data
             defaultMode: 0555
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.demoData.securityContext) | nindent 8 }}
 {{- end }}

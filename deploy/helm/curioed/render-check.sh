@@ -123,8 +123,10 @@ if "livenessProbe:" in docling or "readinessProbe:" in docling:
     raise SystemExit("docling worker has no Service, so it has no probes")
 if "runAsNonRoot: false" not in api:
     raise SystemExit("api runAsNonRoot stays false until Dockerfile.api has a USER line")
-if "runAsUser:" in api:
-    raise SystemExit("api must not set runAsUser while the image is root")
+if "runAsUser:" in api or "runAsGroup:" in api or "fsGroup:" in api:
+    raise SystemExit("api user, group, and fsGroup stay unset while the image is root")
+if "name: tmp" in api:
+    raise SystemExit("api must not mount emptyDir /tmp while readOnlyRootFilesystem is false")
 web = need("Deployment", "-web")
 if "runAsNonRoot: false" not in web or "runAsUser:" in web:
     raise SystemExit("web nginx image is root and must not set runAsUser")
@@ -325,6 +327,12 @@ api_hpa = [doc for doc in docs if kind_of(doc) == "HorizontalPodAutoscaler" and 
 if not api_hpa:
     raise SystemExit("all-on without the API Prometheus trigger should still render the API HPA")
 
+def cpu_cores(raw: str) -> float:
+    value = raw.strip().strip("'\"")
+    if value.endswith("m"):
+        return float(value[:-1]) / 1000.0
+    return float(value)
+
 def mem_mi(raw: str) -> float:
     value = raw.strip().strip("'\"")
     if value.endswith("Gi"):
@@ -333,7 +341,7 @@ def mem_mi(raw: str) -> float:
         return float(value[:-2])
     raise SystemExit(f"unsupported memory quantity {raw}")
 
-def resources_of(doc: str) -> list[tuple[float, float]]:
+def resources_of(doc: str) -> list[tuple[float, float, float, float]]:
     rows = []
     patterns = (
         r"(?m)^ {8,12}resources:\n((?:^ {10,16}\S.*\n)*)",
@@ -342,10 +350,18 @@ def resources_of(doc: str) -> list[tuple[float, float]]:
     for pattern in patterns:
         for block in re.finditer(pattern, doc):
             body = block.group(0)
-            request = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            limit = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            if request and limit:
-                rows.append((mem_mi(request.group(1)), mem_mi(limit.group(1))))
+            req_mem = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            lim_mem = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            req_cpu = re.search(r"requests:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            lim_cpu = re.search(r"limits:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            if not (req_mem and lim_mem and req_cpu and lim_cpu):
+                raise SystemExit(f"resource block is missing cpu or memory:\n{body}")
+            rows.append((
+                cpu_cores(req_cpu.group(1)),
+                cpu_cores(lim_cpu.group(1)),
+                mem_mi(req_mem.group(1)),
+                mem_mi(lim_mem.group(1)),
+            ))
     return rows
 
 quota = next(doc for doc in docs if kind_of(doc) == "ResourceQuota")
@@ -356,6 +372,10 @@ steady_req = 0.0
 steady_lim = 0.0
 peak_req = 0.0
 peak_lim = 0.0
+steady_cpu_req = 0.0
+steady_cpu_lim = 0.0
+peak_cpu_req = 0.0
+peak_cpu_lim = 0.0
 for doc in docs:
     kind = kind_of(doc)
     if kind not in ("Deployment", "Job", "Cluster"):
@@ -375,17 +395,25 @@ for doc in docs:
         if name_of(doc).endswith("-api"):
             max_replicas = int(re.search(r"maxReplicas: (\d+)", text).group(1))
             peak_copies = max_replicas + 1
-    per_req = sum(item[0] for item in rows)
-    per_lim = sum(item[1] for item in rows)
+    per_cpu_req = sum(item[0] for item in rows)
+    per_cpu_lim = sum(item[1] for item in rows)
+    per_req = sum(item[2] for item in rows)
+    per_lim = sum(item[3] for item in rows)
+    steady_cpu_req += per_cpu_req * copies
+    steady_cpu_lim += per_cpu_lim * copies
+    peak_cpu_req += per_cpu_req * peak_copies
+    peak_cpu_lim += per_cpu_lim * peak_copies
     steady_req += per_req * copies
     steady_lim += per_lim * copies
     peak_req += per_req * peak_copies
     peak_lim += per_lim * peak_copies
 
 print(
-    f"quota steady requests {steady_req:.0f}Mi limits {steady_lim:.0f}Mi; "
-    f"peak api max+surge requests {peak_req:.0f}Mi limits {peak_lim:.0f}Mi; "
-    f"caps requests {requests_cap:.0f}Mi limits {limits_cap:.0f}Mi"
+    f"quota steady cpu {steady_cpu_req:.2f}/{steady_cpu_lim:.2f} "
+    f"memory {steady_req:.0f}Mi/{steady_lim:.0f}Mi; "
+    f"peak api max+surge cpu {peak_cpu_req:.2f}/{peak_cpu_lim:.2f} "
+    f"memory {peak_req:.0f}Mi/{peak_lim:.0f}Mi; "
+    f"memory caps {requests_cap:.0f}Mi/{limits_cap:.0f}Mi"
 )
 if steady_req > requests_cap or steady_lim > limits_cap:
     raise SystemExit("all-on steady render does not fit the ResourceQuota")
@@ -428,10 +456,33 @@ if "llm-mock" in text or "seed_demo.py" in text:
 if "curioed-api:6b7553c" not in text or "curioed-web:6b7553c" not in text:
     raise SystemExit("prod images should default to the imported 6b7553c tags")
 quota = next(doc for doc in docs if kind_of(doc) == "ResourceQuota")
-if "limits.memory: 16Gi" not in quota or "requests.memory: 9Gi" not in quota or "limits.cpu:" not in quota:
-    raise SystemExit("prod quota is wrong")
+if "limits.memory: 16Gi" not in quota or "requests.memory: 9Gi" not in quota:
+    raise SystemExit("prod memory quota is wrong")
+if 'requests.cpu: "6"' not in quota or 'limits.cpu: "16"' not in quota:
+    raise SystemExit("prod cpu quota is wrong")
 if 'JEV_JUDGE_MODE: "off"' in text:
     raise SystemExit("prod must leave the lesson judge unchanged")
+seed = next(doc for doc in docs if kind_of(doc) == "Job" and name_of(doc).endswith("-seed"))
+migrate = next(doc for doc in docs if kind_of(doc) == "Job" and name_of(doc).endswith("-migrate"))
+seed_weight = int(re.search(r'helm\.sh/hook-weight: "(\d+)"', seed).group(1))
+migrate_weight = int(re.search(r'helm\.sh/hook-weight: "(\d+)"', migrate).group(1))
+if migrate_weight >= seed_weight:
+    raise SystemExit(f"seed hook weight {seed_weight} must run after migrate weight {migrate_weight}")
+for snippet in (
+    "education_platform.modules.materials.seed",
+    "cpu: 100m",
+    'cpu: "1"',
+    "memory: 256Mi",
+    "memory: 1Gi",
+):
+    if snippet not in seed:
+        raise SystemExit(f"prod seed job is missing {snippet}")
+
+def cpu_cores(raw: str) -> float:
+    value = raw.strip().strip("'\"")
+    if value.endswith("m"):
+        return float(value[:-1]) / 1000.0
+    return float(value)
 
 def mem_mi(raw: str) -> float:
     value = raw.strip().strip("'\"")
@@ -441,7 +492,7 @@ def mem_mi(raw: str) -> float:
         return float(value[:-2])
     raise SystemExit(f"unsupported memory quantity {raw}")
 
-def resources_of(doc: str) -> list[tuple[float, float]]:
+def resources_of(doc: str) -> list[tuple[float, float, float, float]]:
     rows = []
     patterns = (
         r"(?m)^ {8,12}resources:\n((?:^ {10,16}\S.*\n)*)",
@@ -450,16 +501,28 @@ def resources_of(doc: str) -> list[tuple[float, float]]:
     for pattern in patterns:
         for block in re.finditer(pattern, doc):
             body = block.group(0)
-            request = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            limit = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            if request and limit:
-                rows.append((mem_mi(request.group(1)), mem_mi(limit.group(1))))
+            req_mem = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            lim_mem = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            req_cpu = re.search(r"requests:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            lim_cpu = re.search(r"limits:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            if not (req_mem and lim_mem and req_cpu and lim_cpu):
+                raise SystemExit(f"resource block is missing cpu or memory:\n{body}")
+            rows.append((
+                cpu_cores(req_cpu.group(1)),
+                cpu_cores(lim_cpu.group(1)),
+                mem_mi(req_mem.group(1)),
+                mem_mi(lim_mem.group(1)),
+            ))
     return rows
 
 requests_cap = mem_mi(re.search(r"requests\.memory: (\S+)", quota).group(1))
 limits_cap = mem_mi(re.search(r"limits\.memory: (\S+)", quota).group(1))
+cpu_req_cap = cpu_cores(re.search(r'requests\.cpu: "?([0-9.]+m?)"?', quota).group(1))
+cpu_lim_cap = cpu_cores(re.search(r'limits\.cpu: "?([0-9.]+m?)"?', quota).group(1))
 api_hpa = next(doc for doc in docs if kind_of(doc) == "HorizontalPodAutoscaler" and name_of(doc).endswith("-api"))
 max_replicas = int(re.search(r"maxReplicas: (\d+)", api_hpa).group(1))
+peak_cpu_req = 0.0
+peak_cpu_lim = 0.0
 peak_req = 0.0
 peak_lim = 0.0
 for doc in docs:
@@ -467,6 +530,8 @@ for doc in docs:
     if kind not in ("Deployment", "Job", "Cluster"):
         continue
     rows = resources_of(doc)
+    if not rows:
+        raise SystemExit(f"{kind} {name_of(doc)} is missing container resources")
     if kind == "Job":
         copies = 1
     elif kind == "Cluster":
@@ -475,16 +540,26 @@ for doc in docs:
         copies = int(re.search(r"(?m)^  replicas: (\d+)", doc).group(1))
         if name_of(doc).endswith("-api"):
             copies = max_replicas + 1
-    peak_req += sum(item[0] for item in rows) * copies
-    peak_lim += sum(item[1] for item in rows) * copies
-if max_replicas != 6:
-    raise SystemExit(f"prod api HPA max must stay 6, got {max_replicas}")
-if peak_req > requests_cap or peak_lim > limits_cap:
+    peak_cpu_req += sum(item[0] for item in rows) * copies
+    peak_cpu_lim += sum(item[1] for item in rows) * copies
+    peak_req += sum(item[2] for item in rows) * copies
+    peak_lim += sum(item[3] for item in rows) * copies
+if (
+    peak_cpu_req > cpu_req_cap
+    or peak_cpu_lim > cpu_lim_cap
+    or peak_req > requests_cap
+    or peak_lim > limits_cap
+):
     raise SystemExit(
-        f"prod api max+surge does not fit: requests {peak_req:.0f}Mi/{requests_cap:.0f}Mi "
-        f"limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+        f"prod api max+surge+hooks does not fit: "
+        f"cpu {peak_cpu_req:.2f}/{cpu_req_cap:.0f} limits {peak_cpu_lim:.2f}/{cpu_lim_cap:.0f}; "
+        f"memory {peak_req:.0f}Mi/{requests_cap:.0f}Mi limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
     )
-print(f"prod peak fits: requests {peak_req:.0f}Mi limits {peak_lim:.0f}Mi")
+print(
+    f"prod peak fits at api max {max_replicas}+surge: "
+    f"cpu {peak_cpu_req:.2f}/{cpu_req_cap:.0f} limits {peak_cpu_lim:.2f}/{cpu_lim_cap:.0f}; "
+    f"memory {peak_req:.0f}Mi/{requests_cap:.0f}Mi limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+)
 PY
 
 helm template curioed "${chart}" --namespace curioed-loadtest -f "${chart}/values-loadtest.yaml" > "${out}.load"
@@ -516,9 +591,19 @@ if "curioed-api:6b7553c" not in text or "curioed-web:6b7553c" not in text:
     raise SystemExit("loadtest images should default to the imported 6b7553c tags")
 quota = next(doc for doc in docs if kind_of(doc) == "ResourceQuota")
 if "limits.memory: 12Gi" not in quota or "requests.memory: 6Gi" not in quota:
-    raise SystemExit("loadtest quota is wrong")
+    raise SystemExit("loadtest memory quota is wrong")
+if 'requests.cpu: "5"' not in quota or 'limits.cpu: "14"' not in quota:
+    raise SystemExit("loadtest cpu quota is wrong")
 if 'JEV_JUDGE_MODE: "off"' not in text:
     raise SystemExit("loadtest must set JEV_JUDGE_MODE off")
+if any(name.endswith("-migrate") or name.endswith("-seed") for _, name in names):
+    raise SystemExit("loadtest must not render migrate or curriculum seed")
+
+def cpu_cores(raw: str) -> float:
+    value = raw.strip().strip("'\"")
+    if value.endswith("m"):
+        return float(value[:-1]) / 1000.0
+    return float(value)
 
 def mem_mi(raw: str) -> float:
     value = raw.strip().strip("'\"")
@@ -528,7 +613,7 @@ def mem_mi(raw: str) -> float:
         return float(value[:-2])
     raise SystemExit(f"unsupported memory quantity {raw}")
 
-def resources_of(doc: str) -> list[tuple[float, float]]:
+def resources_of(doc: str) -> list[tuple[float, float, float, float]]:
     rows = []
     patterns = (
         r"(?m)^ {8,12}resources:\n((?:^ {10,16}\S.*\n)*)",
@@ -537,16 +622,28 @@ def resources_of(doc: str) -> list[tuple[float, float]]:
     for pattern in patterns:
         for block in re.finditer(pattern, doc):
             body = block.group(0)
-            request = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            limit = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
-            if request and limit:
-                rows.append((mem_mi(request.group(1)), mem_mi(limit.group(1))))
+            req_mem = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            lim_mem = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            req_cpu = re.search(r"requests:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            lim_cpu = re.search(r"limits:\n(?:.*\n)*?[ \t]*cpu: (\S+)", body)
+            if not (req_mem and lim_mem and req_cpu and lim_cpu):
+                raise SystemExit(f"resource block is missing cpu or memory:\n{body}")
+            rows.append((
+                cpu_cores(req_cpu.group(1)),
+                cpu_cores(lim_cpu.group(1)),
+                mem_mi(req_mem.group(1)),
+                mem_mi(lim_mem.group(1)),
+            ))
     return rows
 
 requests_cap = mem_mi(re.search(r"requests\.memory: (\S+)", quota).group(1))
 limits_cap = mem_mi(re.search(r"limits\.memory: (\S+)", quota).group(1))
+cpu_req_cap = cpu_cores(re.search(r'requests\.cpu: "?([0-9.]+m?)"?', quota).group(1))
+cpu_lim_cap = cpu_cores(re.search(r'limits\.cpu: "?([0-9.]+m?)"?', quota).group(1))
 api_hpa = next(doc for doc in docs if kind_of(doc) == "HorizontalPodAutoscaler" and name_of(doc).endswith("-api"))
 max_replicas = int(re.search(r"maxReplicas: (\d+)", api_hpa).group(1))
+peak_cpu_req = 0.0
+peak_cpu_lim = 0.0
 peak_req = 0.0
 peak_lim = 0.0
 for doc in docs:
@@ -554,6 +651,8 @@ for doc in docs:
     if kind not in ("Deployment", "Job", "Cluster"):
         continue
     rows = resources_of(doc)
+    if not rows:
+        raise SystemExit(f"{kind} {name_of(doc)} is missing container resources")
     if kind == "Job":
         copies = 1
     elif kind == "Cluster":
@@ -562,16 +661,26 @@ for doc in docs:
         copies = int(re.search(r"(?m)^  replicas: (\d+)", doc).group(1))
         if name_of(doc).endswith("-api"):
             copies = max_replicas + 1
-    peak_req += sum(item[0] for item in rows) * copies
-    peak_lim += sum(item[1] for item in rows) * copies
-if max_replicas != 6:
-    raise SystemExit(f"loadtest api HPA max must stay 6, got {max_replicas}")
-if peak_req > requests_cap or peak_lim > limits_cap:
+    peak_cpu_req += sum(item[0] for item in rows) * copies
+    peak_cpu_lim += sum(item[1] for item in rows) * copies
+    peak_req += sum(item[2] for item in rows) * copies
+    peak_lim += sum(item[3] for item in rows) * copies
+if (
+    peak_cpu_req > cpu_req_cap
+    or peak_cpu_lim > cpu_lim_cap
+    or peak_req > requests_cap
+    or peak_lim > limits_cap
+):
     raise SystemExit(
-        f"loadtest api max+surge does not fit: requests {peak_req:.0f}Mi/{requests_cap:.0f}Mi "
-        f"limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+        f"loadtest api max+surge does not fit: "
+        f"cpu {peak_cpu_req:.2f}/{cpu_req_cap:.0f} limits {peak_cpu_lim:.2f}/{cpu_lim_cap:.0f}; "
+        f"memory {peak_req:.0f}Mi/{requests_cap:.0f}Mi limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
     )
-print(f"loadtest peak fits: requests {peak_req:.0f}Mi limits {peak_lim:.0f}Mi")
+print(
+    f"loadtest peak fits at api max {max_replicas}+surge: "
+    f"cpu {peak_cpu_req:.2f}/{cpu_req_cap:.0f} limits {peak_cpu_lim:.2f}/{cpu_lim_cap:.0f}; "
+    f"memory {peak_req:.0f}Mi/{requests_cap:.0f}Mi limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+)
 k6 = next(doc for doc in docs if kind_of(doc) == "Job" and name_of(doc).endswith("-k6"))
 if "runAsNonRoot: true" not in k6 or "runAsUser: 12345" not in k6:
     raise SystemExit("k6 image user is uid 12345")

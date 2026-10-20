@@ -54,8 +54,10 @@ spec:
             {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.worker "worker" true "shutdownGrace" .Values.workerDocling.shutdownGraceSeconds) | nindent 12 }}
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.workerDocling.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.workerDocling.resources | nindent 12 }}
       volumes:
         {{- include "curioed.dataVolumes" . | nindent 8 }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.workerDocling.securityContext) | nindent 8 }}
 {{- end }}
