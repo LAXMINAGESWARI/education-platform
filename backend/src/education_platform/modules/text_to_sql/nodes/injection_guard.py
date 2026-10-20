@@ -29,18 +29,22 @@ multi-turn `history` the way `AssistantGraphState` does, so there's no prior-tur
 to feed the classifier here), but the regex list itself is reused verbatim: these
 behavioral tells ("ignore previous instructions", "developer mode", "jailbreak") aren't
 specific to what the LLM is being asked to do, only to how someone is trying to talk to
-it. `chat_completion_json`/`OpenRouterError` are imported directly from
-`assistant.openrouter` rather than duplicated — `generate_sql.py` already does the same
-for its own, unrelated OpenRouter call (`chat_completion`), confirming this is a genuinely
-shared, module-agnostic utility, not something specific to the assistant pipeline it
-happens to live in.
+it. The classifier calls go through `guard.classifier` (`classify_noul` and
+`legacy_gpt_flag`), which uses the shared Decisions client. `generate_sql.py` still
+calls `chat_completion` for its own, unrelated SQL generation.
 
 **Fail-open when unconfigured, fail-closed when erroring — same asymmetry as the
-original, kept deliberately rather than "simplified" away.** HTTP 402 is the
-exception: Jev credits can be exhausted while chat completions still work, so a
-402 falls back to the regex result plus the GPT classifier this node used before
-Jev. If that GPT call fails, the node fails closed. A missing key still cannot
-call GPT, so it stays fail-open after the regex. If `OPENROUTER_API_KEY`
+original, kept deliberately rather than "simplified" away.** A successful Jev
+probability is OR-ed with the GPT injection classifier this node used before Jev:
+the question is blocked if either one flags it. Jev already above the block
+threshold does not need the GPT call. When Jev passes and that GPT check also
+allows, `guard_stage` is `jev_gpt` rather than `jev` alone. A Jev timeout or
+5xx fails closed before
+that call. HTTP 402 is the other exception: Jev credits can be exhausted while
+chat completions still work, so a 402 falls back to the regex result plus that
+same GPT classifier, and does not also require a Jev probability. If that GPT
+call fails, the node fails closed. A missing key still cannot call GPT, so it
+stays fail-open after the regex. If `OPENROUTER_API_KEY`
 isn't set at all, this is a known, permanent deployment state, not a live problem — the
 heuristic regex still ran, and refusing every question outright because the *second*
 stage can't run would make this cost/UX layer into an availability outage, for a check
@@ -169,7 +173,31 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
         }
 
-    return {**state, "audit_entry": noted}
+    # Jev allowed the question. The pre-Jev GPT injection check still runs, and
+    # either flag blocks. A GPT error here fails closed, same as the 402 path.
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=DATA_GPT_INJECTION,
+            user=question,
+            field="injection",
+        )
+    except JudgeError:
+        return {
+            **state,
+            "audit_entry": _note(state, guard_stage="gpt_error", injection_probability=probability),
+            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
+        }
+    if flagged:
+        return {
+            **state,
+            "audit_entry": _note(state, guard_stage="gpt", injection_probability=probability),
+            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
+        }
+    return {
+        **state,
+        "audit_entry": _note(state, guard_stage="jev_gpt", injection_probability=probability),
+    }
 
 
 async def _gpt_injection_fallback(
