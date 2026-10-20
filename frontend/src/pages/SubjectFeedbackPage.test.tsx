@@ -539,6 +539,77 @@ describe("feedback hierarchy", () => {
     }
   });
 
+  it("focuses due reviews from the section query without a hash", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("does not move focus when Try again reloads feedback", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    vi.mocked(getFeedbackOverview).mockRejectedValueOnce(new Error("offline"));
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+      const retry = await screen.findByRole("button", { name: "Try again" });
+      retry.focus();
+      const user = userEvent.setup();
+      await user.click(retry);
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await act(async () => {});
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(heading).not.toHaveFocus();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("does not focus a hidden needs-attention heading", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue({
+      ...subject,
+      topics_needing_attention: [],
+    });
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      const heading = await screen.findByRole("heading", { name: "No topics need attention right now." });
+      await act(async () => {});
+      expect(heading).toHaveClass("sr-only");
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(heading).not.toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
   it("lists topics in order and leaves an unattempted topic blank", async () => {
     const user = userEvent.setup();
     render(

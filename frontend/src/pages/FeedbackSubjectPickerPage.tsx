@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 
 import { getFeedbackHighlights, getFeedbackOverview } from "../api/feedback";
@@ -25,6 +25,7 @@ export function FeedbackSubjectPickerPage() {
   const [reviewTargets, setReviewTargets] = useState<Map<string, ReviewTarget>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const allowDueFocus = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,7 +91,7 @@ export function FeedbackSubjectPickerPage() {
 
   useEffect(() => {
     const wantsDue = location.hash === "#feedback-due" || searchParams.get("section") === "due";
-    if (!wantsDue || !overview) return;
+    if (!wantsDue || !overview || !allowDueFocus.current) return;
     revealElementById("feedback-due");
   }, [location.hash, overview, searchParams, showDue]);
 
@@ -118,6 +119,7 @@ export function FeedbackSubjectPickerPage() {
               type="button"
               className="btn btn--sm btn--outline"
               onClick={() => {
+                allowDueFocus.current = false;
                 setError(null);
                 setAttempt((value) => value + 1);
               }}

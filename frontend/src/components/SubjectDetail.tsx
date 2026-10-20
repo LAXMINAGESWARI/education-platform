@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { getFeedbackHighlights, getFeedbackSubject } from "../api/feedback";
 import type { SubjectNode } from "../api/types";
 import { dueReviewsPath, dueTopicIds, subjectFeedbackPath, weakTopicsPath } from "../lib/feedbackLinks";
-import { topicsNeedingAttention } from "../lib/feedbackHierarchy";
+import { topicsNeedingAttention, weakTopicNames } from "../lib/feedbackHierarchy";
 import {
   subjectBlurb,
   subjectCardCounts,
@@ -101,24 +101,27 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
   useEffect(() => {
     let cancelled = false;
     setNeedingAttention((current) => (current.length === 0 ? current : []));
+    const apply = (next: readonly string[]) => {
+      if (cancelled) return;
+      setNeedingAttention((current) =>
+        current.length === next.length && current.every((name, index) => name === next[index])
+          ? current
+          : next,
+      );
+    };
     void Promise.resolve()
       .then(() => getFeedbackSubject(subject.id))
       .then((detail) => {
-        if (cancelled || !detail) return;
-        const next = topicsNeedingAttention(detail);
-        setNeedingAttention((current) =>
-          current.length === next.length && current.every((name, index) => name === next[index])
-            ? current
-            : next,
-        );
+        const fromApi = topicsNeedingAttention(detail);
+        apply(fromApi ?? weakTopicNames(subject.topics));
       })
       .catch(() => {
-        if (!cancelled) setNeedingAttention([]);
+        apply(weakTopicNames(subject.topics));
       });
     return () => {
       cancelled = true;
     };
-  }, [subject.id]);
+  }, [subject]);
 
   useEffect(() => {
     if (subject.topics.length === 0) return;

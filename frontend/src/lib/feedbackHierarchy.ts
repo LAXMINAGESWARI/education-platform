@@ -2,7 +2,6 @@ import type {
   FeedbackAttemptScore,
   FeedbackBadge,
   FeedbackBand,
-  FeedbackSubjectDetail,
   FeedbackTrend,
   GoalOut,
 } from "../api/types";
@@ -13,11 +12,26 @@ import type {
  */
 export const PASS_PERCENT = 70;
 
-/** Topic names the needs-attention heading renders. */
+/** Topic names the needs-attention heading renders, or null when the API omitted them. */
 export function topicsNeedingAttention(
-  detail: Pick<FeedbackSubjectDetail, "topics_needing_attention">,
-): readonly string[] {
+  detail: { topics_needing_attention?: readonly string[] | null } | null | undefined,
+): readonly string[] | null {
+  if (!detail || detail.topics_needing_attention == null) return null;
   return detail.topics_needing_attention;
+}
+
+/** Directory fallback when the feedback subject payload has no needs-attention list. */
+export function weakTopicNames(
+  topics: readonly {
+    title: string;
+    overall_quiz?: { best_score_percent?: string | number | null } | null;
+  }[],
+): string[] {
+  return topics.flatMap((topic) => {
+    const score = scoreNumber(topic.overall_quiz?.best_score_percent);
+    if (score === null || score >= PASS_PERCENT) return [];
+    return [topic.title];
+  });
 }
 
 export function scoreNumber(value: string | number | null | undefined): number | null {

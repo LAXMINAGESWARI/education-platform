@@ -10,6 +10,7 @@ import {
   formatTrend,
   momentumGain,
   topicsNeedingAttention,
+  weakTopicNames,
 } from "./feedbackHierarchy";
 
 describe("feedback hierarchy display", () => {
@@ -48,6 +49,19 @@ describe("feedback hierarchy display", () => {
     expect(PASS_PERCENT).toBe(70);
     expect(topicsNeedingAttention({ topics_needing_attention: ["Algebra"] })).toEqual(["Algebra"]);
     expect(topicsNeedingAttention({ topics_needing_attention: [] })).toEqual([]);
+    expect(topicsNeedingAttention({})).toBeNull();
+    const fractions = (score: number | null) => ({
+      title: "Fractions",
+      overall_quiz: score === null ? null : { best_score_percent: score },
+    });
+    expect(weakTopicNames([fractions(70)])).toEqual([]);
+    expect(weakTopicNames([fractions(69.99)])).toEqual(["Fractions"]);
+    expect(
+      weakTopicNames([
+        fractions(null),
+        { title: "Decimals", overall_quiz: { best_score_percent: null } },
+      ]),
+    ).toEqual([]);
   });
 
   it("averages the gain from the first attempt to the latest", () => {

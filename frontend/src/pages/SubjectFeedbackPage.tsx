@@ -144,6 +144,8 @@ export function SubjectFeedbackPage() {
 
   useEffect(() => {
     if (!detail || location.hash !== "#needs-attention") return;
+    const names = topicsNeedingAttention(detail);
+    if (!names || names.length === 0) return;
     revealElementById("needs-attention");
   }, [detail, location.hash]);
 
@@ -163,7 +165,7 @@ export function SubjectFeedbackPage() {
   }
 
   const trend = formatTrend(detail.trend, detail.trend_delta);
-  const needingAttention = topicsNeedingAttention(detail);
+  const needingAttention = topicsNeedingAttention(detail) ?? [];
   const gain = momentumGain(detail.topics.map((topic) => topic.attempt_scores));
 
   return (

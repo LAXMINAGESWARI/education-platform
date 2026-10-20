@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -160,6 +160,94 @@ describe("SubjectDetail", () => {
     await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalledWith("math-1"));
     expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Subject feedback" })).toBeInTheDocument();
+  });
+
+  it("hides Weak topics at exactly 70 and when every topic is unattempted", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail([]));
+    const { unmount } = renderDetail(
+      subject({
+        topics: [
+          topic({
+            overall_quiz: { ...topic().overall_quiz!, best_score_percent: 70, passed: true },
+          }),
+        ],
+      }),
+    );
+    await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalledWith("math-1"));
+    await act(async () => {});
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+    unmount();
+
+    vi.mocked(getFeedbackSubject).mockClear();
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail([]));
+    renderDetail(
+      subject({
+        topics: [
+          topic({ overall_quiz: null }),
+          topic({ id: "topic-2", title: "Decimals", overall_quiz: null }),
+        ],
+      }),
+    );
+    await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalledWith("math-1"));
+    await act(async () => {});
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+  });
+
+  it("shows Weak topics at 69.99 when needs-attention names the topic", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail(["Fractions"]));
+    renderDetail(
+      subject({
+        topics: [
+          topic({
+            overall_quiz: { ...topic().overall_quiz!, best_score_percent: 69.99, passed: false },
+          }),
+        ],
+      }),
+    );
+    expect(await screen.findByRole("link", { name: "Weak topics" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback#needs-attention",
+    );
+  });
+
+  it("uses the pass mark when needs-attention data is missing", async () => {
+    vi.mocked(getFeedbackSubject).mockRejectedValue(new Error("offline"));
+    const { unmount } = renderDetail(
+      subject({
+        topics: [
+          topic({
+            overall_quiz: { ...topic().overall_quiz!, best_score_percent: 70, passed: true },
+          }),
+        ],
+      }),
+    );
+    await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+    unmount();
+
+    vi.mocked(getFeedbackSubject).mockRejectedValue(new Error("offline"));
+    const { unmount: unmountLow } = renderDetail(
+      subject({
+        topics: [
+          topic({
+            overall_quiz: { ...topic().overall_quiz!, best_score_percent: 69.99, passed: false },
+          }),
+        ],
+      }),
+    );
+    expect(await screen.findByRole("link", { name: "Weak topics" })).toBeInTheDocument();
+    unmountLow();
+
+    vi.mocked(getFeedbackSubject).mockRejectedValue(new Error("offline"));
+    renderDetail(
+      subject({
+        topics: [topic({ overall_quiz: null })],
+      }),
+    );
+    await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
   });
 
   it("shows Weak topics from the needs-attention list when directory scores are passing", async () => {
