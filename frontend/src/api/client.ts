@@ -46,14 +46,8 @@ function abortError(): DOMException {
   return new DOMException("Aborted", "AbortError");
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-async function performRefresh(signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) {
-    throw abortError();
-  }
+/** Shared refresh. No caller signal: a rotated pair must be saved even if a waiter gives up. */
+async function performRefresh(): Promise<boolean> {
   const refresh = getRefreshToken();
   if (!refresh) {
     return false;
@@ -63,25 +57,15 @@ async function performRefresh(signal?: AbortSignal): Promise<boolean> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refresh }),
-      signal,
     });
-    if (signal?.aborted) {
-      throw abortError();
-    }
     if (!res.ok) {
       clearTokens();
       return false;
     }
     const data = (await res.json()) as TokenResponse;
-    if (signal?.aborted) {
-      throw abortError();
-    }
     setTokens(data);
     return true;
-  } catch (error) {
-    if (isAbortError(error) || signal?.aborted) {
-      throw abortError();
-    }
+  } catch {
     clearTokens();
     return false;
   }
@@ -91,14 +75,14 @@ function waitForRefresh(pending: Promise<boolean>, signal?: AbortSignal): Promis
   if (signal === undefined) {
     return pending;
   }
+  if (signal.aborted) {
+    void pending.catch(() => undefined);
+    return Promise.reject(abortError());
+  }
   return new Promise((resolve, reject) => {
     const onAbort = () => {
       reject(abortError());
     };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
     signal.addEventListener("abort", onAbort, { once: true });
     pending.then(
       (value) => {
@@ -114,11 +98,11 @@ function waitForRefresh(pending: Promise<boolean>, signal?: AbortSignal): Promis
 }
 
 function refreshAccessToken(signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) {
-    return Promise.reject(abortError());
-  }
   if (refreshPromise === null) {
-    refreshPromise = performRefresh(signal).finally(() => {
+    if (signal?.aborted) {
+      return Promise.reject(abortError());
+    }
+    refreshPromise = performRefresh().finally(() => {
       refreshPromise = null;
     });
   }
