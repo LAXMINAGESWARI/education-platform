@@ -1,0 +1,128 @@
+# Prod overlay. Install with: helm upgrade --install curioed . -n curioed -f values-prod.yaml
+# Defaults match the images imported on the PC (curioed-api:6b7553c and
+# curioed-web:6b7553c). k8s-autodeploy.sh overrides both tags with --set.
+
+domain: curioed.online
+
+config:
+  environment: production
+  corsOrigins: '["https://curioed.online"]'
+  openRouterBaseUrl: https://openrouter.ai/api/v1
+
+# Same pool numbers as values.yaml. See the PR #200 comment there.
+# No PgBouncer: LISTEN needs a direct connection. max_connections is 300.
+dbPool:
+  api:
+    size: 5
+    maxOverflow: 5
+    timeoutSeconds: 30
+    recycleSeconds: 1800
+    textToSqlSize: 2
+    textToSqlMaxOverflow: 3
+  worker:
+    size: 2
+    maxOverflow: 2
+    timeoutSeconds: 30
+    recycleSeconds: 1800
+    shutdownGraceSeconds: 25
+
+api:
+  image:
+    # k8s-autodeploy.sh overrides this with --set api.image.tag=<sha>.
+    repository: curioed-api
+    tag: "6b7553c"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 60
+
+web:
+  image:
+    repository: curioed-web
+    tag: "6b7553c"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 60
+
+workerDocling:
+  enabled: true
+  replicas: 1
+
+workers:
+  llm:
+    enabled: true
+    replicas: 1
+
+migrate:
+  enabled: true
+
+curriculumSeed:
+  enabled: false
+
+cloudflared:
+  enabled: true
+  # Stay at 0 until cutover. Scale to 2 with --set cloudflared.replicas=2.
+  replicas: 0
+
+cnpg:
+  instances: 1
+  image: ghcr.io/cloudnative-pg/postgresql:16.15-standard-trixie
+  parameters:
+    max_connections: "300"
+    shared_buffers: "512MB"
+    effective_cache_size: "1GB"
+    work_mem: "4MB"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  backup:
+    enabled: false
+
+keda:
+  llm:
+    enabled: false
+  docling:
+    enabled: false
+  api:
+    enabled: false
+
+quota:
+  requestsMemory: 8Gi
+  limitsMemory: 14Gi
+  limitsCpu: "8"
+
+caddyAlias:
+  enabled: true
+
+llmMock:
+  enabled: false
+
+demoData:
+  enabled: false
+
+loadtest:
+  k6:
+    enabled: false

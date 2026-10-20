@@ -1,0 +1,54 @@
+{{- if .Values.demoData.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "curioed.fullname" . }}-demo-data
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-data
+data:
+  demo-data.sh: |
+{{ .Files.Get "files/demo-data.sh" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "curioed.fullname" . }}-demo-data
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-data
+spec:
+  backoffLimit: {{ .Values.demoData.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.demoData.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: demo-data
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.demoData.securityContext) | nindent 6 }}
+      containers:
+        - name: demo-data
+          image: {{ include "curioed.imageRef" .Values.api.image }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.demoData.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          command: ["sh", "/scripts/demo-data.sh"]
+          {{- include "curioed.envFrom" . | nindent 10 }}
+          env:
+            {{- include "curioed.appEnv" . | nindent 12 }}
+            - name: DEMO_SEED
+              value: "1"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            {{- toYaml .Values.demoData.resources | nindent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "curioed.fullname" . }}-demo-data
+            defaultMode: 0555
+{{- end }}

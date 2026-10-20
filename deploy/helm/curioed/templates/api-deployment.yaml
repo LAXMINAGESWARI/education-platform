@@ -7,6 +7,7 @@ metadata:
     {{- include "curioed.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
 spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   {{- if .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.autoscaling.minReplicas }}
   {{- else }}
@@ -29,6 +30,10 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.api.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "api") }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -41,11 +46,28 @@ spec:
         - name: api
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          # The image entrypoint execs these args as the process. That skips
+          # the script's JWT check and directory create. The Secret still
+          # supplies JWT_SECRET for the application itself.
+          args:
+            - uvicorn
+            - education_platform.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --proxy-headers
+            - --forwarded-allow-ips=*
+            - --limit-concurrency
+            - {{ .Values.api.limitConcurrency | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.port }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.api.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
+            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.api "textToSql" true) | nindent 12 }}
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
           resources:
@@ -54,22 +76,22 @@ spec:
             httpGet:
               path: {{ .Values.api.probes.livePath }}
               port: http
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
+            periodSeconds: {{ .Values.api.probes.startupPeriodSeconds }}
+            timeoutSeconds: 2
+            failureThreshold: {{ .Values.api.probes.startupFailureThreshold }}
           livenessProbe:
             httpGet:
               path: {{ .Values.api.probes.livePath }}
               port: http
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: 2
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: {{ .Values.api.probes.readyPath }}
               port: http
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: {{ .Values.api.probes.readinessTimeoutSeconds }}
             failureThreshold: 3
       volumes:
         {{- include "curioed.dataVolumes" . | nindent 8 }}

@@ -22,6 +22,7 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.curriculumSeed.securityContext) | nindent 6 }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -32,7 +33,11 @@ spec:
         - name: seed
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.curriculumSeed.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
           command: ["python", "-m", "education_platform.modules.materials.seed"]
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.curriculumSeed.resources | nindent 12 }}
 {{- end }}

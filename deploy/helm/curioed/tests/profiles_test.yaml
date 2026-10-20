@@ -1,0 +1,139 @@
+suite: prod and loadtest profiles
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: prod aliases caddy and keeps the tunnel scaled to zero
+    values:
+      - ../values-prod.yaml
+    template: caddy-service.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: caddy
+      - equal:
+          path: spec.type
+          value: ExternalName
+      - equal:
+          path: spec.externalName
+          value: traefik.kube-system.svc.cluster.local
+      - equal:
+          path: spec.ports[0].port
+          value: 80
+      - equal:
+          path: spec.ports[0].targetPort
+          value: 80
+  - it: prod cloudflared stays at zero replicas until cutover
+    values:
+      - ../values-prod.yaml
+    template: cloudflared-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+  - it: prod quota is 14Gi and 8Gi with 8 cpu
+    values:
+      - ../values-prod.yaml
+    template: resourcequota.yaml
+    asserts:
+      - isSubset:
+          path: spec.hard
+          content:
+            limits.memory: 14Gi
+            requests.memory: 8Gi
+            limits.cpu: "8"
+  - it: prod postgres uses the trixie image and both roles
+    values:
+      - ../values-prod.yaml
+    template: cnpg-cluster.yaml
+    asserts:
+      - equal:
+          path: spec.imageName
+          value: ghcr.io/cloudnative-pg/postgresql:16.15-standard-trixie
+      - equal:
+          path: spec.postgresql.parameters.max_connections
+          value: "300"
+      - equal:
+          path: spec.postgresql.parameters.shared_buffers
+          value: 512MB
+      - equal:
+          path: spec.bootstrap.initdb.owner
+          value: education
+      - equal:
+          path: spec.managed.roles[0].name
+          value: text_to_sql_reader
+  - it: prod does not render the mock or the demo job
+    values:
+      - ../values-prod.yaml
+    template: llm-mock.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: prod demo data is off
+    values:
+      - ../values-prod.yaml
+    template: demo-data-job.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: loadtest quota is 10Gi and 6Gi
+    values:
+      - ../values-loadtest.yaml
+    template: resourcequota.yaml
+    asserts:
+      - isSubset:
+          path: spec.hard
+          content:
+            limits.memory: 10Gi
+            requests.memory: 6Gi
+            limits.cpu: "8"
+  - it: loadtest points the api at the mock
+    values:
+      - ../values-loadtest.yaml
+    template: api-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENROUTER_BASE_URL
+            value: http://curioed-llm-mock:8080/v1
+  - it: loadtest renders the mock and not the workers
+    values:
+      - ../values-loadtest.yaml
+    template: llm-mock.yaml
+    asserts:
+      - containsDocument:
+          any: true
+          kind: Service
+          apiVersion: v1
+          name: curioed-llm-mock
+  - it: loadtest demo data is on
+    values:
+      - ../values-loadtest.yaml
+    template: demo-data-job.yaml
+    asserts:
+      - containsDocument:
+          any: true
+          kind: Job
+          apiVersion: batch/v1
+          name: curioed-demo-data
+  - it: loadtest docling is absent
+    values:
+      - ../values-loadtest.yaml
+    template: worker-docling-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: loadtest llm worker is absent
+    values:
+      - ../values-loadtest.yaml
+    template: worker-llm-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0

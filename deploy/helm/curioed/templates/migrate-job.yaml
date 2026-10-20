@@ -22,6 +22,7 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.migrate.securityContext) | nindent 6 }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -32,7 +33,9 @@ spec:
         - name: migrate
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.migrate.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
           command: ["sh", "/scripts/migrate-wrapper.sh"]
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
             - name: BACKUP_DIR

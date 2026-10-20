@@ -1,0 +1,92 @@
+suite: database pool env
+templates:
+  - api-deployment.yaml
+  - worker-docling-deployment.yaml
+  - worker-llm-deployment.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: puts the api pool and the text-to-sql pool on the api
+    template: api-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_POOL_SIZE
+            value: "5"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_MAX_OVERFLOW
+            value: "5"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_POOL_TIMEOUT_SECONDS
+            value: "30"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_POOL_RECYCLE_SECONDS
+            value: "1800"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TEXT_TO_SQL_DB_POOL_SIZE
+            value: "2"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TEXT_TO_SQL_DB_MAX_OVERFLOW
+            value: "3"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_SHUTDOWN_GRACE_SECONDS
+  - it: puts the worker pool and shutdown grace on docling
+    template: worker-docling-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_POOL_SIZE
+            value: "2"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_MAX_OVERFLOW
+            value: "2"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_POOL_RECYCLE_SECONDS
+            value: "1800"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_SHUTDOWN_GRACE_SECONDS
+            value: "25"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TEXT_TO_SQL_DB_POOL_SIZE
+      - greaterOrEqual:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+  - it: puts the same worker pool on the llm worker
+    template: worker-llm-deployment.yaml
+    set:
+      workers.llm.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_SHUTDOWN_GRACE_SECONDS
+            value: "25"
+      - greaterOrEqual:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30

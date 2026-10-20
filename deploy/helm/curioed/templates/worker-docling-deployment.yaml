@@ -1,3 +1,4 @@
+{{- if .Values.workerDocling.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +7,7 @@ metadata:
     {{- include "curioed.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker-docling
 spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   replicas: {{ .Values.workerDocling.replicas }}
   selector:
     matchLabels:
@@ -21,6 +23,10 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.workerDocling.terminationGracePeriodSeconds }}
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.workerDocling.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "workers") }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -33,27 +39,23 @@ spec:
         - name: worker
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.workerDocling.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          # No liveness or readiness. A DB ping would kill a worker mid-parse,
+          # and there is no Service. TODO: a heartbeat file.
+          # SIGTERM: once Coder's worker image is deployed, the process releases
+          # its lease. Until that image is running, Python is PID 1 and ignores it.
           args:
             - python
             - -m
             - education_platform.workers
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
+            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.worker "worker" true) | nindent 12 }}
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
           resources:
             {{- toYaml .Values.workerDocling.resources | nindent 12 }}
-          readinessProbe:
-            exec:
-              command: ["python", "/app/deploy/db_ping.py"]
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 6
-          livenessProbe:
-            exec:
-              command: ["python", "/app/deploy/db_ping.py"]
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 6
       volumes:
         {{- include "curioed.dataVolumes" . | nindent 8 }}
+{{- end }}

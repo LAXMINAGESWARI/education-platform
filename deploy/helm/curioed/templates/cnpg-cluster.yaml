@@ -5,8 +5,12 @@ metadata:
   labels:
     {{- include "curioed.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
+  annotations:
+    {{- include "curioed.keepAnnotation" . | nindent 4 }}
 spec:
   instances: {{ .Values.cnpg.instances }}
+  # The chart does not set a pod securityContext. ghcr.io/cloudnative-pg/postgresql
+  # config User is 26, and the operator runs the pod as that non-root uid.
   imageName: {{ .Values.cnpg.image | quote }}
   imagePullPolicy: {{ .Values.cnpg.imagePullPolicy }}
   bootstrap:
@@ -32,6 +36,9 @@ spec:
     {{- end }}
   resources:
     {{- toYaml .Values.cnpg.resources | nindent 4 }}
+  {{- with include "curioed.priorityClassName" (dict "root" . "tier" "postgres") }}
+  priorityClassName: {{ . }}
+  {{- end }}
   managed:
     roles:
       - name: {{ .Values.cnpg.readerRole }}

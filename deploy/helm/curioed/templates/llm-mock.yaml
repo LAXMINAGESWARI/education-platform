@@ -1,0 +1,78 @@
+{{- if .Values.llmMock.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "curioed.fullname" . }}-llm-mock
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-mock
+data:
+  server.py: |
+{{ .Files.Get "files/llm_mock.py" | indent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "curioed.fullname" . }}-llm-mock
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-mock
+spec:
+  selector:
+    {{- include "curioed.selectorLabels" (dict "root" . "component" "llm-mock") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curioed.fullname" . }}-llm-mock
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-mock
+spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "llm-mock") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: llm-mock
+    spec:
+      automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.llmMock.securityContext) | nindent 6 }}
+      containers:
+        - name: llm-mock
+          image: {{ .Values.llmMock.image }}
+          imagePullPolicy: {{ .Values.llmMock.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.llmMock.securityContext "add" list) | nindent 10 }}
+          command: ["python3", "/opt/mock/server.py"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MOCK_LATENCY_MIN_SECONDS
+              value: {{ .Values.llmMock.latencyMinSeconds | quote }}
+            - name: MOCK_LATENCY_MAX_SECONDS
+              value: {{ .Values.llmMock.latencyMaxSeconds | quote }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: script
+              mountPath: /opt/mock
+          resources:
+            {{- toYaml .Values.llmMock.resources | nindent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "curioed.fullname" . }}-llm-mock
+{{- end }}
