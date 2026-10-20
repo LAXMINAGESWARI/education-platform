@@ -51,22 +51,28 @@ for "is this on topic" the way there is for adversarial phrasing tells — every
 that reaches this node pays for one classifier call. Same fail-open/fail-closed asymmetry
 as `injection_guard`: unconfigured means an off-topic question simply isn't caught
 (degrades to the prior, no-check-at-all behavior, not an outage); a classifier error fails
-closed under its own `OFF_TOPIC_REJECTED` category, reusing `injection_guard`'s own
-"safety check unavailable" wording for the message since the user-facing fact is the
-same, but keeping the category this node's own — an infra failure here has nothing to do
+closed, except HTTP 402, which falls back to this node's pre-Jev GPT classifier. If that
+GPT call also fails, the node fails closed. A missing key cannot call GPT. The refusal
+reuses `injection_guard`'s own "safety check unavailable" wording, since the user-facing
+fact is the same, but keeps the category this node's own — an infra failure here has nothing to do
 with injection, and tagging it `INJECTION_BLOCKED` would misrepresent the audit trail for
 a node that never touches that check at all.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Final
+from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, ValidationError
-
-from education_platform.core.config import get_settings
-from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion_json
+from education_platform.core.config import Settings, get_settings
+from education_platform.modules.guard.classifier import (
+    DATA_GPT_OFF_TOPIC,
+    DATA_OFF_TOPIC,
+    classify_noul,
+    guard_state,
+    is_positive,
+    legacy_gpt_flag,
+)
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
     TextToSQLState,
@@ -81,28 +87,6 @@ _GUARD_UNAVAILABLE_REPLY: Final[str] = (
     "This request's safety check is unavailable right now — please try again shortly."
 )
 
-# Written at the same style/quality as injection_guard's own prompt -- measured clean
-# (8/8 hit rate, 0/10 false positives on legitimate questions, including the exact
-# "What subject do I teach?" phrasing the combined prompt failed on) before this node
-# was built. See this module's own docstring for the full comparison.
-_CLASSIFIER_SYSTEM_PROMPT: Final[str] = (
-    "You are a topic-relevance classifier in front of a text-to-SQL data assistant for "
-    'a school. Return JSON {"off_topic": true|false, "reason": "..."}. Set "off_topic" '
-    "for a question that has nothing to do with a school's students, grades, "
-    "attendance, or curriculum data at all (e.g. the weather, general trivia, writing a "
-    'poem, unrelated coding help). Do not set "off_topic" for a question that is '
-    "merely blunt, broad, vague, or oddly phrased but still about school data — a "
-    "genuinely ambiguous in-domain question should not be flagged. Default to false "
-    "when in doubt."
-)
-
-
-class _OffTopicClassifierResult(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    off_topic: bool
-    reason: str = ""
-
 
 async def question_validator(state: TextToSQLState) -> TextToSQLState:
     question = state.get("question") or ""
@@ -113,25 +97,55 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
         return {**state}
 
     try:
-        data = await chat_completion_json(
-            [
-                {"role": "system", "content": _CLASSIFIER_SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
+        probability = await classify_noul(
+            state=guard_state(question),
+            question=DATA_OFF_TOPIC,
             settings=settings,
         )
-        classified = _OffTopicClassifierResult.model_validate(data)
-    except (OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
-        # Fail closed under this node's own category -- see module docstring.
+    except JudgePaymentRequired:
+        return await _gpt_off_topic_fallback(state, question, settings)
+    except JudgeError:
+        # Fail closed under this node's own category. Leave injection_guard's
+        # guard_stage in place; this failure is the error category below.
         return {
             **state,
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
         }
 
-    if classified.off_topic:
+    audit: dict[str, Any] = {
+        **(state.get("audit_entry") or {}),
+        "off_topic_probability": probability,
+    }
+    if is_positive(probability, settings):
+        return {
+            **state,
+            "audit_entry": audit,
+            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
+        }
+
+    return {**state, "audit_entry": audit}
+
+
+async def _gpt_off_topic_fallback(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+) -> TextToSQLState:
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=DATA_GPT_OFF_TOPIC,
+            user=question,
+            field="off_topic",
+        )
+    except JudgeError:
+        return {
+            **state,
+            "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
+        }
+    if flagged:
         return {
             **state,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
-
     return {**state}

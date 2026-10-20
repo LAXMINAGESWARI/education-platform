@@ -386,6 +386,11 @@ export function GenerationStepDetailPanel({
       ) : null}
       {detail?.lesson ? (
         <div className="step-detail__body">
+          {detail.lesson.needs_review ? (
+            <p className="qa-review__disputed">
+              <span className="badge badge--warn">Needs review before publish</span>
+            </p>
+          ) : null}
           <JudgeScores readouts={detail.lesson.judge ?? []} />
           {slides.length === 0 ? (
             <p className="muted">No lesson markdown was stored for this step.</p>

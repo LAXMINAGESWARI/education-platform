@@ -129,49 +129,21 @@ def test_shadow_mode_does_not_change_the_gate() -> None:
     assert any(check.probabilities for check in evaluation.checks)
 
 
-def test_augment_can_drop_and_replace_keeps_a_solver_owned_computation() -> None:
+def test_enforce_reject_drops_and_needs_review_keeps_the_item() -> None:
     gated = _gated()
-    dropped = apply_to_gate(gated, _rejection(), mode="augment")
-    assert dropped is not gated
+    dropped = apply_to_gate(gated, _rejection(), mode="enforce")
     assert dropped.servable is False
     assert dropped.verdict == "dropped"
+    assert dropped.reasons == _rejection().gate_reasons
     assert gated.servable is True
 
-    computational = Evaluation(
-        subject_kind="quiz_item",
-        label="3 * 4",
-        decision=DECISION_REJECT,
-        gate_decision="accept",
-        reasons=("Keyed answer is correct: noul 0.10 is at or below 0.35.",),
-        gate_reasons=(),
-        checks=(),
-        model="typesafe/jev-1.14",
-        provider=None,
-        request_id=None,
-        input_tokens=10,
-        output_tokens=0,
-        cost_usd=0.0,
-        latency_ms=1,
-        error=None,
-        computational=True,
-    )
-    kept = apply_to_gate(
-        _gated(servable=False, reasons=("blind solve disagreed and chose B",), verdict="dropped"),
-        computational,
-        mode="replace",
-    )
-    assert kept.servable is False
-    assert kept.verdict == "dropped"
-
-
-def test_replace_accepts_a_non_computational_item_the_solver_rejected() -> None:
-    accepted = Evaluation(
+    review = Evaluation(
         subject_kind="quiz_item",
         label="shape",
-        decision="accept",
-        gate_decision="accept",
-        reasons=(),
-        gate_reasons=(),
+        decision="needs_review",
+        gate_decision="needs_review",
+        reasons=("Stated difficulty easy; Jev chose hard with confidence 0.40.",),
+        gate_reasons=("Stated difficulty easy; Jev chose hard with confidence 0.40.",),
         checks=(),
         model="typesafe/jev-1.14",
         provider=None,
@@ -183,12 +155,30 @@ def test_replace_accepts_a_non_computational_item_the_solver_rejected() -> None:
         error=None,
         computational=False,
     )
-    gated = _gated(
-        servable=False,
-        reasons=("blind solve disagreed and chose B",),
-        verdict="dropped",
+    flagged = apply_to_gate(gated, review, mode="enforce")
+    assert flagged.servable is True
+    assert flagged.verdict == "passed"
+    assert flagged.needs_review is True
+
+
+def test_jev_error_does_not_change_the_gate() -> None:
+    gated = _gated()
+    failed = Evaluation(
+        subject_kind="quiz_item",
+        label="shape",
+        decision="error",
+        gate_decision="accept",
+        reasons=("Jev request timed out.",),
+        gate_reasons=(),
+        checks=(),
+        model=None,
+        provider=None,
+        request_id=None,
+        input_tokens=0,
+        output_tokens=0,
+        cost_usd=0.0,
+        latency_ms=0,
+        error="Jev request timed out.",
+        computational=False,
     )
-    updated = apply_to_gate(gated, accepted, mode="replace")
-    assert updated.servable is True
-    assert updated.verdict == "passed"
-    assert updated.reasons == ()
+    assert apply_to_gate(gated, failed, mode="enforce") is gated
