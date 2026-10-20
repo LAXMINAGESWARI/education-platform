@@ -255,10 +255,8 @@ def _optional_unit(raw: object) -> float | None:
     value = float(raw)
     if math.isnan(value):
         raise JudgeResponseError("Jev returned a NaN probability.")
-    if value < 0.0:
-        return 0.0
-    if value > 1.0:
-        return 1.0
+    if math.isinf(value) or value < 0.0 or value > 1.0:
+        raise JudgeResponseError("Jev returned a probability outside 0-1.")
     return value
 
 

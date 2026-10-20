@@ -108,7 +108,6 @@ class GraphState(TypedDict, total=False):
     injection_blocked: bool
     question_valid: bool
     injection_probability: float | None
-    scope_probability: float | None
     guard_stage: str | None
     early_reply: str | None
     retrieved_chunks: list[dict[str, Any]]
@@ -491,7 +490,6 @@ def _initial_turn_state(
         "injection_blocked": False,
         "question_valid": True,
         "injection_probability": None,
-        "scope_probability": None,
         "guard_stage": None,
         "early_reply": None,
         "retrieved_chunks": [],

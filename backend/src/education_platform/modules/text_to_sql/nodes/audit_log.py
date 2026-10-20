@@ -180,8 +180,9 @@ def _build_payload(state: TextToSQLState) -> dict[str, Any]:
         # execute_sql only ever sets this key to True, so its absence always means no
         # truncation occurred, never "unknown."
         "row_cap_truncated": audit_entry.get("row_cap_truncated", False),
-        # injection_guard / question_validator Jev stage. Null when the regex
-        # blocked first or OpenRouter was unconfigured (fail-open).
+        # injection_guard's stage: heuristic, unconfigured, jev, jev_error, gpt,
+        # or gpt_error. question_validator records off_topic_probability and does
+        # not replace this field. Absent only when that node never ran.
         "guard_stage": audit_entry.get("guard_stage"),
         "injection_probability": audit_entry.get("injection_probability"),
         "off_topic_probability": audit_entry.get("off_topic_probability"),

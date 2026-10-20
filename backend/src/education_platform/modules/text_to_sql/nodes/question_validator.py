@@ -105,16 +105,15 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
     except JudgePaymentRequired:
         return await _gpt_off_topic_fallback(state, question, settings)
     except JudgeError:
-        # Fail closed under this node's own category -- see module docstring.
+        # Fail closed under this node's own category. Leave injection_guard's
+        # guard_stage in place; this failure is the error category below.
         return {
             **state,
-            "audit_entry": {**(state.get("audit_entry") or {}), "guard_stage": "jev_error"},
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
         }
 
     audit: dict[str, Any] = {
         **(state.get("audit_entry") or {}),
-        "guard_stage": "jev",
         "off_topic_probability": probability,
     }
     if is_positive(probability, settings):
@@ -142,17 +141,11 @@ async def _gpt_off_topic_fallback(
     except JudgeError:
         return {
             **state,
-            "audit_entry": {**(state.get("audit_entry") or {}), "guard_stage": "gpt_error"},
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),
         }
-    audit: dict[str, Any] = {
-        **(state.get("audit_entry") or {}),
-        "guard_stage": "gpt",
-    }
     if flagged:
         return {
             **state,
-            "audit_entry": audit,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
-    return {**state, "audit_entry": audit}
+    return {**state}

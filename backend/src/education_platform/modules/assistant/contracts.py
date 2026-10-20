@@ -94,7 +94,6 @@ class AssistantGraphState(BaseModel):
     injection_blocked: bool = False
     question_valid: bool = True
     injection_probability: float | None = None
-    scope_probability: float | None = None
     guard_stage: str | None = None
     early_reply: str | None = None
     retrieved_chunks: list[RetrievedChunk] = Field(default_factory=list)

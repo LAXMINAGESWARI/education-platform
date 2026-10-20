@@ -505,6 +505,11 @@ def test_golden_rows_recorded_probabilities_meet_threshold() -> None:
     assert subject["recorded_noul"] < threshold
     for row in rows:
         recorded = row["recorded_noul"]
+        assert row["recorded_source"] == "raw_scores_a0b00a3.jsonl", row["id"]
+        if row["task"] == "off_topic":
+            assert row["recorded_check"] == "data.jev_off_topic", row["id"]
+        else:
+            assert row["recorded_check"] == "data.jev_injection", row["id"]
         if row["expect_positive"]:
             assert recorded >= threshold, row["id"]
         else:

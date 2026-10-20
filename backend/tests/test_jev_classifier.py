@@ -29,6 +29,7 @@ from education_platform.modules.auth.models import User
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.guard.classifier import (
     DATA_INJECTION,
+    classify_noul,
     guard_state,
     is_positive,
     message_preview_field,
@@ -39,7 +40,7 @@ from education_platform.modules.judge.errors import (
     JudgePaymentRequired,
     JudgeResponseError,
 )
-from education_platform.modules.judge.types import NoulAnswer
+from education_platform.modules.judge.types import DecisionResult, NoulAnswer
 from education_platform.modules.text_to_sql.nodes.injection_guard import injection_guard
 
 _FIXTURE = (
@@ -328,6 +329,39 @@ async def test_guard_posts_guard_jev_model_when_set() -> None:
             client=client,
         )
     assert seen[0]["model"] == "typesafe/jev-guard"
+
+
+@pytest.mark.asyncio
+async def test_classify_noul_rejects_nan_and_values_outside_0_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(openrouter_api_key="test-key")
+    holder = {"noul": float("nan")}
+
+    async def fake_post(**kwargs: object) -> DecisionResult:
+        _ = kwargs
+        return DecisionResult(
+            model="typesafe/jev-1.14",
+            answers={"decision": NoulAnswer(noul=holder["noul"])},
+            input_tokens=1,
+            output_tokens=1,
+            cost_usd=0.0,
+            latency_ms=1,
+            request_id=None,
+            provider=None,
+        )
+
+    monkeypatch.setattr(
+        "education_platform.modules.guard.classifier.post_decisions",
+        fake_post,
+    )
+    with pytest.raises(JudgeResponseError, match="NaN"):
+        await classify_noul(state="hello", question=DATA_INJECTION, settings=settings)
+
+    for raw in (1.5, -0.1):
+        holder["noul"] = raw
+        with pytest.raises(JudgeResponseError, match="outside 0-1"):
+            await classify_noul(state="hello", question=DATA_INJECTION, settings=settings)
 
 
 @pytest.mark.asyncio

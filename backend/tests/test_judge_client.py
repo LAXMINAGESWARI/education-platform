@@ -208,6 +208,30 @@ def _json_response(body: str) -> httpx.Response:
     return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
 
 
+def test_probability_outside_0_1_is_rejected() -> None:
+    def high(_request: httpx.Request) -> httpx.Response:
+        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}')
+
+    judge = HttpJudge(
+        _settings(),
+        client=httpx.Client(transport=httpx.MockTransport(high)),
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(JudgeResponseError, match="outside 0-1"):
+        judge.decide(_request())
+
+    def low(_request: httpx.Request) -> httpx.Response:
+        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}')
+
+    low_judge = HttpJudge(
+        _settings(),
+        client=httpx.Client(transport=httpx.MockTransport(low)),
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(JudgeResponseError, match="outside 0-1"):
+        low_judge.decide(_request())
+
+
 def test_nan_noul_and_score_are_rejected() -> None:
     def noul(_request: httpx.Request) -> httpx.Response:
         return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": NaN}}}')

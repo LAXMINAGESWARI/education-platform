@@ -12,7 +12,7 @@ from typing import Protocol, cast
 import pytest
 
 from education_platform.core.config import Settings
-from education_platform.modules.judge.errors import JudgeError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.nodes.question_validator import question_validator
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
@@ -163,3 +163,67 @@ async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.Mo
     result = await question_validator(_state("How many students do I teach in total?"))
 
     assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+
+
+async def test_off_topic_keeps_the_injection_guard_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake, _ = _fake_classifier(0.1)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    prior = {"guard_stage": "jev", "injection_probability": 0.2}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert result["error"] is None
+    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["injection_probability"] == 0.2
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
+
+
+async def test_off_topic_error_keeps_the_injection_guard_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raising(*args: object, **kwargs: object) -> float:
+        raise JudgeError("network blew up")
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _raising)
+    prior = {"guard_stage": "gpt", "injection_probability": None}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert result["audit_entry"]["guard_stage"] == "gpt"
+
+
+async def test_off_topic_402_uses_gpt_and_keeps_the_injection_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _pay(*args: object, **kwargs: object) -> float:
+        raise JudgePaymentRequired("OpenRouter returned HTTP 402")
+
+    async def _gpt(**kwargs: object) -> bool:
+        assert kwargs["field"] == "off_topic"
+        return False
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _pay)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "jev"}
+
+    allowed = await question_validator(_state("What subject do I teach?", audit_entry=prior))
+
+    assert allowed["error"] is None
+    assert allowed["audit_entry"]["guard_stage"] == "jev"
+
+    async def _block(**kwargs: object) -> bool:
+        assert kwargs["field"] == "off_topic"
+        return True
+
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _block)
+    refused = await question_validator(
+        _state("What's the weather like tomorrow?", audit_entry=dict(prior))
+    )
+
+    assert error_category(refused["error"]) == OFF_TOPIC_REJECTED
+    assert refused["audit_entry"]["guard_stage"] == "jev"

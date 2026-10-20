@@ -51,7 +51,6 @@ class PolicyAssistantStrategy:
                     "injection_blocked": bool(result.get("injection_blocked")),
                     "question_valid": result.get("question_valid"),
                     "injection_probability": result.get("injection_probability"),
-                    "scope_probability": result.get("scope_probability"),
                     **message_preview_field(message, settings),
                 },
             )
