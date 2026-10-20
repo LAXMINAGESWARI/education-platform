@@ -36,7 +36,14 @@ from education_platform.workers.ingest import (
     fail_exhausted_ingest_job,
     process_ingest_job_sync,
 )
-from education_platform.workers.lease import Claimed, Exhausted, OwnedLease, claim, heartbeat
+from education_platform.workers.lease import (
+    Claimed,
+    Exhausted,
+    OwnedLease,
+    bind_lease,
+    claim,
+    heartbeat,
+)
 from education_platform.workers.shutdown import WorkerShutdown
 
 _ = _orm_tables  # register FK targets (users) for the worker process
@@ -113,7 +120,8 @@ def _claim_one(
     lease = OwnedLease.from_claimed(model, result)
 
     def _run() -> None:
-        with heartbeat(lease):
+        # Enter heartbeat first so its thread does not copy the bound lease.
+        with heartbeat(lease), bind_lease(lease):
             process(lease.job_id)
 
     return _run_claimed(shutdown, lease, _run)

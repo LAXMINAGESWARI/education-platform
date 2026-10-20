@@ -5,14 +5,17 @@ and the worker does not need to be PID 1. A second signal does not move the
 deadline or release twice.
 
 After the grace period the lease is released and committed first. The watch
-thread then interrupts the main thread so the job's ``finally`` blocks run.
+thread then delivers SIGUSR1 to the main thread. That handler raises
+KeyboardInterrupt, including when the job is blocked in sleep, so ``finally``
+blocks run. SIGINT cannot do this: it is already handled by ``note_signal``,
+and a second SIGINT does not raise.
+
 ``os._exit`` is not used: it would skip those blocks and drop a job that was
 about to commit.
 """
 
 from __future__ import annotations
 
-import _thread
 import signal
 import threading
 import time
@@ -30,6 +33,19 @@ ExitFn = Callable[[int], None]
 
 def _wait_for_event(event: threading.Event, timeout: float) -> bool:
     return event.wait(timeout)
+
+
+def _interrupt_job(_signum: int, _frame: FrameType | None) -> None:
+    """Stop the in-flight job once its lease release has committed."""
+    raise KeyboardInterrupt
+
+
+def wake_worker_main() -> None:
+    """Raise KeyboardInterrupt on the main thread and wake a blocking sleep."""
+    ident = threading.main_thread().ident
+    if ident is None:
+        return
+    signal.pthread_kill(ident, signal.SIGUSR1)
 
 
 class WorkerShutdown:
@@ -68,6 +84,7 @@ class WorkerShutdown:
         """
         signal.signal(signal.SIGTERM, self.note_signal)
         signal.signal(signal.SIGINT, self.note_signal)
+        signal.signal(signal.SIGUSR1, _interrupt_job)
         if self._thread is not None:
             return
         self._thread = threading.Thread(
@@ -135,6 +152,6 @@ class WorkerShutdown:
             self._current = None
         self._release(lease)
         if threading.current_thread() is not threading.main_thread():
-            _thread.interrupt_main()
+            wake_worker_main()
         if self._exit is not None:
             self._exit(0)

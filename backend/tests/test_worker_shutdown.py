@@ -18,7 +18,7 @@ from education_platform.modules.generation.models import GenerationJob
 from education_platform.modules.generation.types import GenerationJobStatus
 from education_platform.workers.lease import OwnedLease, release_lease
 from education_platform.workers.runner import _run_claimed, poll_once, run_forever
-from education_platform.workers.shutdown import WorkerShutdown
+from education_platform.workers.shutdown import WorkerShutdown, _interrupt_job
 from test_worker_lease import JobRow, ReleaseSession
 
 
@@ -238,7 +238,7 @@ def test_grace_expiry_releases_before_interrupting_and_does_not_os_exit(
     order: list[object] = []
     monkeypatch.setattr(os, "_exit", lambda code: order.append(("os_exit", code)))
     monkeypatch.setattr(
-        "education_platform.workers.shutdown._thread.interrupt_main",
+        "education_platform.workers.shutdown.wake_worker_main",
         lambda: order.append("interrupt"),
     )
     job_id = uuid4()
@@ -331,6 +331,7 @@ def test_signal_handlers_are_registered_on_the_child_process(
     state.install_signals()
     assert registered[signal.SIGTERM] == state.note_signal
     assert registered[signal.SIGINT] == state.note_signal
+    assert registered[signal.SIGUSR1] == _interrupt_job
     assert started == ["start"]
     state.note_signal(signal.SIGTERM, None)
     state.note_signal(signal.SIGINT, None)

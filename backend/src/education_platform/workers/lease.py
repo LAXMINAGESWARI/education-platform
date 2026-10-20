@@ -18,12 +18,13 @@ import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, inspect, or_, select, update
 from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
@@ -70,6 +71,117 @@ class OwnedLease:
             attempts=claimed.attempts,
             locked_until=claimed.locked_until,
         )
+
+
+_bound_lease: ContextVar[OwnedLease | None] = ContextVar("bound_lease", default=None)
+
+
+def exceeded_max_attempts_message(max_attempts: int) -> str:
+    """Failure text when a row can no longer be claimed."""
+    return f"Job exceeded max attempts ({max_attempts})"
+
+
+@contextmanager
+def bind_lease(lease: OwnedLease) -> Iterator[OwnedLease]:
+    """Bind ``lease`` for ``commit_owned`` on this thread.
+
+    The heartbeat thread is started before this runs, so it does not inherit the
+    token and keeps using its own conditional update.
+    """
+    token = _bound_lease.set(lease)
+    try:
+        yield lease
+    finally:
+        _bound_lease.reset(token)
+
+
+def prepare_leased_writes(session: Session) -> None:
+    """Turn autoflush off while a lease is bound.
+
+    A later SELECT would otherwise flush ``job.status = succeeded`` by primary
+    key and overwrite the worker that reclaimed the row.
+    """
+    if _bound_lease.get() is not None:
+        session.autoflush = False
+
+
+def commit_owned(session: Session) -> bool:
+    """Commit, or discard the transaction when this worker lost the lease.
+
+    With no bound lease (tests, exhausted failures, the claim itself) this is
+    ``session.commit()``. With a lease, job-column changes are applied with the
+    same ``id`` / ``status='running'`` / ``attempts`` / ``locked_until`` match
+    as ``release_lease``. A miss is logged, the transaction is rolled back, and
+    the new owner's row is left unchanged.
+    """
+    lease = _bound_lease.get()
+    if lease is None:
+        session.commit()
+        return True
+    with lease.lock:
+        if lease.lost:
+            logger.info(
+                "Discarded %s %s write; lease is no longer owned",
+                lease.model.__name__,
+                lease.job_id,
+            )
+            session.rollback()
+            return False
+        matched = _write_owned_row(session, lease)
+        if not matched:
+            logger.info(
+                "Discarded %s %s write; lease is no longer owned",
+                lease.model.__name__,
+                lease.job_id,
+            )
+            session.rollback()
+            lease.lost = True
+            return False
+        session.commit()
+        return True
+
+
+def _pending_job_values(job: Any) -> dict[str, Any]:
+    insp = inspect(job)
+    values: dict[str, Any] = {}
+    for column in insp.mapper.column_attrs:
+        key = column.key
+        if key in {"id", "created_at", "updated_at"}:
+            continue
+        if insp.attrs[key].history.has_changes():
+            values[key] = getattr(job, key)
+    return values
+
+
+def _write_owned_row(session: Session, lease: OwnedLease) -> bool:
+    """Apply pending job columns with the ownership WHERE, without a primary-key flush.
+
+    ``expire`` drops the pending ORM state after it has been copied, so a later
+    ``commit`` cannot write ``succeeded`` by id. The object stays in the session
+    and later attribute access reloads the committed row. ``synchronize_session``
+    is off so the UPDATE does not compare that in-memory object to
+    ``status='running'`` or put the new values back into the identity map.
+    """
+    with session.no_autoflush:
+        job = session.get(lease.model, lease.job_id)
+        values = _pending_job_values(job) if job is not None else {}
+        if job is not None and values:
+            session.expire(job)
+        if not values:
+            values = {"attempts": lease.attempts}
+        result = session.execute(
+            update(lease.model)
+            .where(
+                lease.model.id == lease.job_id,
+                lease.model.status == _status(lease.model, "running"),
+                lease.model.attempts == lease.attempts,
+                lease.model.locked_until == lease.locked_until,
+            )
+            .values(**values),
+            execution_options={"synchronize_session": False},
+        )
+    rowcount = getattr(result, "rowcount", None)
+    return isinstance(rowcount, int) and rowcount > 0
 
 
 def attempts_are_exhausted(attempts: int, max_attempts: int) -> bool:

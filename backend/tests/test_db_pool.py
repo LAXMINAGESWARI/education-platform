@@ -92,11 +92,11 @@ def test_pool_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
     settings = Settings(_env_file=None)
     assert settings.db_pool_size == 5
-    assert settings.db_max_overflow == 5
+    assert settings.db_max_overflow == 10
     assert settings.db_pool_timeout_seconds == 30.0
-    assert settings.db_pool_recycle_seconds == 1800
+    assert settings.db_pool_recycle_seconds == -1
     assert settings.text_to_sql_db_pool_size == 5
-    assert settings.text_to_sql_db_max_overflow == 5
+    assert settings.text_to_sql_db_max_overflow == 10
 
     get_settings.cache_clear()
     reset_engine()
@@ -107,9 +107,9 @@ def test_pool_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         _assert_pool(
             engine.pool,
             size=5,
-            overflow=5,
+            overflow=10,
             timeout=30.0,
-            recycle=1800,
+            recycle=-1,
             pre_ping=False,
         )
     finally:

@@ -22,7 +22,14 @@ from education_platform.modules.generation.curriculum import (
 )
 from education_platform.modules.generation.models import CurriculumGenerationJob
 from education_platform.modules.generation.types import GenerationJobStatus
-from education_platform.workers.lease import Claimed, Exhausted, claim
+from education_platform.workers.lease import (
+    Claimed,
+    Exhausted,
+    claim,
+    commit_owned,
+    exceeded_max_attempts_message,
+    prepare_leased_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +49,8 @@ def fail_exhausted_curriculum_job(session: Session, job_id: UUID) -> None:
     job = session.get(CurriculumGenerationJob, job_id)
     if job is None:
         return
-    fail_curriculum_job(job, f"Worker lost this job {job.attempts} times")
-    session.commit()
+    fail_curriculum_job(job, exceeded_max_attempts_message(int(job.max_attempts)))
+    commit_owned(session)
 
 
 def _resolve_runner(runner: CurriculumRunner | None) -> CurriculumRunner | str:
@@ -64,27 +71,28 @@ def process_curriculum_job_sync(
     runner: CurriculumRunner | None = None,
 ) -> None:
     session = sync_session()
+    prepare_leased_writes(session)
     try:
         job = session.get(CurriculumGenerationJob, job_id)
         if job is None:
             logger.error("Curriculum generation job %s not found", job_id)
             return
         job.status = GenerationJobStatus.RUNNING
-        session.commit()
+        commit_owned(session)
         chunks = ingested_chunks_for_subtopic(session, job.subtopic_id)
         if not chunks:
             fail_curriculum_job(job, NO_INGESTED_CHUNKS_MESSAGE)
-            session.commit()
+            commit_owned(session)
             return
         resolved = _resolve_runner(runner)
         if isinstance(resolved, str):
             fail_curriculum_job(job, resolved)
-            session.commit()
+            commit_owned(session)
             return
         request = build_adk_request(session, job, chunks)
         if isinstance(request, str):
             fail_curriculum_job(job, request)
-            session.commit()
+            commit_owned(session)
             return
         result = resolved.generate(request)
         job.round_count = result.round_count
@@ -97,13 +105,13 @@ def process_curriculum_job_sync(
             if job is None:
                 return
             fail_curriculum_job(job, gate, result=result)
-        session.commit()
+        commit_owned(session)
     except Exception as exc:
         logger.exception("Curriculum generation job %s failed", job_id)
         session.rollback()
         job = session.get(CurriculumGenerationJob, job_id)
         if job is not None:
             fail_curriculum_job(job, str(exc)[:2000])
-            session.commit()
+            commit_owned(session)
     finally:
         session.close()

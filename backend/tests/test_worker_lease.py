@@ -99,7 +99,7 @@ def test_exhausted_job_fails_its_run(seeded_db: Session) -> None:
     failed_run = seeded_db.get(ContentGenerationRun, run.id)
     assert failed_run is not None
     assert failed_run.phase is RunPhase.FAILED
-    assert failed_run.failure_reason == "Worker lost this job 3 times"
+    assert failed_run.failure_reason == "Job exceeded max attempts (3)"
     refreshed = seeded_db.get(GenerationJob, job.id)
     assert refreshed is not None
     assert refreshed.status is GenerationJobStatus.FAILED
