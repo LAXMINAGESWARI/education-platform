@@ -13,7 +13,7 @@ import {
   type DueReviewRow,
 } from "../components/FeedbackEntriesTable";
 import { formatScore, scoreNumber } from "../lib/feedbackHierarchy";
-import { revealElementById } from "../lib/hashFocus";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 type ReviewTarget = { subjectId: string; subjectName: string };
 
@@ -25,9 +25,11 @@ export function FeedbackSubjectPickerPage() {
   const [reviewTargets, setReviewTargets] = useState<Map<string, ReviewTarget>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [dueLoaded, setDueLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setDueLoaded(false);
     void getFeedbackOverview()
       .then((data) => {
         if (!cancelled) {
@@ -59,6 +61,9 @@ export function FeedbackSubjectPickerPage() {
           setDueReviews([]);
           setReviewTargets(new Map());
         }
+      })
+      .finally(() => {
+        if (!cancelled) setDueLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -90,9 +95,9 @@ export function FeedbackSubjectPickerPage() {
 
   useEffect(() => {
     const wantsDue = location.hash === "#feedback-due" || searchParams.get("section") === "due";
-    if (!wantsDue || !overview) return;
-    revealElementById("feedback-due");
-  }, [location.hash, overview, searchParams, showDue]);
+    if (!wantsDue || !overview || !dueLoaded) return;
+    return revealElementByIdWhenSettled("feedback-due");
+  }, [dueLoaded, location.hash, overview, searchParams, showDue]);
 
   const attempted = overview?.subjects.filter((subject) => scoreNumber(subject.score_percent) !== null).length ?? 0;
   const quizzes =

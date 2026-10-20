@@ -16,7 +16,7 @@ import {
   momentumGain,
   scoreNumber,
 } from "../lib/feedbackHierarchy";
-import { revealElementById } from "../lib/hashFocus";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 function TopicSummaryTable({
   topics,
@@ -143,7 +143,7 @@ export function SubjectFeedbackPage() {
 
   useEffect(() => {
     if (!detail || location.hash !== "#needs-attention") return;
-    revealElementById("needs-attention");
+    return revealElementByIdWhenSettled("needs-attention");
   }, [detail, location.hash]);
 
   if (!detail && !error) {
