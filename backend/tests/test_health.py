@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from education_platform.core.config import Settings, get_settings
+from education_platform.db.session import get_engine, reset_engine
 from education_platform.main import app
 
 # A realistic async URL. The failure response must not echo any of it.
@@ -100,3 +102,50 @@ def test_ready_is_503_when_the_database_call_times_out(
         assert "TimeoutError" not in response.text
         assert "Traceback" not in response.text
     assert "timed out" in caplog.text.lower()
+
+
+@pytest.mark.regression
+def test_ready_is_503_against_an_unreachable_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://education:education@127.0.0.1:1/education",
+    )
+    monkeypatch.setenv("HEALTH_READY_TIMEOUT_SECONDS", "1")
+    get_settings.cache_clear()
+    reset_engine()
+    monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
+    started = time.perf_counter()
+    try:
+        with TestClient(app) as http:
+            ready = http.get("/health/ready")
+            live = http.get("/health/live")
+        elapsed = time.perf_counter() - started
+    finally:
+        reset_engine()
+        get_settings.cache_clear()
+
+    assert elapsed < 3
+    assert ready.status_code == 503
+    assert ready.json() == {"status": "degraded", "db": "error"}
+    assert live.status_code == 200
+    assert live.json() == {"status": "ok"}
+
+
+def test_ready_uses_shared_engine_no_new_pool(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[int] = []
+    real = get_engine
+
+    def spy() -> object:
+        engine = real()
+        seen.append(id(engine))
+        return engine
+
+    monkeypatch.setattr("education_platform.core.health.get_engine", spy)
+    for _ in range(20):
+        response = client.get("/health/ready")
+        assert response.status_code == 200, response.text
+    assert len(seen) == 20
+    assert len(set(seen)) == 1
