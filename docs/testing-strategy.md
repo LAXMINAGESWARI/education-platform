@@ -20,8 +20,9 @@ Anything marked **(pending #N)** exists only on the open PR #N branch, not on `m
 | Deploy smoke | `.github/workflows/deploy.yml` curls `DEPLOY_HEALTH_URL` after deploy | Push to `main` only |
 
 `ci.yml` triggers on `pull_request` only, cancels superseded runs per branch, and has
-**no `timeout-minutes`** on either job (GitHub default: 360 min). CI hardening is planned
-work owned by a separate workstream (section 7).
+**no `timeout-minutes`** on either job on `main` (GitHub default: 360 min). CI hardening is
+owned by a separate workstream; its change is on branch `cursor/ci-fail-fast-timeouts-0adb`
+(commit `2f70918`, not merged, no PR yet). Section 7 lists what it adds.
 
 ## 2. Integration tests: real app, real Postgres, stubbed LLM
 
@@ -146,22 +147,37 @@ so load tests never spend money. Gate the cutover on two consecutive green runs.
 
 | What | Workflow / job | Trigger | Timeouts |
 | --- | --- | --- | --- |
-| ruff, mypy, alembic upgrade, pytest (incl. `@regression`, migrations, stubbed-LLM integration; stubbed-gateway once #189 lands) | `ci.yml` / `quality` | `pull_request` | none today; planned: job `timeout-minutes: 20`, per-test `--timeout=120` (`pytest-timeout`), DB wait below |
-| Vitest + build | `ci.yml` / `frontend` | `pull_request` | none today; planned: `timeout-minutes: 10` |
+| ruff, mypy, alembic upgrade, pytest (incl. `@regression`, migrations, stubbed-LLM integration; stubbed-gateway once #189 lands) | `ci.yml` / `quality` | `pull_request` | none on `main`; pending (`2f70918`): job `timeout-minutes: 60`, per-test `timeout = 120` (`pytest-timeout`), `PGCONNECT_TIMEOUT: "5"`, "Wait for Postgres" step (below) |
+| Vitest + build | `ci.yml` / `frontend` | `pull_request` | none on `main`; pending (`2f70918`): `timeout-minutes: 10` |
 | Playwright `@regression` smoke | `ci.yml` / `e2e` **(proposal, section 4)** | `pull_request` | `timeout-minutes: 20`; Playwright `timeout: 240_000` per test (config), API-ready curl ~60 s |
 | Full Playwright both projects | `nightly.yml` **(new)** | `schedule` + `workflow_dispatch` | `timeout-minutes: 45` |
 | AI regression evals (paid) | `ai-evals.yml` **(new)** | `schedule` + `workflow_dispatch` only | `timeout-minutes: 30` + spend cap (section 8) |
 | k6 | `load.yml` **(new)** | `workflow_dispatch` | `timeout-minutes: 20` |
 | Deploy + health curl | `deploy.yml` / `deploy` | push to `main` | `timeout-minutes: 90` (exists) |
 
-**Fail fast when the DB is missing (planned CI hardening).** Job timeouts, `pytest-timeout`
-and a DB connect timeout are owned by a separate CI-hardening workstream; this doc records
-the target, it does not make the change. Today the service health check gives up after
-10 x 5 s, and `conftest.py::migrated_database` does `SELECT 1` and calls `pytest.fail`, but
-`create_engine(sync_url, pool_pre_ping=True)` has no connect timeout, so a black-holed host
-can hang for the OS TCP timeout. Planned: `connect_args={"connect_timeout": 5}` there, a
-`pg_isready -h localhost -t 30` step before `alembic upgrade head` in `quality`, and
-`pytest-timeout` (new dev dependency) so a hung test dies at 120 s with a stack dump.
+**Fail fast when the DB is missing (CI hardening, pending).** Owned by a separate
+workstream; this doc does not make the change. As of `main` `ac82ada` none of it is merged:
+`ci.yml` has no `timeout-minutes`, `backend/pyproject.toml` has no `pytest-timeout`, and
+`conftest.py::migrated_database` calls `create_engine(sync_url, pool_pre_ping=True)` with no
+connect timeout, so a black-holed host can hang for the OS TCP timeout. Today only the
+service health check (`pg_isready`, 10 x 5 s) and the `SELECT 1` + `pytest.fail` in
+`migrated_database` guard against a missing DB.
+
+Commit `2f70918` on `cursor/ci-fail-fast-timeouts-0adb` adds:
+
+- `.github/workflows/ci.yml`: `quality` `timeout-minutes: 60` (green runs take about
+  35-45 min) and `frontend` `timeout-minutes: 10`; `PGCONNECT_TIMEOUT: "5"` in `quality`'s
+  env so libpq (psycopg, `alembic upgrade`) gives up after 5 s; a "Wait for Postgres" step
+  before `alembic upgrade head` that runs `pg_isready -h localhost -p 5432 -U education
+  -d education_test -t 5` up to 6 times and fails with an explicit error.
+- `backend/pyproject.toml`: `pytest-timeout>=2.3` in the `dev` group and `timeout = 120`
+  under `[tool.pytest.ini_options]`, so a hung test fails at 120 s with a stack dump.
+- `backend/tests/postgres_connect.py` (+ `tests/test_postgres_connect_timeout.py`): a
+  test-process-only 5 s connect cap (`connect_timeout` for libpq, `timeout` for asyncpg,
+  which ignores `PGCONNECT_TIMEOUT`), installed from `conftest.py`. Production engines are
+  unchanged.
+
+Once that merges, update this section to describe these as current.
 
 ## 8. AI regression layer (opt-in, nightly, paid)
 
