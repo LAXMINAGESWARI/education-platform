@@ -30,9 +30,31 @@ cd "${clone}"
 echo "Fetching origin/main in ${clone}"
 GIT_TERMINAL_PROMPT=0 git fetch origin main
 sha="$(git rev-parse origin/main)"
+
+# checkout --force would discard this work, so refuse first.
+# The script creates no files inside the clone, so every porcelain
+# line is relevant: tracked changes and untracked files.
+if ! dirty="$(git status --porcelain)"; then
+  echo "git status failed in ${clone}" >&2
+  exit 1
+fi
+if [[ -n "${dirty}" ]]; then
+  echo "refusing to deploy: ${clone} has local changes" >&2
+  printf '%s\n' "${dirty}" >&2
+  exit 1
+fi
+
 if [[ -f "${state_file}" && "$(cat "${state_file}")" == "${sha}" ]]; then
   echo "Already deployed ${sha}"
   exit 0
+fi
+
+echo "Checking out ${sha}"
+git checkout --force --detach "${sha}"
+head_sha="$(git rev-parse HEAD)"
+if [[ "${head_sha}" != "${sha}" ]]; then
+  echo "checkout of origin/main (${sha}) left HEAD at ${head_sha}" >&2
+  exit 1
 fi
 
 echo "Building api and web ${sha}"
