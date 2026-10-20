@@ -143,7 +143,62 @@ async def _batched(state: TextToSQLState, settings: Settings) -> TextToSQLState:
             "audit_entry": noted,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
-    return {**state, "audit_entry": noted}
+    # Same OR as the legacy nodes: a passing Jev score still asks GPT.
+    # Generation is already running beside this task. checking/done and SQL wait
+    # until this returns.
+    return await _gpt_after_jev(state, question, settings, noted)
+
+
+async def _gpt_after_jev(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+    noted: dict[str, Any],
+) -> TextToSQLState:
+    """GPT injection, then GPT off-topic. Either flag refuses."""
+    try:
+        injection = await _gpt_flag(
+            step="text_to_sql.guard",
+            settings=settings,
+            system=DATA_GPT_INJECTION,
+            user=question,
+            field="injection",
+            state=state,
+        )
+    except JudgeError:
+        return {
+            **state,
+            "audit_entry": {**noted, "guard_stage": "gpt_error"},
+            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
+        }
+    if injection:
+        return {
+            **state,
+            "audit_entry": {**noted, "guard_stage": "gpt"},
+            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
+        }
+    try:
+        off_topic = await _gpt_flag(
+            step="text_to_sql.validator",
+            settings=settings,
+            system=DATA_GPT_OFF_TOPIC,
+            user=question,
+            field="off_topic",
+            state=state,
+        )
+    except JudgeError:
+        return {
+            **state,
+            "audit_entry": {**noted, "guard_stage": "gpt_error"},
+            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_UNAVAILABLE),
+        }
+    if off_topic:
+        return {
+            **state,
+            "audit_entry": {**noted, "guard_stage": "gpt"},
+            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
+        }
+    return {**state, "audit_entry": {**noted, "guard_stage": "jev_gpt"}}
 
 
 async def _gpt_both(state: TextToSQLState, question: str, settings: Settings) -> TextToSQLState:

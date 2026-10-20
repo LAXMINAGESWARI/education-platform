@@ -33,6 +33,7 @@ from education_platform.core.config import Settings
 from evals.pricing import load_prices
 from evals.text_to_sql_pipeline.cost import estimate, render
 from evals.text_to_sql_pipeline.fixture import load_golden_bench
+from evals.text_to_sql_pipeline.replay import run_replay
 from evals.text_to_sql_pipeline.rows import canonicalize
 
 _BACKEND = Path(__file__).resolve().parents[2]
@@ -40,6 +41,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 DEFAULT_GOLDEN = _BACKEND / "tests" / "fixtures" / "text_to_sql_golden.yaml"
+DEFAULT_REPLAY = _BACKEND / "tests" / "fixtures" / "text_to_sql_replay.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,14 +50,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="print the plan; no model calls")
     parser.add_argument("--live", action="store_true", help="run both pipelines locally")
     parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="run both pipelines on recorded responses; no network",
+    )
+    parser.add_argument("--replay-file", type=Path, default=DEFAULT_REPLAY)
+    parser.add_argument(
         "--load-fixture",
         action="store_true",
         help="load Golden Bench School into DATABASE_URL before a live run",
     )
     parser.add_argument("--max-usd", type=float, default=2.00)
     args = parser.parse_args(argv)
-    if args.live and args.dry_run:
-        parser.error("pass only one of --live and --dry-run")
+    if sum((args.live, args.dry_run, args.replay)) > 1:
+        parser.error("pass only one of --live, --dry-run, and --replay")
     if args.max_usd <= 0:
         parser.error("--max-usd must be positive")
     if args.load_fixture and not args.live:
@@ -271,6 +279,8 @@ def _print_cost(questions: list[dict[str, Any]], max_usd: float) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.replay:
+        return run_replay(args.replay_file)
     questions = load_questions(args.golden)
     if not args.live:
         print_plan(args.golden, questions)

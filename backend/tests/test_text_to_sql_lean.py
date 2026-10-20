@@ -115,6 +115,36 @@ def _completion(text: str, parsed: dict[str, Any] | None = None) -> Completion:
     return Completion(text=text, parsed_json=parsed, usage=TokenUsage(4, 3), served_model="m")
 
 
+@pytest.fixture(autouse=True)
+def _gpt_allows_after_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A passing Jev score now asks GPT. Tests that need a flag replace this."""
+
+    async def allow(**_kwargs: Any) -> bool:
+        return False
+
+    async def complete(
+        step: str,
+        messages: list[dict[str, Any]],
+        *,
+        ctx: object,
+        response_format: dict[str, Any] | None = None,
+        stream: bool = False,
+    ) -> Completion:
+        del messages, ctx, response_format, stream
+        if step == "text_to_sql.guard":
+            parsed: dict[str, Any] = {"injection": False}
+        elif step == "text_to_sql.validator":
+            parsed = {"off_topic": False}
+        else:
+            parsed = {}
+        return _completion("{}", parsed)
+
+    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", allow)
+    monkeypatch.setattr(_INJECTION, "legacy_gpt_flag", allow)
+    monkeypatch.setattr(_VALIDATOR, "legacy_gpt_flag", allow)
+    monkeypatch.setattr("education_platform.modules.text_to_sql.llm.complete", complete)
+
+
 @pytest.fixture
 def configured(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = _settings()

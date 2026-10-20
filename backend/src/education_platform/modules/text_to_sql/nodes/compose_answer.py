@@ -644,7 +644,11 @@ async def _compose_core_answer(
     attribute_columns = _roster_with_attributes_shape(rows, row_count)
     if attribute_columns is not None:
         return _roster_with_attributes_answer(attribute_columns, rows, criterion)
-    table = small_result_table(rows, row_count)
+    # The deterministic table is lean-only. Legacy /ask keeps the model summary
+    # so its bytes stay the same as main.
+    table = None
+    if (state or {}).get("pipeline") == "lean":
+        table = small_result_table(rows, row_count)
     if table is not None:
         columns, table_rows = table
         hook = current_compose_stream()

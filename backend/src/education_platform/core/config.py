@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # JEV_DECISIONS_URL overrides the Decisions route for both the lesson judge
     # and the chat guard. Blank derives it from OPENROUTER_BASE_URL.
     jev_decisions_url: str = ""
-    jev_guard_timeout_seconds: float = 5.0
+    jev_guard_timeout_seconds: float = 8.0
     # Noul probability that replaces the old classifier's boolean ``true``.
     guard_jev_block_threshold: float = 0.6
     guard_jev_model: str = "typesafe/jev-1.14"
@@ -127,12 +127,17 @@ class Settings(BaseSettings):
     # Lean guards: one Jev request for injection and off-topic when true.
     # False keeps the two separate calls so the guard eval can compare them.
     text_to_sql_guard_batch: bool = True
+    # How long a streamed ask keeps its terminal frames. A reconnect inside
+    # this window replays them and does not execute SQL again.
+    text_to_sql_stream_ttl_seconds: float = 600
     ai_gateway_generation: bool = False
     ai_gateway_feedback: bool = False
     ai_gateway_review_chat: bool = False
     ai_gateway_authoring: bool = False
     ai_gateway_timeout_chat_answer_seconds: float = 30.0
     ai_gateway_timeout_sql_generate_seconds: float = 20.0
+    # Guard steps read ``jev_guard_timeout_seconds``. This field stays so an old
+    # env file still parses; the gateway does not use it.
     ai_gateway_timeout_guard_seconds: float = 8.0
     ai_gateway_timeout_generation_seconds: float = 120.0
     ai_gateway_timeout_feedback_seconds: float = 20.0

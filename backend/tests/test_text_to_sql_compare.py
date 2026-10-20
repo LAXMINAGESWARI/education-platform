@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from evals.text_to_sql_pipeline import compare
+
+_BACKEND = Path(__file__).resolve().parents[1]
 
 
 def test_dry_run_prints_the_sample_and_makes_no_live_call() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "evals.text_to_sql_pipeline.compare", "--dry-run"],
-        cwd="/workspace/backend",
+        cwd=_BACKEND,
         check=True,
         capture_output=True,
         text=True,

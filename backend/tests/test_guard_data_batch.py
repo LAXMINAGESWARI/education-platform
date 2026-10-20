@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -97,7 +98,7 @@ def test_batch_flag_defaults_off_and_dry_run_mentions_it() -> None:
     assert parse_args(["--dry-run"]).data_guard_batch is False
     root = subprocess.run(
         [sys.executable, "scripts/eval_chat_guard.py", "--surfaces", "data", "--dry-run"],
-        cwd="/workspace/backend",
+        cwd=Path(__file__).resolve().parents[1],
         check=True,
         capture_output=True,
         text=True,
@@ -111,7 +112,7 @@ def test_batch_flag_defaults_off_and_dry_run_mentions_it() -> None:
             "--dry-run",
             "--data-guard-batch",
         ],
-        cwd="/workspace/backend",
+        cwd=Path(__file__).resolve().parents[1],
         check=True,
         capture_output=True,
         text=True,

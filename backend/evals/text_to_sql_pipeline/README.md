@@ -3,7 +3,10 @@
 Runs one golden file through the legacy graph and the lean pipeline and prints
 accuracy, latency, LLM calls, and tokens. `--dry-run` builds the real prompts,
 counts tokens, and GETs the public OpenRouter model list for prices. It does
-not call a model and it does not open a database. `--max-usd` (default `2.00`)
+not call a model and it does not open a database. `--replay` runs both
+pipelines against `tests/fixtures/text_to_sql_replay.yaml` (recorded model
+text, no network). Legacy answers in that file are the main compose output.
+`--max-usd` (default `2.00`)
 is printed on the dry-run. A live run refuses before any model call when the
 worst case (both pipelines, pipeline retries, and transport retries) is over
 that cap.
@@ -11,6 +14,7 @@ that cap.
 ```bash
 cd backend
 uv run python -m evals.text_to_sql_pipeline.compare --dry-run
+uv run python -m evals.text_to_sql_pipeline.compare --replay
 uv run python -m evals.text_to_sql_pipeline.compare \
   --golden tests/fixtures/text_to_sql_golden.yaml --dry-run --max-usd 2.00
 ```

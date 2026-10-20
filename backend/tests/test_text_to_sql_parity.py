@@ -10,6 +10,8 @@ import pytest
 import education_platform.modules.text_to_sql.graph as graph_mod
 import education_platform.modules.text_to_sql.guards as guards_mod
 import education_platform.modules.text_to_sql.nodes as nodes
+from education_platform.ai_platform.gateway.api import Completion
+from education_platform.ai_platform.gateway.usage import TokenUsage
 from education_platform.core.config import Settings
 from education_platform.modules.guard.classifier import DATA_OFF_TOPIC
 from education_platform.modules.judge.types import DecisionResult, NoulAnswer
@@ -156,6 +158,29 @@ def parity(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     monkeypatch.setattr(_VALIDATOR, "get_settings", lambda: settings)
     monkeypatch.setattr(_INJECTION, "classify_noul", classify)
     monkeypatch.setattr(_VALIDATOR, "classify_noul", classify)
+
+    async def gpt_allows(**_kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(guards_mod, "legacy_gpt_flag", gpt_allows)
+    monkeypatch.setattr(_INJECTION, "legacy_gpt_flag", gpt_allows)
+    monkeypatch.setattr(_VALIDATOR, "legacy_gpt_flag", gpt_allows)
+
+    async def complete(step: str, _messages: list[dict[str, Any]], **_kwargs: Any) -> Any:
+        if step == "text_to_sql.guard":
+            parsed: dict[str, Any] = {"injection": False}
+        elif step == "text_to_sql.validator":
+            parsed = {"off_topic": False}
+        else:
+            parsed = {}
+        return Completion(
+            text="{}", parsed_json=parsed, usage=TokenUsage(1, 1), served_model="test"
+        )
+
+    monkeypatch.setattr(
+        "education_platform.modules.text_to_sql.llm.complete",
+        complete,
+    )
     return {"log": log, "sqls": sqls}
 
 

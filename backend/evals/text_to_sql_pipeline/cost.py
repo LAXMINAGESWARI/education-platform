@@ -12,7 +12,13 @@ from typing import Any
 
 from education_platform.ai_platform.gateway.registry import openrouter_model_id, resolve
 from education_platform.core.config import Settings
-from education_platform.modules.guard.classifier import DATA_INJECTION, DATA_OFF_TOPIC, guard_state
+from education_platform.modules.guard.classifier import (
+    DATA_GPT_INJECTION,
+    DATA_GPT_OFF_TOPIC,
+    DATA_INJECTION,
+    DATA_OFF_TOPIC,
+    guard_state,
+)
 from education_platform.modules.text_to_sql.nodes.compose_answer import (
     _build_messages as compose_messages,
 )
@@ -42,6 +48,7 @@ _INTENT_SAMPLE = (
     '"ambiguous": false, "boundary_conflict": false}'
 )
 _COMPOSE_SAMPLE = "Your class average in Mathematics is 70."
+_GPT_SAMPLE = '{"off_topic": false, "reason": "school data"}'
 _REPAIR_SQL = "SELECT 1"
 _REPAIR_ERROR = "validate_sql: the statement was rejected"
 
@@ -150,8 +157,12 @@ def _route(item: dict[str, Any]) -> str:
     return "free_form"
 
 
-def compose_call_count(rows: object) -> int:
-    """1 when compose_answer would call the model for these rows."""
+def compose_call_count(rows: object, *, pipeline: str = "legacy") -> int:
+    """1 when compose_answer would call the model for these rows.
+
+    A small table is deterministic on the lean pipeline only. Legacy still
+    asks the model, matching main.
+    """
     if not isinstance(rows, list) or not rows:
         return 0
     if not all(isinstance(row, dict) for row in rows):
@@ -166,7 +177,7 @@ def compose_call_count(rows: object) -> int:
         return 0
     if _roster_with_attributes_shape(typed, row_count) is not None:
         return 0
-    if small_result_table(typed, row_count) is not None:
+    if pipeline == "lean" and small_result_table(typed, row_count) is not None:
         return 0
     return 1
 
@@ -180,6 +191,7 @@ def estimate(
     schema = _load_filtered_schema_context()
     completion = {
         "guard": _JEV_COMPLETION_TOKENS,
+        "gpt": count_text(_GPT_SAMPLE),
         "intent": count_text(_INTENT_SAMPLE),
         "generate": count_text(_SQL_SAMPLE),
         "compose": count_text(_COMPOSE_SAMPLE),
@@ -224,38 +236,59 @@ def _add_question(
     question = str(item.get("question") or "")
     route = _route(item)
     refused = route in {"refuse", "refuse_regex"}
-    compose_calls = 0 if refused else compose_call_count(item.get("expect_rows"))
-    compose_prompt = 0
-    if compose_calls:
-        rows = item.get("expect_rows")
-        typed = rows if isinstance(rows, list) else []
-        compose_prompt = count_messages(compose_messages(question, typed))
+    rows = item.get("expect_rows")
+    typed = rows if isinstance(rows, list) else []
+    legacy_compose = 0 if refused else compose_call_count(rows, pipeline="legacy")
+    lean_compose = 0 if refused else compose_call_count(rows, pipeline="lean")
+    legacy_compose_prompt = (
+        count_messages(compose_messages(question, typed)) if legacy_compose else 0
+    )
+    lean_compose_prompt = count_messages(compose_messages(question, typed)) if lean_compose else 0
 
-    legacy_guards = [] if route == "refuse_regex" else _legacy_guard_prompts(question, settings)
-    lean_guard = 0 if route == "refuse_regex" else count_json(_lean_guard_body(question, settings))
+    legacy_jev_calls, legacy_gpt_calls, legacy_gpt_worst = _legacy_guard_plan(route)
+    lean_jev_calls, lean_gpt_calls, lean_gpt_worst = _lean_guard_plan(route)
+    legacy_jev_prompt = (
+        0 if legacy_jev_calls == 0 else sum(_legacy_guard_prompts(question, settings))
+    )
+    lean_jev_prompt = 0 if lean_jev_calls == 0 else count_json(_lean_guard_body(question, settings))
     # A batched Jev reply carries both decisions. Count 20 tokens for each.
-    lean_guard_completion = 0 if route == "refuse_regex" else completion["guard"] * 2
+    lean_jev_completion = 0 if lean_jev_calls == 0 else completion["guard"] * 2
+    gpt_injection, gpt_off_topic = _gpt_prompts(question)
+    legacy_gpt_prompt = _gpt_prompt_total(route, gpt_injection, gpt_off_topic, worst=False)
+    legacy_gpt_worst_prompt = _gpt_prompt_total(route, gpt_injection, gpt_off_topic, worst=True)
+    lean_gpt_prompt = legacy_gpt_prompt if route != "refuse" else 0
+    lean_gpt_worst_prompt = legacy_gpt_worst_prompt
     intent_prompt = count_messages(intent_messages(question))
     legacy_generate = _generate_tokens(question, schema, lean=False, repair=False)
     lean_generate = _generate_tokens(question, schema, lean=True, repair=False)
     legacy_repair = _generate_tokens(question, schema, lean=False, repair=True)
     lean_repair = _generate_tokens(question, schema, lean=True, repair=True)
 
-    _fill_same(
+    _add_guard(
         legacy,
-        "guard",
-        calls=len(legacy_guards),
-        prompt=sum(legacy_guards),
-        completion=len(legacy_guards) * completion["guard"],
-        transport_factor=jev_attempts,
+        jev_calls=legacy_jev_calls,
+        jev_prompt=legacy_jev_prompt,
+        jev_completion=legacy_jev_calls * completion["guard"],
+        jev_factor=jev_attempts,
+        gpt_calls=legacy_gpt_calls,
+        gpt_worst=legacy_gpt_worst,
+        gpt_prompt=legacy_gpt_prompt,
+        gpt_worst_prompt=legacy_gpt_worst_prompt,
+        gpt_completion=completion["gpt"],
+        gpt_factor=1,
     )
-    _fill_same(
+    _add_guard(
         lean,
-        "guard",
-        calls=0 if route == "refuse_regex" else 1,
-        prompt=lean_guard,
-        completion=lean_guard_completion,
-        transport_factor=jev_attempts,
+        jev_calls=lean_jev_calls,
+        jev_prompt=lean_jev_prompt,
+        jev_completion=lean_jev_completion,
+        jev_factor=jev_attempts,
+        gpt_calls=lean_gpt_calls,
+        gpt_worst=lean_gpt_worst,
+        gpt_prompt=lean_gpt_prompt,
+        gpt_worst_prompt=lean_gpt_worst_prompt,
+        gpt_completion=completion["gpt"],
+        gpt_factor=gateway_attempts,
     )
     _fill_same(
         legacy,
@@ -307,17 +340,17 @@ def _add_question(
     _fill_same(
         legacy,
         "compose",
-        calls=compose_calls,
-        prompt=compose_prompt,
-        completion=compose_calls * completion["compose"],
+        calls=legacy_compose,
+        prompt=legacy_compose_prompt,
+        completion=legacy_compose * completion["compose"],
         transport_factor=1,
     )
     _fill_same(
         lean,
         "compose",
-        calls=compose_calls,
-        prompt=compose_prompt,
-        completion=compose_calls * completion["compose"],
+        calls=lean_compose,
+        prompt=lean_compose_prompt,
+        completion=lean_compose * completion["compose"],
         transport_factor=gateway_attempts,
     )
 
@@ -332,6 +365,83 @@ def _generate_tokens(question: str, schema: str, *, lean: bool, repair: bool) ->
             prior_error=_REPAIR_ERROR if repair else None,
             lean=lean,
         )
+    )
+
+
+def _legacy_guard_plan(route: str) -> tuple[int, int, int]:
+    """Jev calls, expected GPT calls, worst-case GPT calls.
+
+    A Jev pass still asks GPT. An expected off-topic flag skips that GPT call.
+    The worst case is Jev passing both checks.
+    """
+    if route == "refuse_regex":
+        return 0, 0, 0
+    if route == "refuse":
+        return 2, 1, 2
+    return 2, 2, 2
+
+
+def _lean_guard_plan(route: str) -> tuple[int, int, int]:
+    """One batched Jev call, then the same GPT checks when Jev passes."""
+    if route == "refuse_regex":
+        return 0, 0, 0
+    if route == "refuse":
+        return 1, 0, 2
+    return 1, 2, 2
+
+
+def _gpt_prompts(question: str) -> tuple[int, int]:
+    injection = count_messages(
+        [
+            {"role": "system", "content": DATA_GPT_INJECTION},
+            {"role": "user", "content": question},
+        ]
+    )
+    off_topic = count_messages(
+        [
+            {"role": "system", "content": DATA_GPT_OFF_TOPIC},
+            {"role": "user", "content": question},
+        ]
+    )
+    return injection, off_topic
+
+
+def _gpt_prompt_total(route: str, injection: int, off_topic: int, *, worst: bool) -> int:
+    if route == "refuse_regex":
+        return 0
+    if worst or route != "refuse":
+        return injection + off_topic
+    return injection
+
+
+def _add_guard(
+    pipeline: PipelineCost,
+    *,
+    jev_calls: int,
+    jev_prompt: int,
+    jev_completion: int,
+    jev_factor: int,
+    gpt_calls: int,
+    gpt_worst: int,
+    gpt_prompt: int,
+    gpt_worst_prompt: int,
+    gpt_completion: int,
+    gpt_factor: int,
+) -> None:
+    pipeline.expected["guard"].add(
+        jev_calls + gpt_calls,
+        jev_prompt + gpt_prompt,
+        jev_completion + gpt_calls * gpt_completion,
+    )
+    pipeline.pipeline_worst["guard"].add(
+        jev_calls + gpt_worst,
+        jev_prompt + gpt_worst_prompt,
+        jev_completion + gpt_worst * gpt_completion,
+    )
+    pipeline.transport_worst["guard"].add(
+        jev_calls * jev_factor + gpt_worst * gpt_factor,
+        jev_prompt * jev_factor + gpt_worst_prompt * gpt_factor,
+        jev_completion * jev_factor + gpt_worst * gpt_completion * gpt_factor,
     )
 
 

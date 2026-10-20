@@ -72,21 +72,40 @@ def test_planned_calls_follow_each_route() -> None:
         {"openai/gpt-4o-mini": price, "typesafe/jev-1.14": jev},
         "test",
     )
-    # 41 questions reach Jev. One regex refusal does not. Legacy sends two
-    # decisions; lean sends one batch. Free-form is the only legacy generate.
-    assert report.legacy.expected["guard"].calls == 82
+    # One regex refusal never reaches a model. A Jev pass still asks GPT.
+    # Expected off-topic refusals skip GPT; the worst case is Jev passing both.
+    questions = load_questions(DEFAULT_GOLDEN)
+    refused = sum(item["route"] == "refuse" for item in questions)
+    answered = sum(item["route"] in {"template", "free_form"} for item in questions)
+    assert refused == 7
+    assert answered == 34
+    assert report.legacy.expected["guard"].calls == refused * 3 + answered * 4
     assert report.legacy.expected["generate"].calls == 19
     assert report.legacy.pipeline_worst["generate"].calls == 136
-    assert report.lean.expected["guard"].calls == 41
+    assert report.lean.expected["guard"].calls == refused * 1 + answered * 3
     assert report.lean.expected["generate"].calls == 41
     assert report.lean.pipeline_worst["generate"].calls == 76
-    assert report.legacy.expected["compose"].calls == 0
-    assert report.lean.expected["compose"].calls == 0
+    legacy_compose = sum(
+        compose_call_count(item["expect_rows"], pipeline="legacy")
+        for item in questions
+        if item["route"] in {"template", "free_form"}
+    )
+    lean_compose = sum(
+        compose_call_count(item["expect_rows"], pipeline="lean")
+        for item in questions
+        if item["route"] in {"template", "free_form"}
+    )
+    assert legacy_compose > 0
+    assert lean_compose == 0
+    assert report.legacy.expected["compose"].calls == legacy_compose
+    assert report.lean.expected["compose"].calls == lean_compose
     assert report.tokenizer == "tiktoken cl100k_base"
 
 
-def test_small_tables_do_not_plan_a_compose_call() -> None:
+def test_small_tables_plan_a_compose_call_on_legacy_only() -> None:
+    rows = [{"topic": "Fractions", "average_score_percent": "67.5"}]
     assert compose_call_count([]) == 0
     assert compose_call_count([{"student_count": 3}]) == 0
     assert compose_call_count([{"full_name": "Omar Haddad", "mastery_percent": "45"}]) == 0
-    assert compose_call_count([{"topic": "Fractions", "average_score_percent": "67.5"}]) == 0
+    assert compose_call_count(rows) == 1
+    assert compose_call_count(rows, pipeline="lean") == 0

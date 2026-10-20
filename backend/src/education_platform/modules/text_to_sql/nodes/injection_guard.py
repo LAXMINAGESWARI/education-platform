@@ -176,13 +176,27 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
     # Jev allowed the question. The pre-Jev GPT injection check still runs, and
     # either flag blocks. A GPT error here fails closed, same as the 402 path.
     try:
-        flagged = await legacy_gpt_flag(
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-        )
-    except JudgeError:
+        note_llm_call()
+        if use_text_to_sql_gateway(settings, state):
+            data = await gateway_json(
+                "text_to_sql.guard",
+                [
+                    {"role": "system", "content": DATA_GPT_INJECTION},
+                    {"role": "user", "content": question},
+                ],
+                settings,
+            )
+            flagged = data.get("injection")
+            if not isinstance(flagged, bool):
+                raise JudgeError("GPT classifier omitted injection")
+        else:
+            flagged = await legacy_gpt_flag(
+                settings=settings,
+                system=DATA_GPT_INJECTION,
+                user=question,
+                field="injection",
+            )
+    except (JudgeError, OpenRouterError):
         return {
             **state,
             "audit_entry": _note(state, guard_stage="gpt_error", injection_probability=probability),
