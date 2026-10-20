@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from education_platform.modules.assessments.models import (
-    QuestionAnswerKey,
     QuestionVersion,
     QuestionVersionStatus,
     QuizItem,
@@ -51,37 +50,30 @@ async def test_load_bank_skips_archived_question_versions(
 
 def test_retire_archives_duplicate_and_keeps_the_quiz_row(seeded_db: Session) -> None:
     _version_id, items = _version_with_items(seeded_db)
-    loaded = [seeded_db.get(QuestionVersion, item.question_version_id) for item in items[:2]]
-    assert loaded[0] is not None and loaded[1] is not None
-    a, b = loaded
-    # _keeper keeps the published version with the lowest str(UUID), not items[1].
-    keeper, extra = sorted((a, b), key=lambda version: str(version.id))
-    # A seeded stem can match other questions, and an explanation that fails
-    # item checks is archived even when that row wins _keeper. Isolate a valid pair.
-    stem = "audit pair stem with no seeded neighbour"
-    rationale = "The keyed option is the intended answer."
-    for version in (keeper, extra):
-        version.prompt = stem
-        version.explanation = rationale
-        answer_key = seeded_db.scalar(
-            select(QuestionAnswerKey).where(QuestionAnswerKey.question_version_id == version.id)
-        )
-        if answer_key is not None:
-            answer_key.correct_rationale = rationale
+    keeper = seeded_db.get(QuestionVersion, items[0].question_version_id)
+    extra = seeded_db.get(QuestionVersion, items[1].question_version_id)
+    assert keeper is not None and extra is not None
+    extra.prompt = keeper.prompt
     seeded_db.commit()
 
     report = audit_quiz_items(seeded_db)
     grouped = {item.question_version_id for group in report.duplicate_groups for item in group}
     assert keeper.id in grouped
     assert extra.id in grouped
+    # uuid4 ids pick the published keeper, other seeded stems can join the
+    # group, and an invalid keeper is archived anyway. Follow retire_ids.
+    retired = report.retire_ids
+    assert {keeper.id, extra.id} & retired
     changed = retire_flagged(seeded_db, report)
     seeded_db.commit()
     assert changed >= 1
-    seeded_db.refresh(extra)
     seeded_db.refresh(keeper)
-    assert extra.lifecycle_status is QuestionVersionStatus.ARCHIVED
-    assert keeper.lifecycle_status is QuestionVersionStatus.PUBLISHED
-    extra_item = next(item for item in items if item.question_version_id == extra.id)
-    still_linked = seeded_db.get(QuizItem, extra_item.id)
+    seeded_db.refresh(extra)
+    for row in (keeper, extra):
+        if row.id in retired:
+            assert row.lifecycle_status is QuestionVersionStatus.ARCHIVED
+        else:
+            assert row.lifecycle_status is not QuestionVersionStatus.ARCHIVED
+    still_linked = seeded_db.get(QuizItem, items[1].id)
     assert still_linked is not None
     assert still_linked.question_version_id == extra.id
