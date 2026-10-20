@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { clearTokens, setTokens } from "./client";
+import { apiRequest, clearTokens, getAccessToken, getRefreshToken, setTokens } from "./client";
 import { progressReconnectDelayMs, runSubject, subscribeProgress } from "./progress";
 
 type FetchCall = {
@@ -125,5 +125,154 @@ describe("progress reconnect token refresh", () => {
       lastEventId: "run-1:abc",
     });
     expect(phases).toEqual(["indexing", "outlining"]);
+  });
+
+  it("saves a rotated token pair when the caller aborts after the server responds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+
+    const abort = new AbortController();
+    let progressCount = 0;
+    let refreshCount = 0;
+    let resolveRefresh: ((response: Response) => void) | undefined;
+    const authorizations: Array<string | null> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCount += 1;
+        expect(init?.signal).toBeUndefined();
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      progressCount += 1;
+      authorizations.push(headerValue(init?.headers, "authorization"));
+      if (progressCount === 1) {
+        return sseResponse([
+          'id: run-1:abc\nevent: snapshot\ndata: {"id":"run-1","phase":"indexing"}\n\n',
+        ]);
+      }
+      if (progressCount === 2) {
+        return jsonResponse(401, { detail: "token expired" });
+      }
+      return sseResponse([
+        'id: run-1:def\nevent: snapshot\ndata: {"id":"run-1","phase":"outlining"}\n\n',
+        'event: close\ndata: {"reason":"terminal"}\n\n',
+      ]);
+    });
+
+    const pending = subscribeProgress(runSubject("run-1"), {
+      signal: abort.signal,
+      onSnapshot: () => undefined,
+    }).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    expect(progressCount).toBe(2);
+    expect(refreshCount).toBe(1);
+
+    resolveRefresh?.(
+      jsonResponse(200, {
+        access_token: "new-access",
+        refresh_token: "refresh-2",
+        token_type: "bearer",
+      }),
+    );
+    abort.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ name: "AbortError" });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getAccessToken()).toBe("new-access");
+    expect(getRefreshToken()).toBe("refresh-2");
+
+    const phases: string[] = [];
+    const resumed = subscribeProgress(runSubject("run-1"), {
+      onSnapshot: (snapshot) => {
+        if ("phase" in snapshot) phases.push(snapshot.phase);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await resumed;
+    expect(refreshCount).toBe(1);
+    expect(authorizations.at(-1)).toBe("Bearer new-access");
+    expect(phases).toEqual(["outlining"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps refreshing for the other waiter when the first caller aborts", async () => {
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+
+    const abort = new AbortController();
+    let refreshCount = 0;
+    let resolveRefresh: ((response: Response) => void) | undefined;
+    const retries: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const authorization = headerValue(init?.headers, "authorization");
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCount += 1;
+        expect(init?.signal).toBeUndefined();
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      if (authorization === "Bearer old-access") {
+        return jsonResponse(401, { detail: "token expired" });
+      }
+      retries.push(url);
+      return jsonResponse(200, { ok: true, url });
+    });
+
+    const first = apiRequest<{ ok: boolean }>("/widgets/1", { signal: abort.signal });
+    const second = apiRequest<{ ok: boolean }>("/widgets/2");
+    await vi.waitUntil(() => refreshCount === 1);
+    abort.abort();
+    resolveRefresh?.(
+      jsonResponse(200, {
+        access_token: "new-access",
+        refresh_token: "refresh-2",
+        token_type: "bearer",
+      }),
+    );
+
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    await expect(second).resolves.toMatchObject({ ok: true });
+    expect(refreshCount).toBe(1);
+    expect(getAccessToken()).toBe("new-access");
+    expect(getRefreshToken()).toBe("refresh-2");
+    expect(retries.some((url) => url.endsWith("/api/v1/widgets/2"))).toBe(true);
+  });
+
+  it("clears tokens when the refresh itself fails", async () => {
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        return jsonResponse(401, { detail: "invalid refresh" });
+      }
+      return jsonResponse(401, { detail: "token expired" });
+    });
+
+    await expect(apiRequest("/widgets/1")).rejects.toMatchObject({ status: 401 });
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
   });
 });

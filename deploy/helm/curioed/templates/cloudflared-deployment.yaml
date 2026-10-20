@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curioed.cloudflaredName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cloudflared
+  annotations:
+    curioed.io/tunnel-origin: {{ .Values.cloudflared.origin | quote }}
+spec:
+  replicas: {{ .Values.cloudflared.replicas }}
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "cloudflared") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        curioed.io/tunnel-origin: {{ .Values.cloudflared.origin | quote }}
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: cloudflared
+    spec:
+      automountServiceAccountToken: false
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "curioed.selectorLabels" (dict "root" . "component" "cloudflared") | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: cloudflared
+          image: {{ include "curioed.imageRef" .Values.cloudflared.image }}
+          imagePullPolicy: {{ .Values.cloudflared.image.pullPolicy }}
+          args:
+            - tunnel
+            - --no-autoupdate
+            - run
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.tunnel.existingSecret }}
+                  key: {{ .Values.secrets.tunnel.tokenKey }}
+          resources:
+            {{- toYaml .Values.cloudflared.resources | nindent 12 }}
