@@ -1,15 +1,19 @@
 """Compare the legacy graph and the lean text-to-SQL pipeline on one golden file.
 
-``--dry-run`` prints the questions and the metrics a live run would report. It
-does not import the pipelines and does not touch the network or a database.
+``--dry-run`` prints the questions, a token and USD estimate, and the metrics a
+live run would report. It reads local prompt files and GETs the public
+OpenRouter model list. It does not call a model and it does not open a database.
 
 From ``backend/``::
 
     uv run python -m evals.text_to_sql_pipeline.compare --dry-run
 
-A live run needs ``TEXT_TO_SQL_BENCH_CONFIRM=1`` plus a teacher
-``TEXT_TO_SQL_BENCH_USER_ID`` and ``TEXT_TO_SQL_BENCH_INSTITUTION_ID``. Point
-``DATABASE_URL`` at a local database. See ``README.md`` in this directory.
+A live run needs ``TEXT_TO_SQL_BENCH_CONFIRM=1``. ``--load-fixture`` loads
+Golden Bench School into ``DATABASE_URL`` and fills the teacher and institution
+ids. Without that flag, set ``TEXT_TO_SQL_BENCH_USER_ID`` and
+``TEXT_TO_SQL_BENCH_INSTITUTION_ID``. See ``README.md`` in this directory.
+``--max-usd`` refuses the live run before any model call when the worst-case
+estimate (both pipelines, pipeline retries, and transport retries) is over the cap.
 """
 
 from __future__ import annotations
@@ -25,6 +29,12 @@ from typing import Any
 
 import yaml
 
+from education_platform.core.config import Settings
+from evals.pricing import load_prices
+from evals.text_to_sql_pipeline.cost import estimate, render
+from evals.text_to_sql_pipeline.fixture import load_golden_bench
+from evals.text_to_sql_pipeline.rows import canonicalize
+
 _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -35,11 +45,21 @@ DEFAULT_GOLDEN = _BACKEND / "tests" / "fixtures" / "text_to_sql_golden.yaml"
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN)
-    parser.add_argument("--dry-run", action="store_true", help="print the plan; no calls")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan; no model calls")
     parser.add_argument("--live", action="store_true", help="run both pipelines locally")
+    parser.add_argument(
+        "--load-fixture",
+        action="store_true",
+        help="load Golden Bench School into DATABASE_URL before a live run",
+    )
+    parser.add_argument("--max-usd", type=float, default=2.00)
     args = parser.parse_args(argv)
     if args.live and args.dry_run:
         parser.error("pass only one of --live and --dry-run")
+    if args.max_usd <= 0:
+        parser.error("--max-usd must be positive")
+    if args.load_fixture and not args.live:
+        parser.error("--load-fixture is only valid with --live")
     return args
 
 
@@ -69,10 +89,23 @@ def _normalise(sql: str) -> str:
     return " ".join(sql.split()).lower()
 
 
+def _names_hidden(spec: dict[str, Any], result: dict[str, Any]) -> bool:
+    names = spec.get("forbidden_names") or []
+    if not isinstance(names, list) or not names:
+        return True
+    blob = str(canonicalize(result.get("query_result") or []))
+    blob += "\n" + str(result.get("natural_answer") or "")
+    return not any(isinstance(name, str) and name in blob for name in names)
+
+
 def _matches(spec: dict[str, Any], result: dict[str, Any]) -> bool | None:
     """``None`` when this row is scored by agreement with the other pipeline."""
+    if spec.get("expect_refused"):
+        rows = result.get("query_result") or []
+        return bool(result.get("error")) and canonicalize(rows) == []
     if "expect_rows" in spec:
-        return (result.get("query_result") or []) == spec["expect_rows"]
+        same = canonicalize(result.get("query_result") or []) == canonicalize(spec["expect_rows"])
+        return same and _names_hidden(spec, result)
     expect_sql = spec.get("expect_sql")
     if isinstance(expect_sql, str) and expect_sql.strip():
         return _normalise(expect_sql) in _normalise(result.get("validated_sql") or "")
@@ -89,7 +122,6 @@ def print_plan(path: Path, questions: list[dict[str, Any]]) -> None:
         "p50/p95 answer_ms, ttft_ms, llm_calls, prompt_tokens, completion_tokens"
     )
     print("legacy ttft_ms equals answer_ms; the lean stream records them separately")
-    print("No calls made.")
 
 
 def _confirmed() -> str | None:
@@ -219,18 +251,61 @@ async def run_live(questions: list[dict[str, Any]]) -> int:
     return 0
 
 
+def _print_cost(questions: list[dict[str, Any]], max_usd: float) -> Any:
+    settings = Settings(_env_file=None, openrouter_api_key=None)  # type: ignore[call-arg]
+    model_ids = [
+        settings.openrouter_model.removeprefix("openrouter/"),
+        settings.resolved_guard_jev_model,
+    ]
+    prices, note = load_prices(model_ids)
+    report = estimate(questions, settings, prices, note)
+    print(render(report))
+    print(f"cap: ${max_usd:.2f}")
+    if report.worst_usd > max_usd:
+        print(
+            f"WARNING: worst-case ${report.worst_usd:.6f} exceeds --max-usd "
+            f"${max_usd:.2f}. A live run would refuse before any model call."
+        )
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     questions = load_questions(args.golden)
     if not args.live:
         print_plan(args.golden, questions)
+        _print_cost(questions, args.max_usd)
+        print("No calls made.")
         return 0
+    if os.environ.get("TEXT_TO_SQL_BENCH_CONFIRM") != "1":
+        print(
+            "Refusing live run: set TEXT_TO_SQL_BENCH_CONFIRM=1. "
+            "Also set TEXT_TO_SQL_BENCH_USER_ID and TEXT_TO_SQL_BENCH_INSTITUTION_ID, "
+            "or pass --load-fixture. Do not point this at production."
+        )
+        return 2
+    if args.load_fixture:
+        school = load_golden_bench()
+        os.environ["TEXT_TO_SQL_BENCH_USER_ID"] = str(school.teacher_user_id)
+        os.environ["TEXT_TO_SQL_BENCH_INSTITUTION_ID"] = str(school.institution_id)
+        print(
+            f"loaded Golden Bench School teacher={school.teacher_user_id} "
+            f"institution={school.institution_id}"
+        )
     missing = _confirmed()
     if missing is not None:
         print(
             f"Refusing live run: set {missing}. "
             "Also set TEXT_TO_SQL_BENCH_CONFIRM=1, TEXT_TO_SQL_BENCH_USER_ID, and "
-            "TEXT_TO_SQL_BENCH_INSTITUTION_ID. Do not point this at production."
+            "TEXT_TO_SQL_BENCH_INSTITUTION_ID, or pass --load-fixture. "
+            "Do not point this at production."
+        )
+        return 2
+    report = _print_cost(questions, args.max_usd)
+    if report.worst_usd > args.max_usd:
+        print(
+            f"Refusing live run: worst-case estimate ${report.worst_usd:.6f} "
+            f"exceeds --max-usd ${args.max_usd:.2f}. No model was called."
         )
         return 2
     return asyncio.run(run_live(questions))

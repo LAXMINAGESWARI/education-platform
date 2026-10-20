@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from types import SimpleNamespace
 
-from evals.text_to_sql_pipeline.compare import main
+from evals.text_to_sql_pipeline import compare
 
 
 def test_dry_run_prints_the_sample_and_makes_no_live_call() -> None:
@@ -18,4 +19,21 @@ def test_dry_run_prints_the_sample_and_makes_no_live_call() -> None:
     )
     assert "sample-my-students" in completed.stdout
     assert "No calls made." in completed.stdout
-    assert main(["--live"]) == 2
+    assert "models:" in completed.stdout
+    assert "usd worst with transport retries:" in completed.stdout
+    assert compare.main(["--live"]) == 2
+
+
+def test_live_refuses_when_the_worst_case_exceeds_the_cap(monkeypatch) -> None:
+    monkeypatch.setenv("TEXT_TO_SQL_BENCH_CONFIRM", "1")
+    monkeypatch.setenv("TEXT_TO_SQL_BENCH_USER_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv("TEXT_TO_SQL_BENCH_INSTITUTION_ID", "00000000-0000-0000-0000-000000000002")
+    monkeypatch.setattr(
+        compare, "_print_cost", lambda questions, max_usd: SimpleNamespace(worst_usd=9.0)
+    )
+
+    def _unexpected(questions: object) -> int:
+        raise AssertionError("live pipelines must not run when the cap is exceeded")
+
+    monkeypatch.setattr(compare, "run_live", _unexpected)
+    assert compare.main(["--live", "--max-usd", "0.50"]) == 2

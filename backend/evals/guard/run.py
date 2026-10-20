@@ -1,7 +1,8 @@
 """Chat-guard eval CLI: Jev vs the legacy GPT classifiers, with the regex stage.
 
-Paid calls happen only with ``--live``. Without it (or with ``--dry-run``) the command
-prints row counts and the estimated cost and makes no network call. From ``backend/``::
+Paid model calls happen only with ``--live``. Without it (or with ``--dry-run``) the
+command prints row counts and a cost estimate. The estimate GETs the public OpenRouter
+model list (no key) and does not call a model. From ``backend/``::
 
     uv run python scripts/eval_chat_guard.py --dry-run
     uv run python scripts/eval_chat_guard.py --live --max-usd 2.00
@@ -29,8 +30,10 @@ import httpx
 from education_platform.core.config import Settings, get_settings
 from evals.guard.collect import collect, estimate, plan_jobs
 from evals.guard.dataset import DEFAULT_DATASET, SURFACES, Dataset, load_dataset
+from evals.guard.priced import price_jobs, render_priced
 from evals.guard.score import baseline_block, compare_baseline, render_markdown, score_all
 from evals.guard.surfaces import checks_for
+from evals.pricing import load_prices, tokenizer_name
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 EXIT_OK, EXIT_ABORTED, EXIT_REGRESSION = 0, 2, 3
@@ -124,6 +127,20 @@ def print_plan(dataset: Dataset, args: argparse.Namespace, settings: Settings) -
             "data guard batch: data.jev_injection and data.jev_off_topic share one "
             "post_decisions per row; spend is recorded on the injection result"
         )
+    gpt_model = settings.openrouter_model.removeprefix("openrouter/")
+    jev_model = settings.resolved_guard_jev_model
+    prices, note = load_prices([jev_model, gpt_model])
+    priced = price_jobs(jobs, settings, prices, data_guard_batch=args.data_guard_batch)
+    print(
+        render_priced(
+            priced,
+            prices,
+            note,
+            jev_model=jev_model,
+            gpt_model=gpt_model,
+            tokenizer=tokenizer_name(),
+        )
+    )
 
 
 def write_report(
