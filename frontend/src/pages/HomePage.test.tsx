@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
@@ -110,10 +110,19 @@ describe("HomePage", () => {
 
     expect(await screen.findByRole("heading", { name: "Your subjects" })).toBeInTheDocument();
     expect(screen.queryByText("Student dashboard · demo data")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    const table = await screen.findByRole("table", { name: "Subject progress" });
+    const math = within(table).getByRole("row", { name: /Mathematics/ });
+    expect(within(math).getByRole("link", { name: "Mathematics" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1",
+    );
+    expect(within(math).getByText("In progress")).toHaveClass("badge", "badge--warn");
+    expect(math).toHaveTextContent("Grade 8");
+    expect(math).toHaveTextContent("1 of 1 done");
     expect(screen.getByRole("heading", { name: "Science" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Coming soon" })).toBeInTheDocument();
     expect(screen.queryByText(/1\.0 Enroll/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Topics$/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Topics" })).not.toBeInTheDocument();
   });
 
   it("shows school material on the subject view", async () => {

@@ -276,7 +276,7 @@ describe("feedback hierarchy", () => {
     });
   });
 
-  it("shows one card per subject and an overall score", async () => {
+  it("shows one row per subject and an overall score", async () => {
     render(
       <MemoryRouter>
         <FeedbackSubjectPickerPage />
@@ -284,17 +284,23 @@ describe("feedback hierarchy", () => {
     );
 
     expect(await screen.findByRole("region", { name: "Across all subjects" })).toHaveTextContent("75%");
-    expect(screen.getByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
-    expect(screen.getByText(/Strongest topic: Mensuration/)).toBeInTheDocument();
-    expect(screen.getByText(/Weakest topic: Algebra/)).toBeInTheDocument();
-    expect(screen.getByText("Up 20 points since the previous attempt")).toBeInTheDocument();
-    const science = screen.getByRole("link", { name: /Science/ });
+    const table = screen.getByRole("table", { name: "Feedback by subject" });
+    const math = within(table).getByRole("row", { name: /Mathematics/ });
+    expect(math).toHaveTextContent("Strongest topic: Mensuration");
+    expect(math).toHaveTextContent("Weakest topic: Algebra");
+    expect(math).toHaveTextContent("Up 20 points since the previous attempt");
+    expect(math).toHaveTextContent("You're just 8% from your goal on Algebra.");
+    expect(within(math).getByText("Mathematics")).toHaveClass("badge", "badge--info");
+    const science = within(table).getByRole("row", { name: /Science/ });
     expect(science).toHaveTextContent("Not attempted");
     expect(science).not.toHaveTextContent("0%");
     expect(science).not.toHaveTextContent("declining");
     expect(screen.queryByText(/· -/)).not.toBeInTheDocument();
-    expect(screen.getAllByText("View feedback").length).toBeGreaterThan(0);
-    expect(screen.getByText("You're just 8% from your goal on Algebra.")).toBeInTheDocument();
+    expect(within(table).getAllByRole("link", { name: "View feedback" })).toHaveLength(2);
+    expect(within(science).getByRole("link", { name: "View feedback" })).toHaveAttribute(
+      "href",
+      "/subjects/sci-1/feedback",
+    );
   });
 
   it("lists topics in order and leaves an unattempted topic blank", async () => {
