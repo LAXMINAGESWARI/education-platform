@@ -52,17 +52,7 @@ def get_engine() -> AsyncEngine:
         if _engine is not None:
             _engine.sync_engine.dispose()
         _bound_url = database_url
-        # Readiness uses this same engine. Pool checkout and asyncpg connect run
-        # outside the asyncio task, so wait_for cannot interrupt them. Bound both
-        # waits to the health budget or /health/ready can sit until the driver
-        # default (pool 30s, connect 60s) while the probe is supposed to last 2s.
-        ready_timeout = settings.health_ready_timeout_seconds
-        _engine = create_async_engine(
-            database_url,
-            pool_pre_ping=True,
-            pool_timeout=ready_timeout,
-            connect_args={"timeout": ready_timeout},
-        )
+        _engine = create_async_engine(database_url, pool_pre_ping=True)
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
     return _engine
 
