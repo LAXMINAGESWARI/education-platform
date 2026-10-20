@@ -13,6 +13,9 @@ attempts are not dropped. Questions, outcomes, and materials still move.
 
 The function is idempotent: a second run finds nothing left to merge, apart from
 rows that were blocked because both quizzes have attempts.
+
+A dry-run performs that same merge inside a savepoint and rolls it back, so the
+printed counts match ``--apply``. Pass ``subject`` (id or name) to limit the scan.
 """
 
 from __future__ import annotations
@@ -21,10 +24,16 @@ from collections import defaultdict
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
-from education_platform.modules.academics.models import LearningOutcome, Subtopic
+from education_platform.modules.academics.models import (
+    GradeSubjectOffering,
+    LearningOutcome,
+    Subject,
+    Subtopic,
+    Topic,
+)
 from education_platform.modules.assessments.models import (
     CommonMasteryQuiz,
     Question,
@@ -51,6 +60,18 @@ class SubtopicRef:
     topic_id: UUID
     name: str
     sequence: int
+    unit_name: str = ""
+    subject_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FoldLine:
+    """One heading and the concept it folds into. ``target`` is empty when none exists."""
+
+    heading: str
+    unit: str
+    subject: str
+    target: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +85,7 @@ class CleanupReport:
     quizzes_retargeted: int = 0
     attempts_preserved: int = 0
     blocked_by_quiz: int = 0
+    folds: tuple[FoldLine, ...] = ()
 
     def render(self) -> str:
         lines = [
@@ -77,6 +99,9 @@ class CleanupReport:
             f"attempts_preserved: {self.attempts_preserved}",
             f"blocked_by_quiz: {self.blocked_by_quiz}",
         ]
+        for fold in self.folds:
+            target = fold.target if fold.target else "(no concept)"
+            lines.append(f"{fold.heading} -> {target} ({fold.subject} / {fold.unit})")
         return "\n".join(lines)
 
 
@@ -109,22 +134,92 @@ def merge_plan(rows: list[SubtopicRef]) -> tuple[list[tuple[UUID, UUID]], list[U
     return pairs, skipped
 
 
-def cleanup_noise_subtopics(session: Session, *, dry_run: bool) -> CleanupReport:
-    """Merge heading subtopics. ``dry_run`` counts rows and writes nothing."""
-    refs = [
-        SubtopicRef(row.id, row.topic_id, row.name, row.sequence)
-        for row in session.scalars(select(Subtopic).order_by(Subtopic.sequence, Subtopic.id))
-    ]
+def cleanup_noise_subtopics(
+    session: Session,
+    *,
+    dry_run: bool,
+    subject: str | None = None,
+) -> CleanupReport:
+    """Merge heading subtopics.
+
+    ``dry_run`` runs the same writes inside a savepoint and rolls them back.
+    ``subject`` is a subject id or name; omit it to scan every subject.
+    """
+    if dry_run:
+        nested = session.begin_nested()
+        try:
+            return _cleanup(session, subject)
+        finally:
+            nested.rollback()
+            session.expire_all()
+    return _cleanup(session, subject)
+
+
+def _cleanup(session: Session, subject: str | None) -> CleanupReport:
+    refs = _load_refs(session, subject)
     pairs, skipped = merge_plan(refs)
+    by_id = {row.id: row for row in refs}
+    folds = _fold_lines(by_id, pairs, skipped)
     report = CleanupReport(
         noise_subtopics=len(pairs) + len(skipped),
         skipped_no_sibling=len(skipped),
+        folds=tuple(folds),
     )
     for noise_id, target_id in pairs:
-        report = _merge_pair(session, report, noise_id, target_id, dry_run=dry_run)
-    if not dry_run:
-        session.flush()
+        report = _merge_pair(session, report, noise_id, target_id)
+    session.flush()
     return report
+
+
+def _load_refs(session: Session, subject: str | None) -> list[SubtopicRef]:
+    stmt = (
+        select(Subtopic, Topic.name, Subject.name)
+        .join(Topic, Topic.id == Subtopic.topic_id)
+        .join(GradeSubjectOffering, GradeSubjectOffering.id == Topic.grade_subject_offering_id)
+        .join(Subject, Subject.id == GradeSubjectOffering.subject_id)
+        .order_by(Subtopic.sequence, Subtopic.id)
+    )
+    if subject is not None:
+        stmt = stmt.where(_subject_filter(subject))
+        if session.scalar(select(Subject.id).where(_subject_filter(subject))) is None:
+            raise ValueError(f"Subject not found: {subject}")
+    rows = session.execute(stmt).all()
+    return [
+        SubtopicRef(
+            subtopic.id,
+            subtopic.topic_id,
+            subtopic.name,
+            subtopic.sequence,
+            unit_name,
+            subject_name,
+        )
+        for subtopic, unit_name, subject_name in rows
+    ]
+
+
+def _subject_filter(subject: str) -> ColumnElement[bool]:
+    text = subject.strip()
+    try:
+        subject_id = UUID(text)
+    except ValueError:
+        return func.lower(Subject.name) == text.casefold()
+    return Subject.id == subject_id
+
+
+def _fold_lines(
+    by_id: dict[UUID, SubtopicRef],
+    pairs: list[tuple[UUID, UUID]],
+    skipped: list[UUID],
+) -> list[FoldLine]:
+    lines: list[FoldLine] = []
+    for noise_id, target_id in pairs:
+        noise = by_id[noise_id]
+        target = by_id[target_id]
+        lines.append(FoldLine(noise.name, noise.unit_name, noise.subject_name, target.name))
+    for noise_id in skipped:
+        noise = by_id[noise_id]
+        lines.append(FoldLine(noise.name, noise.unit_name, noise.subject_name, None))
+    return lines
 
 
 def _merge_pair(
@@ -132,8 +227,6 @@ def _merge_pair(
     report: CleanupReport,
     noise_id: UUID,
     target_id: UUID,
-    *,
-    dry_run: bool,
 ) -> CleanupReport:
     questions = _count(session, Question.subtopic_id, noise_id)
     outcomes = _count(session, LearningOutcome.subtopic_id, noise_id)
@@ -150,18 +243,6 @@ def _merge_pair(
         blocked = True
     retarget = noise_quiz is not None and not blocked
     preserved = noise_attempts if noise_quiz is not None else 0
-    if dry_run:
-        return _with_counts(
-            report,
-            questions=questions,
-            outcomes=outcomes,
-            materials=materials,
-            retargeted=1 if retarget else 0,
-            preserved=preserved,
-            merged=0 if blocked else 1,
-            blocked=1 if blocked else 0,
-        )
-
     _move_questions(session, noise_id, target_id)
     _move_outcomes(session, noise_id, target_id)
     _move_materials(session, noise_id, target_id)
@@ -218,6 +299,7 @@ def _with_counts(
         quizzes_retargeted=report.quizzes_retargeted + retargeted,
         attempts_preserved=report.attempts_preserved + preserved,
         blocked_by_quiz=report.blocked_by_quiz + blocked,
+        folds=report.folds,
     )
 
 

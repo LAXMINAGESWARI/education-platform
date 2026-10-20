@@ -203,6 +203,13 @@ def test_textbook_headings_in_the_sample_are_noise() -> None:
         assert is_outline_noise_heading(heading)
     assert not is_outline_noise_heading("Solid Shapes")
     assert not is_outline_noise_heading("Area of a trapezium")
+    for concept in (
+        "Solution of a Quadratic Equation by Factorisation",
+        "Newton's Method",
+        "Summary Statistics",
+        "Exercise Physiology",
+    ):
+        assert not is_outline_noise_heading(concept), concept
 
 
 def test_subject_prompt_lists_units_and_drops_heading_rows() -> None:
@@ -264,7 +271,13 @@ def test_unit_facts_from_topic_concepts_skip_noise_and_title_case() -> None:
     ]
 
 
-def test_needs_attention_uses_stored_unit_names_in_title_case() -> None:
+def test_card_score_matches_main_when_a_unit_name_is_a_heading() -> None:
+    """The card score is the mean of every attempted unit, including a heading-named one.
+
+    55 + 48 + 60 + 62 + 90 + 87 + 10 = 412, and 412 / 7 = 58.86. Attempt counts
+    are 2 + 1 + 1 + 1 + 1 + 1 + 1 = 8. Headings are filtered only in the summary
+    prompt, not in this rollup.
+    """
     assert display_unit_name("mensuration") == "Mensuration"
     assert display_unit_name("Ratios") == "Ratios"
     assert display_unit_name("Data handling") == "Data Handling"
@@ -284,11 +297,18 @@ def test_needs_attention_uses_stored_unit_names_in_title_case() -> None:
             (UUID(int=7), "EXERCISE 9.2", rollup_topic([ScoredAttempt(1, Decimal("10"))])),
         ]
     )
-    assert subject.score_percent == Decimal("67.00")
+    assert subject.score_percent == Decimal("58.86")
+    assert subject.quizzes_taken == 8
     assert subject.trend_delta == Decimal("49.00")
-    assert subject.needing_attention == ("Mensuration", "Ratios", "Percentages", "Algebra")
     assert subject.strongest is not None and subject.strongest[1] == "Geometry"
-    assert subject.weakest is not None and subject.weakest[1] == "Ratios"
+    assert subject.weakest is not None and subject.weakest[1] == "EXERCISE 9.2"
+    assert subject.needing_attention == (
+        "mensuration",
+        "Ratios",
+        "Percentages",
+        "Algebra",
+        "EXERCISE 9.2",
+    )
 
 
 def test_topic_page_summary_stays_at_concept_level() -> None:

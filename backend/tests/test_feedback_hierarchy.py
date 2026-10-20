@@ -145,8 +145,9 @@ def test_filler_headings_fold_into_the_topic_and_numbers_are_stripped() -> None:
     assert feedback_concept_label("9.6 Volume and Capacity") == "Volume and capacity"
     assert feedback_concept_label("EXERCISE 9.3") is None
     assert feedback_concept_label("EXERCISE 9.1") is None
-    assert feedback_concept_label("Solution: Aman's method") is None
-    assert feedback_concept_label("Ridhima's method") is None
+    assert feedback_concept_label("Solution: Aman's method") == "Solution: Aman's method"
+    assert feedback_concept_label("Ridhima's method") == "Ridhima's method"
+    assert feedback_concept_label("Newton's Method") == "Newton's method"
     assert feedback_concept_label("WHAT HAVE WE DISCUSSED?") is None
     assert feedback_concept_label("TRY THESE") is None
 
@@ -161,7 +162,7 @@ def test_filler_headings_fold_into_the_topic_and_numbers_are_stripped() -> None:
         ]
     )
     by_name = {row.name: row for row in rows}
-    assert set(by_name) == {"Cuboid", "Area of a polygon"}
+    assert set(by_name) == {"Cuboid", "Area of a polygon", "Ridhima's method"}
     assert by_name["Cuboid"].correct_count == 3
     assert by_name["Cuboid"].answered_count == 4
     assert by_name["Cuboid"].band == "strong"

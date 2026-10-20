@@ -234,8 +234,9 @@ def feedback_concept_label(name: str) -> str | None:
     """Student-facing concept name, or None when the heading is filler.
 
     Reuses the outline writer's noise check and title normalizer so a stored
-    heading such as "9.4.1 Cuboid" becomes "Cuboid", and "EXERCISE 9.3" or
-    "Ridhima's method" is folded into the topic instead of listed on its own.
+    heading such as "9.4.1 Cuboid" becomes "Cuboid", and "EXERCISE 9.3" is
+    folded into the topic instead of listed on its own. A concept title such
+    as "Newton's Method" is kept.
     """
     if is_outline_noise_heading(name):
         return None
@@ -305,19 +306,10 @@ def class_average(scores: list[Decimal]) -> tuple[Decimal | None, int]:
 
 
 def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup:
-    """Mean of attempted topics. Unattempted topics do not pull the mean to 0.
-
-    A unit whose stored name is a textbook heading (an exercise, a summary box)
-    is left out, so it cannot become the score or a "Needs attention" entry.
-    """
-    visible = [
-        (topic_id, name, rollup)
-        for topic_id, name, rollup in topics
-        if not is_outline_noise_heading(name)
-    ]
+    """Mean of attempted topics. Unattempted topics do not pull the mean to 0."""
     attempted = [
         (topic_id, name, rollup)
-        for topic_id, name, rollup in visible
+        for topic_id, name, rollup in topics
         if rollup.best_score_percent is not None
     ]
     deltas = [rollup.trend_delta for _, _, rollup in attempted if rollup.trend_delta is not None]
@@ -333,7 +325,7 @@ def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup
         if weakest is None or score < weakest[2]:
             weakest = (topic_id, name, score)
         if score < PASS_PERCENT:
-            needing.append(display_unit_name(name))
+            needing.append(name)
     if len(attempted) < 2:
         weakest = None
     bests = [
@@ -343,7 +335,7 @@ def rollup_subject(topics: list[tuple[UUID, str, TopicRollup]]) -> SubjectRollup
     ]
     return SubjectRollup(
         score_percent=_mean(bests),
-        quizzes_taken=sum(rollup.attempt_count for _, _, rollup in visible),
+        quizzes_taken=sum(rollup.attempt_count for _, _, rollup in topics),
         trend=_trend(trend_delta),
         trend_delta=trend_delta,
         strongest=strongest,
