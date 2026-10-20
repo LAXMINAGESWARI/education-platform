@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -546,20 +546,17 @@ describe("TopicGenerationUpload", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal), onSnapshot: expect.any(Function) }),
     );
 
-    // The snapshot starts a review fetch outside the click/await that render
-    // already flushed. React 19 leaves that update queued until an act scope
-    // owns it, so findByText can time out on a busy runner while the stepper
-    // already shows outline_review.
-    await act(async () => {
-      settle(
-        run({
-          phase: "outline_review",
-          outline: { target_item_count: 80, nodes: [node()] },
-        }),
-      );
-    });
+    settle(
+      run({
+        phase: "outline_review",
+        outline: { target_item_count: 80, nodes: [node()] },
+      }),
+    );
 
-    expect(await screen.findByText("Sequence 1: Fractions")).toBeInTheDocument();
+    await waitFor(() => expect(getGenerationReview).toHaveBeenCalledWith("run-1"));
+    expect(
+      await screen.findByText("Sequence 1: Fractions", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Accept current outline" })).toBeInTheDocument();
   });
 
