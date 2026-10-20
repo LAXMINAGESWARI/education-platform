@@ -17,19 +17,17 @@ export function weakTopicsPath(subjectId: string): string {
   return `/subjects/${subjectId}/feedback#needs-attention`;
 }
 
-/** Topics on this subject that have a subtopic past its review interval. */
+/** Topics on this subject whose own subtopic id is past its review interval. */
 export function dueTopicIds(topics: TopicNode[], reviews: ReviewNudgeOut[]): string[] {
   const bySubtopic = new Map<string, string>();
-  const byName = new Map<string, string>();
   for (const topic of topics) {
-    byName.set(topic.title, topic.id);
     for (const subtopic of topic.subtopics) {
       bySubtopic.set(subtopic.id, topic.id);
     }
   }
   const due = new Set<string>();
   for (const review of reviews) {
-    const topicId = bySubtopic.get(review.subtopic_id) ?? byName.get(review.topic_name);
+    const topicId = bySubtopic.get(review.subtopic_id);
     if (topicId) due.add(topicId);
   }
   return [...due];
