@@ -566,6 +566,7 @@ def _heading_user_message(section: LessonSectionSpec, *, prior_recap: str) -> st
         "prior_recap": prior_recap,
         "pass": section.pass_kind,
         "excerpts": list(section.chunk_texts),
+        "repair_note": section.repair_note,
     }
     return (
         "Teach this one untrusted section. "

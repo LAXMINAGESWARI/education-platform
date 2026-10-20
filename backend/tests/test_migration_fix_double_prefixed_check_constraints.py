@@ -20,6 +20,7 @@ smoke test would catch:
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from alembic import command
@@ -260,8 +261,15 @@ _FIXED_NAMES: dict[str, set[str]] = {
 }
 
 
+def _skip_unless_test_database(url: str) -> None:
+    name = urlsplit(url).path.rpartition("/")[2]
+    if "test" not in name:
+        pytest.skip("refusing to downgrade a database whose name does not contain 'test'")
+
+
 def test_downgrade_reverses_every_rename_and_reupgrade_restores_them(clean_db: str) -> None:
     sync_url = to_sync_url(clean_db)
+    _skip_unless_test_database(sync_url)
     cfg = _alembic_config(sync_url)
 
     # clean_db already migrated to head -- confirm the fixed names are there first, so a

@@ -158,10 +158,14 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_API_KEY` | unset | Required for live LLM stages (Policy assistant, ADK generation) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
+| `JEV_GUARD_TIMEOUT_SECONDS` | `5` | Chat-guard Decisions API timeout. Does not inherit `JEV_TIMEOUT_SECONDS` |
+| `GUARD_JEV_BLOCK_THRESHOLD` | `0.6` | Noul probability treated as the old classifier's `true` |
+| `GUARD_JEV_MODEL` | unset (uses `JEV_MODEL`) | Decisions model posted by the chat guard only |
+| `GUARD_AUDIT_STORE_PREVIEW` | `false` | Store a 160-character message preview on refusal audits |
 | `ADK_MODEL` | `openrouter/openai/gpt-4o-mini` | Google ADK LiteLlm model id |
 | `ADK_MAX_REVIEW_ROUNDS` | `4` | Writer/reviewer loop cap |
 | `JEV_MODEL` | `typesafe/jev-1.14` | Decision model posted to OpenRouter `/api/alpha/decisions` with `OPENROUTER_API_KEY` |
-| `JEV_MODE` | `shadow` | `off`, `shadow` (store only), `augment`, or `replace` |
+| `JEV_JUDGE_MODE` | `shadow` | `shadow` (store only; default), `enforce` (explicit opt-in: a reject retries or holds the lesson), or `off`. Unset and unknown values stay `shadow` |
 | `JEV_NOUL_ACCEPT` / `JEV_NOUL_REJECT` | `0.80` / `0.35` | Noul accept and reject thresholds |
 | `CHAT_CONTEXT_LIMIT_TOKENS` | `20000` | Context meter denominator |
 | `CHAT_RETRIEVAL_LIMIT` | `6` | Default `retrieve_chunks` top-k |

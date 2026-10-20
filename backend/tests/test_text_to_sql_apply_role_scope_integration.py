@@ -125,12 +125,10 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     availability to pass.
     """
 
-    async def _fake(
-        messages: list[dict[str, str]], *, settings: object, temperature: float = 0.0
-    ) -> dict[str, object]:
-        return {"injection": False}
+    async def _fake(**_kwargs: object) -> float:
+        return 0.0
 
-    monkeypatch.setattr(_INJECTION_GUARD_MODULE, "chat_completion_json", _fake)
+    monkeypatch.setattr(_INJECTION_GUARD_MODULE, "classify_noul", _fake)
 
 
 class _QuestionValidatorModule(Protocol):
@@ -153,12 +151,10 @@ def _pass_question_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     here to "not off-topic" so these tests don't silently make a real, unmocked API call.
     """
 
-    async def _fake_ot(
-        messages: list[dict[str, str]], *, settings: object, temperature: float = 0.0
-    ) -> dict[str, object]:
-        return {"off_topic": False}
+    async def _fake_ot(**_kwargs: object) -> float:
+        return 0.0
 
-    monkeypatch.setattr(_QUESTION_VALIDATOR_MODULE, "chat_completion_json", _fake_ot)
+    monkeypatch.setattr(_QUESTION_VALIDATOR_MODULE, "classify_noul", _fake_ot)
 
 
 @dataclass(frozen=True)
