@@ -8,6 +8,7 @@ type DueSubtopic = { id: string; name: string; topicName: string };
 async function expectFocusedInView(page: Page, selector: string) {
   const target = page.locator(selector);
   await expect(target).toBeFocused();
+  await expect(target).toHaveClass(/hash-focus-ring/);
   await expect(target).toBeInViewport();
 }
 
