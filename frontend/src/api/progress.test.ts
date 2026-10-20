@@ -456,6 +456,71 @@ describe("progress SSE client", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("keeps retrying when each cycle is one heartbeat and then a drop", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.mocked(apiStream).mockImplementation(async () => streamResponse([": heartbeat\n\n"]));
+    const notices: Array<{ attempt: number; delayMs: number }> = [];
+    const onReconnected = vi.fn();
+    let settled = false;
+    const abort = new AbortController();
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        signal: abort.signal,
+        onSnapshot: vi.fn(),
+        onReconnecting: (notice) => {
+          notices.push(notice);
+        },
+        onReconnected,
+      }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    const cycles = PROGRESS_RECONNECT_MAX_ATTEMPTS + 4;
+    const capped = Math.floor(PROGRESS_RECONNECT_MAX_MS * 0.5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+    expect(notices).toEqual([{ attempt: 1, delayMs: progressReconnectDelayMs(0, 0) }]);
+
+    for (let index = 0; index < cycles - 1; index += 1) {
+      const delay = progressReconnectDelayMs(index, 0);
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(settled).toBe(false);
+      expect(apiStream).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      expect(apiStream).toHaveBeenCalledTimes(index + 2);
+      expect(onReconnected).toHaveBeenCalledTimes(index + 2);
+      expect(notices.at(-1)).toEqual({
+        attempt: 1,
+        delayMs: progressReconnectDelayMs(index + 1, 0),
+      });
+    }
+
+    expect(notices).toHaveLength(cycles);
+    expect(notices.every((notice) => notice.attempt === 1)).toBe(true);
+    expect(notices.map((notice) => notice.delayMs)).toEqual(
+      Array.from({ length: cycles }, (_, index) => progressReconnectDelayMs(index, 0)),
+    );
+    expect(notices.at(-1)?.delayMs).toBe(capped);
+    expect(progressReconnectDelayMs(1, 0)).toBeGreaterThan(progressReconnectDelayMs(0, 0));
+    const backoffMs = notices.slice(0, -1).reduce((sum, notice) => sum + notice.delayMs, 0);
+    expect(backoffMs).toBeGreaterThan(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    expect(PROGRESS_HEALTHY_BACKOFF_RESET_MS).toBeGreaterThan(capped);
+
+    abort.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ name: "AbortError" });
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("retries after a long heartbeat-only reconnect instead of giving up", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
