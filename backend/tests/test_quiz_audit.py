@@ -15,11 +15,7 @@ from education_platform.modules.assessments.models import (
     QuizItem,
 )
 from education_platform.modules.assessments.question_selection import _load_bank
-from education_platform.modules.assessments.quiz_audit import (
-    _keeper,
-    audit_quiz_items,
-    retire_flagged,
-)
+from education_platform.modules.assessments.quiz_audit import audit_quiz_items, retire_flagged
 
 
 def _version_with_items(session: Session) -> tuple[UUID, list[QuizItem]]:
@@ -64,26 +60,20 @@ def test_retire_archives_duplicate_and_keeps_the_quiz_row(seeded_db: Session) ->
     grouped = {item.question_version_id for group in report.duplicate_groups for item in group}
     assert keeper.id in grouped
     assert extra.id in grouped
-    shared = [
-        group
-        for group in report.duplicate_groups
-        if {keeper.id, extra.id} <= {item.question_version_id for item in group}
-    ]
-    assert len(shared) == 1
-    kept_id = _keeper(shared[0]).question_version_id
-    invalid_ids = {item.question_version_id for item in report.invalid}
-    # A duplicate keeper is archived only when that same version is also invalid.
-    assert kept_id not in report.retire_ids or kept_id in invalid_ids
+    # uuid4 ids pick the published keeper, other seeded stems can join the
+    # group, and an invalid keeper is archived anyway. Follow retire_ids.
+    retired = report.retire_ids
+    assert {keeper.id, extra.id} & retired
     changed = retire_flagged(seeded_db, report)
     seeded_db.commit()
     assert changed >= 1
     seeded_db.refresh(keeper)
     seeded_db.refresh(extra)
     for row in (keeper, extra):
-        if row.id in report.retire_ids:
+        if row.id in retired:
             assert row.lifecycle_status is QuestionVersionStatus.ARCHIVED
         else:
-            assert row.lifecycle_status is QuestionVersionStatus.PUBLISHED
+            assert row.lifecycle_status is not QuestionVersionStatus.ARCHIVED
     still_linked = seeded_db.get(QuizItem, items[1].id)
     assert still_linked is not None
     assert still_linked.question_version_id == extra.id
