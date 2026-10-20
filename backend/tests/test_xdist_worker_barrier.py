@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 from tests.conftest import (
     _finish_run_directory,
-    _is_stale_worker_database,
     _remove_other_marker_dirs,
+    _run_token,
+    _should_drop_worker_database,
     _wait_for_worker_clones,
+    _worker_database_name,
 )
 
 
@@ -73,9 +75,35 @@ def test_stale_marker_dir_is_removed_and_a_missing_root_is_safe(tmp_path: Path) 
     assert (current / "gw1").is_file()
 
 
-def test_worker_clone_names_match_only_gw_suffixes() -> None:
-    assert _is_stale_worker_database("education_test_gw0", "education_test")
-    assert _is_stale_worker_database("education_test_gw12", "education_test")
-    assert not _is_stale_worker_database("education_test", "education_test")
-    assert not _is_stale_worker_database("education_test_gw", "education_test")
-    assert not _is_stale_worker_database("other_gw0", "education_test")
+def test_live_run_marker_dir_is_kept(tmp_path: Path) -> None:
+    live = tmp_path / "curioed-xdist-ffffeeee9999"
+    live.mkdir()
+    (live / "gw0").write_text("ready", encoding="utf-8")
+    current = tmp_path / "curioed-xdist-abcd1234zzzz"
+    current.mkdir()
+
+    _remove_other_marker_dirs(current, busy_tokens={"ffffeeee"}, root=tmp_path)
+    assert (live / "gw0").is_file()
+    assert current.is_dir()
+
+
+def test_clone_names_keep_this_run_and_connected_databases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = "education_test"
+    monkeypatch.setenv("PYTEST_XDIST_TESTRUNUID", "abcd1234-ffff-0000")
+    assert _run_token() == "abcd1234"
+    own = _worker_database_name(template, "gw0")
+    other = _worker_database_name(template, "gw1", "ffffeeee")
+    old = "education_test_gw0"
+    assert own == "education_test_abcd1234_gw0"
+    assert other == "education_test_ffffeeee_gw1"
+
+    assert _should_drop_worker_database(own, template, "abcd1234", set()) is False
+    assert _should_drop_worker_database(other, template, "abcd1234", set()) is True
+    assert _should_drop_worker_database(other, template, "abcd1234", {other}) is False
+    assert _should_drop_worker_database(old, template, "abcd1234", set()) is True
+    assert _should_drop_worker_database(old, template, "abcd1234", {old}) is False
+    assert _should_drop_worker_database(template, template, "abcd1234", set()) is False
+    assert _should_drop_worker_database("education_test_gw", template, "abcd1234", set()) is False
+    assert _should_drop_worker_database("other_abcd1234_gw0", template, "abcd1234", set()) is False
