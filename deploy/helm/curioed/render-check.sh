@@ -48,6 +48,7 @@ if llm_names:
     raise SystemExit(f"workers.llm.enabled defaults to false, but rendered {llm_names}")
 hpa = need("HorizontalPodAutoscaler", "-api")
 job = need("Job", "-migrate")
+seed = need("Job", "-seed")
 route = need("IngressRoute", "curioed")
 cluster = need("Cluster", "-postgres")
 
@@ -69,6 +70,15 @@ for label, doc, snippet in (
     ("migrate deadline", job, "activeDeadlineSeconds: 1800"),
     ("migrate backoff", job, "backoffLimit: 0"),
     ("migrate script", job, "migrate-wrapper.sh"),
+    ("seed hook", seed, 'helm.sh/hook: "pre-install,pre-upgrade"'),
+    ("seed weight", seed, 'helm.sh/hook-weight: "10"'),
+    ("seed delete", seed, 'helm.sh/hook-delete-policy: "before-hook-creation,hook-succeeded"'),
+    ("seed deadline", seed, "activeDeadlineSeconds: 600"),
+    ("seed backoff", seed, "backoffLimit: 0"),
+    ("seed ttl", seed, "ttlSecondsAfterFinished: 600"),
+    ("seed command", seed, "education_platform.modules.materials.seed"),
+    ("seed database url", seed, "$(POSTGRES_PASSWORD)"),
+    ("seed materials", seed, "MATERIALS_DIR"),
     ("pgvector image", cluster, "ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm"),
     ("pgvector extension", cluster, "CREATE EXTENSION IF NOT EXISTS vector"),
     ("progress flush", route, "flushInterval: 1ms"),
@@ -76,6 +86,17 @@ for label, doc, snippet in (
 ):
     if snippet not in doc:
         raise SystemExit(f"{label}: missing {snippet}")
+
+def hook_weight(doc: str, label: str) -> int:
+    match = re.search(r'helm.sh/hook-weight: "(\d+)"', doc)
+    if match is None:
+        raise SystemExit(f"{label} hook is missing a weight")
+    return int(match.group(1))
+
+if hook_weight(seed, "seed") <= hook_weight(job, "migrate"):
+    raise SystemExit("curriculum seed hook must run after the migrate hook")
+if "volumeMounts:" in seed or "persistentVolumeClaim:" in seed:
+    raise SystemExit("curriculum seed job must not mount backups or uploads")
 
 body = need("Middleware", "-api-body")
 if "maxRequestBodyBytes: 33554432" not in body:
@@ -101,8 +122,18 @@ if "SUPERUSER" in text or "ALTER ROLE" in text:
 print(f"rendered {len(docs)} documents")
 PY
 
-if helm template curioed "${chart}" --namespace curioed --set migrate.enabled=false | grep -q '^kind: Job$'; then
-  echo "migrate.enabled=false still rendered a Job" >&2
+migrate_off="$(helm template curioed "${chart}" --namespace curioed --set migrate.enabled=false)"
+if printf '%s\n' "$migrate_off" | grep -q 'migrate-wrapper.sh'; then
+  echo "migrate.enabled=false still rendered the migrate hook" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$migrate_off" | grep -q 'education_platform.modules.materials.seed'; then
+  echo "disabling migrate dropped the curriculum seed hook" >&2
+  exit 1
+fi
+
+if helm template curioed "${chart}" --namespace curioed --set curriculumSeed.enabled=false | grep -q 'education_platform.modules.materials.seed'; then
+  echo "curriculumSeed.enabled=false still rendered the seed hook" >&2
   exit 1
 fi
 

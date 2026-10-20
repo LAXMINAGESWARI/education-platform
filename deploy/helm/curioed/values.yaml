@@ -137,7 +137,7 @@ workers:
 migrate:
   enabled: true
   # pre-install runs before this chart's Cluster and backup PVC exist.
-  # First install: --set migrate.enabled=false, wait for CNPG, then upgrade.
+  # First install disables this and curriculumSeed, then the upgrade enables both.
   hooks: pre-install,pre-upgrade
   weight: "5"
   deletePolicy: before-hook-creation,hook-succeeded
@@ -151,6 +151,16 @@ migrate:
     limits:
       cpu: "1"
       memory: 1Gi
+
+# Idempotent curriculum seed. Weight 10 runs after the migrate hook (weight 5).
+# Same first-install constraint as migrate: the database does not exist yet.
+curriculumSeed:
+  enabled: true
+  hooks: pre-install,pre-upgrade
+  weight: "10"
+  deletePolicy: before-hook-creation,hook-succeeded
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
 
 cloudflared:
   replicas: 2

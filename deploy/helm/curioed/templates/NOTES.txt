@@ -14,8 +14,9 @@ Create these Secrets before the pods can start. Do not commit their values.
 
 Point the Cloudflare public hostname at {{ .Values.cloudflared.origin }}.
 
-The migrate Job is a {{ .Values.migrate.hooks }} hook. On a first install that hook
-runs before this chart's database exists. Install once with --set migrate.enabled=false,
-wait until the CloudNativePG cluster is ready, then helm upgrade without that override.
+The migrate Job (weight {{ .Values.migrate.weight }}) and curriculum seed Job (weight {{ .Values.curriculumSeed.weight }})
+are {{ .Values.migrate.hooks }} hooks. On a first install they run before this chart's
+database exists. Install once with --set migrate.enabled=false --set curriculumSeed.enabled=false,
+wait until the CloudNativePG cluster is ready, then helm upgrade without those overrides.
 
 API probes: {{ .Values.api.probes.livePath }} and {{ .Values.api.probes.readyPath }} on port {{ .Values.api.service.port }}.

@@ -54,6 +54,10 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s-migrate" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "curioed.seedName" -}}
+{{- printf "%s-seed" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{- define "curioed.clusterName" -}}
 {{- $base := include "curioed.fullname" . | trunc 40 | trimSuffix "-" }}
 {{- printf "%s-postgres" $base }}

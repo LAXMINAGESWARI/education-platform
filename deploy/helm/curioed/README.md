@@ -12,7 +12,8 @@ The CloudNativePG operator and k3s Traefik are cluster prerequisites. This chart
 | web | Deployment + Service | nginx image, 2 replicas. |
 | worker-docling | Deployment | 1 replica, memory limit 6Gi, Recreate. This is the only worker by default. |
 | worker-llm | Deployment | Off unless `workers.llm.enabled=true`. Same process as docling until the app can select queues. |
-| migrate | pre-install, pre-upgrade Job | Waits for Postgres, then `deploy/migrate.sh` (pg_dump, then Alembic, then promotion). |
+| migrate | pre-install, pre-upgrade Job | Hook weight 5. Waits for Postgres, then `deploy/migrate.sh` (pg_dump, then Alembic, then promotion). |
+| curriculum seed | pre-install, pre-upgrade Job | Hook weight 10, after migrate. `python -m education_platform.modules.materials.seed`. |
 | edge | Traefik IngressRoute | `/api` body limit 32MiB, 300s timeouts, SSE flush. `/sw.js` cache headers. |
 | cloudflared | Deployment | 2 replicas, pinned tag, token from a Secret. |
 | Postgres | CNPG Cluster | `16.15-standard-bookworm` (pgvector is in the standard image). `CREATE EXTENSION vector` at bootstrap. |
@@ -39,12 +40,14 @@ In the Cloudflare dashboard, send the public hostname to `http://traefik.kube-sy
 Helm runs `pre-install` hooks before it creates the Cluster or the backup PVC. A migrate hook in this same release cannot see the database on a first install, so install in two steps:
 
 ```sh
-helm install curioed deploy/helm/curioed -n curioed --create-namespace --set migrate.enabled=false
+helm install curioed deploy/helm/curioed -n curioed --create-namespace \
+  --set migrate.enabled=false \
+  --set curriculumSeed.enabled=false
 # wait until the CloudNativePG cluster is ready
 helm upgrade curioed deploy/helm/curioed -n curioed
 ```
 
-The upgrade runs the `pre-upgrade` hook: `pg_dump` to the backups PVC, then Alembic, while the previous pods keep serving. `backoffLimit` is 0 and the deadline is 1800s.
+The upgrade turns both hooks back on. Migrate (weight 5) pg_dumps to the backups PVC, then runs Alembic, while the previous pods keep serving. The curriculum seed (weight 10) runs only after that Job succeeds. Migrate's `backoffLimit` is 0 and its deadline is 1800s. The seed deadline is 600s.
 
 Bootstrap `postInitApplicationSQL` runs as the Postgres superuser in the application database and creates the `vector` extension. The `education` role stays a normal owner. Alembic's `CREATE EXTENSION IF NOT EXISTS vector` then finds the extension and does nothing.
 
