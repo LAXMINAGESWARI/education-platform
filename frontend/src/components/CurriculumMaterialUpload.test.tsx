@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,14 +8,26 @@ import { CurriculumMaterialUpload } from "./CurriculumMaterialUpload";
 vi.mock("../api/adminIngest", () => ({
   uploadSubtopicMaterial: vi.fn(),
   watchMaterialVersionStatus: vi.fn(),
+  getMaterialVersionStatus: vi.fn(),
+  isTerminalIngestStatus: (status: string) =>
+    status === "ready" ||
+    status === "failed" ||
+    status === "published" ||
+    status === "superseded" ||
+    status === "archived",
 }));
 
-import { uploadSubtopicMaterial, watchMaterialVersionStatus } from "../api/adminIngest";
+import {
+  getMaterialVersionStatus,
+  uploadSubtopicMaterial,
+  watchMaterialVersionStatus,
+} from "../api/adminIngest";
 
 describe("CurriculumMaterialUpload", () => {
   beforeEach(() => {
     vi.mocked(uploadSubtopicMaterial).mockReset();
     vi.mocked(watchMaterialVersionStatus).mockReset();
+    vi.mocked(getMaterialVersionStatus).mockReset();
     vi.mocked(uploadSubtopicMaterial).mockResolvedValue({
       source_material_id: "mat-1",
       version_id: "ver-1",
@@ -57,22 +69,43 @@ describe("CurriculumMaterialUpload", () => {
 
   it("shows Reconnecting while the material stream retries and clears it on the first frame", async () => {
     let reconnected: (() => void) | undefined;
+    let reconnect: (() => void) | undefined;
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
     vi.mocked(watchMaterialVersionStatus).mockImplementation((_versionId, options) => {
-      options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
+      reconnect = () => options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
       reconnected = options?.onReconnected;
       return new Promise(() => undefined);
     });
 
     render(<CurriculumMaterialUpload subtopicId="st-1" />);
+    const slot = screen.getByTestId("progress-reconnect");
+    expect(slot).toHaveAttribute("data-reserve", "fixed");
+    expect(slot).toHaveAttribute("data-active", "false");
     await submitPdf();
+    expect(slot).toHaveAttribute("data-active", "false");
+
+    act(() => {
+      reconnect?.();
+    });
 
     expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(within(slot).getByRole("status")).toHaveAttribute("aria-live", "polite");
+    expect(slot.querySelector("[data-motion='reduced']")).not.toBeNull();
+    expect(slot.querySelector(".progress-reconnect__spinner")).toBeNull();
     act(() => {
       reconnected?.();
     });
     await waitFor(() => {
       expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
     });
+    expect(slot).toHaveAttribute("data-active", "false");
+    expect(screen.getByTestId("progress-reconnect")).toBe(slot);
   });
 
   it("shows Reconnecting and then the give-up error", async () => {
@@ -95,6 +128,59 @@ describe("CurriculumMaterialUpload", () => {
       "Lost the connection to progress updates. Try again.",
     );
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
+
+  it("keeps a reserved reconnect row and retries the material stream", async () => {
+    const user = userEvent.setup();
+    let fail: ((error: unknown) => void) | undefined;
+    let calls = 0;
+    vi.mocked(getMaterialVersionStatus).mockResolvedValue({
+      id: "ver-1",
+      source_material_id: "mat-1",
+      version_number: 1,
+      title: "Place value",
+      lifecycle_status: "processing",
+      failure_reason: null,
+      chunk_count: 2,
+    });
+    vi.mocked(watchMaterialVersionStatus).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      }
+      return Promise.resolve({
+        id: "ver-1",
+        source_material_id: "mat-1",
+        version_number: 1,
+        title: "Place value",
+        lifecycle_status: "ready",
+        failure_reason: null,
+        chunk_count: 4,
+      });
+    });
+
+    render(<CurriculumMaterialUpload subtopicId="st-1" />);
+    const slot = screen.getByTestId("progress-reconnect");
+    await submitPdf();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Lost the connection to progress updates. Try again.");
+    expect(slot).toHaveAttribute("data-active", "false");
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(watchMaterialVersionStatus).toHaveBeenCalledTimes(2);
+    });
+    expect(getMaterialVersionStatus).toHaveBeenCalledWith("ver-1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("ready")).toBeInTheDocument();
+    expect(screen.getByTestId("progress-reconnect")).toBe(slot);
   });
 
   it("does not watch a material version after the form unmounts", async () => {

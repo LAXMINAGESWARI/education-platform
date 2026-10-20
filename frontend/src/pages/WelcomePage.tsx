@@ -10,6 +10,7 @@ import {
 } from "../auth/demoAccounts";
 import { useAuth } from "../auth/AuthContext";
 import { roleHome } from "../auth/roles";
+import { PwaPromptHost } from "../components/PwaPrompts";
 import { PushButton } from "../components/PushButton";
 
 const LAST_EMAIL_KEY = "ep_last_email";
@@ -87,6 +88,7 @@ export function WelcomePage() {
   return (
     <div className="app-frame app-frame--login">
       <div className="login">
+        <PwaPromptHost />
         <div className="route-motion__page login__motion">
           <div className="login__card">
             <div className="login__brand">CurioEd</div>

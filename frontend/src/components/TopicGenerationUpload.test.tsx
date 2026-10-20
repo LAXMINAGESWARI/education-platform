@@ -869,6 +869,69 @@ describe("TopicGenerationUpload", () => {
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
 
+  it("reserves the reconnect row and retries the generation stream", async () => {
+    const user = userEvent.setup();
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(getGenerationRun).mockResolvedValue(run({ phase: "outlining", outline: null }));
+    let fail: ((error: unknown) => void) | undefined;
+    let reconnect: (() => void) | undefined;
+    let calls = 0;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      calls += 1;
+      if (calls === 1) {
+        reconnect = () => options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      }
+      return new Promise(() => undefined);
+    });
+
+    renderPanel();
+
+    const slot = await screen.findByTestId("progress-reconnect");
+    const stepper = screen.getByRole("list", { name: "Generation progress" });
+    expect(slot).toHaveAttribute("data-reserve", "fixed");
+    expect(slot).toHaveAttribute("data-active", "false");
+    expect(stepper.previousElementSibling).toBe(slot);
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Indexing PDF");
+
+    act(() => {
+      reconnect?.();
+    });
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(within(slot).getByRole("status")).toHaveAttribute("aria-live", "polite");
+    expect(slot.querySelector("[data-motion='reduced']")).not.toBeNull();
+    expect(stepper.previousElementSibling).toBe(slot);
+
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Lost the connection to progress updates. Try again.");
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(stepper.previousElementSibling).toBe(slot);
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(subscribeGenerationRun).toHaveBeenCalledTimes(2);
+    });
+    expect(getGenerationRun).toHaveBeenCalledWith("run-1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Determining outline");
+    expect(screen.getByTestId("progress-reconnect")).toBe(slot);
+  });
+
   it("does not follow a topic upload after the form unmounts", async () => {
     const user = userEvent.setup();
     let resolveUpload: (value: { run_id: string; topic_id: string; phase: "indexing" }) => void =

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
@@ -13,14 +14,29 @@ import { isIosSafari, isStandaloneDisplay, shouldShowInstallBanner, snoozeInstal
 import { reloadApp, updateReloadBlocked } from "../pwa/serviceWorkerUpdate";
 
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
+const PWA_PROMPT_HOST_ID = "pwa-prompt-host";
+
+/** Mount point inside the scrolling page column. The banner flows above the title. */
+export function PwaPromptHost() {
+  return <div id={PWA_PROMPT_HOST_ID} />;
+}
 
 export function PwaPrompts() {
-  return (
-    <div className="pwa-toasts">
+  const location = useLocation();
+  const [host, setHost] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    setHost(document.getElementById(PWA_PROMPT_HOST_ID));
+  }, [location.pathname]);
+
+  const prompts = (
+    <div className={host ? "pwa-toasts pwa-toasts--inline" : "pwa-toasts"}>
       <PwaUpdatePrompt />
       <InstallPrompt />
     </div>
   );
+  if (host) return createPortal(prompts, host);
+  return prompts;
 }
 
 function PwaUpdatePrompt() {

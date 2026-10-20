@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,6 +134,34 @@ describe("PwaPrompts", () => {
     })) as unknown as typeof window.matchMedia;
     renderPrompt();
     expect(screen.queryByRole("region", { name: "Install CurioEd" })).not.toBeInTheDocument();
+  });
+
+  it("flows the install banner above the page title instead of covering it", async () => {
+    setUserAgent(IOS_SAFARI);
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <div className="app__content">
+          <div id="pwa-prompt-host" />
+          <header className="page-head">
+            <nav aria-label="Breadcrumb">Mathematics</nav>
+            <h1>Topic generation</h1>
+          </header>
+        </div>
+        <PwaPrompts />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      const banner = screen.getByRole("region", { name: "Install CurioEd" });
+      expect(banner.closest(".pwa-toasts")).toHaveClass("pwa-toasts--inline");
+      expect(document.getElementById("pwa-prompt-host")).toContainElement(banner);
+    });
+    const banner = screen.getByRole("region", { name: "Install CurioEd" });
+    const title = screen.getByRole("heading", { name: "Topic generation" });
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(banner.closest(".app__content")).toBe(title.closest(".app__content"));
+    expect(banner.compareDocumentPosition(crumbs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(banner.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("reloads as soon as a new service worker activates outside a quiz", () => {
