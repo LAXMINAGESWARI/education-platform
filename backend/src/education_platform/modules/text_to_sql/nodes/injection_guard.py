@@ -37,7 +37,9 @@ calls `chat_completion` for its own, unrelated SQL generation.
 original, kept deliberately rather than "simplified" away.** A successful Jev
 probability is OR-ed with the GPT injection classifier this node used before Jev:
 the question is blocked if either one flags it. Jev already above the block
-threshold does not need the GPT call. A Jev timeout or 5xx fails closed before
+threshold does not need the GPT call. When Jev passes and that GPT check also
+allows, `guard_stage` is `jev_gpt` rather than `jev` alone. A Jev timeout or
+5xx fails closed before
 that call. HTTP 402 is the other exception: Jev credits can be exhausted while
 chat completions still work, so a 402 falls back to the regex result plus that
 same GPT classifier, and does not also require a Jev probability. If that GPT
@@ -187,7 +189,10 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
             "audit_entry": _note(state, guard_stage="gpt", injection_probability=probability),
             "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
         }
-    return {**state, "audit_entry": noted}
+    return {
+        **state,
+        "audit_entry": _note(state, guard_stage="jev_gpt", injection_probability=probability),
+    }
 
 
 async def _gpt_injection_fallback(

@@ -301,7 +301,7 @@ async def test_message_passes_when_neither_jev_nor_gpt_flags(
     assert result["error"] is None
     audit = result["audit_entry"]
     assert isinstance(audit, dict)
-    assert audit["guard_stage"] == "jev"
+    assert audit["guard_stage"] == "jev_gpt"
     assert audit["injection_probability"] == 0.1
 
 

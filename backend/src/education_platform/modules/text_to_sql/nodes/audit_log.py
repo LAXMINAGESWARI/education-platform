@@ -180,9 +180,10 @@ def _build_payload(state: TextToSQLState) -> dict[str, Any]:
         # execute_sql only ever sets this key to True, so its absence always means no
         # truncation occurred, never "unknown."
         "row_cap_truncated": audit_entry.get("row_cap_truncated", False),
-        # Who refused: heuristic, unconfigured, jev, jev_error, gpt, or gpt_error.
-        # question_validator replaces this only when it refuses, and then the value
-        # is the classifier that refused. An allow leaves the injection stage.
+        # heuristic, unconfigured, jev, jev_gpt, jev_error, gpt, or gpt_error.
+        # jev_gpt means Jev passed and the GPT check also ran and allowed.
+        # A refusal names the classifier that refused. Jev errors stay jev_error
+        # and do not call GPT. HTTP 402 allow stays on the injection stage.
         "guard_stage": audit_entry.get("guard_stage"),
         "injection_probability": audit_entry.get("injection_probability"),
         "off_topic_probability": audit_entry.get("off_topic_probability"),

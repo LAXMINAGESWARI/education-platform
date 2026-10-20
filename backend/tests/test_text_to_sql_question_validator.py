@@ -186,7 +186,9 @@ async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.Mo
     assert error_category(result["error"]) == OFF_TOPIC_REJECTED
 
 
-async def test_off_topic_keeps_the_injection_guard_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_allowed_off_topic_records_that_jev_and_gpt_both_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake, _ = _fake_classifier(0.1)
     monkeypatch.setattr(_MODULE, "classify_noul", fake)
     prior = {"guard_stage": "jev", "injection_probability": 0.2}
@@ -196,7 +198,7 @@ async def test_off_topic_keeps_the_injection_guard_stage(monkeypatch: pytest.Mon
     )
 
     assert result["error"] is None
-    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["guard_stage"] == "jev_gpt"
     assert result["audit_entry"]["injection_probability"] == 0.2
     assert result["audit_entry"]["off_topic_probability"] == 0.1
 
@@ -295,6 +297,20 @@ async def test_gpt_off_topic_blocks_when_jev_allows(monkeypatch: pytest.MonkeyPa
     assert result["audit_entry"]["off_topic_probability"] == 0.1
 
 
+async def test_off_topic_allow_keeps_an_injection_402_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake, _ = _fake_classifier(0.1)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    prior = {"guard_stage": "gpt", "injection_probability": None}
+
+    result = await question_validator(_state("What subject do I teach?", audit_entry=prior))
+
+    assert result["error"] is None
+    assert result["audit_entry"]["guard_stage"] == "gpt"
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
+
+
 async def test_question_passes_when_neither_off_topic_check_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -312,7 +328,7 @@ async def test_question_passes_when_neither_off_topic_check_flags(
     )
 
     assert result["error"] is None
-    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["guard_stage"] == "jev_gpt"
     assert result["audit_entry"]["off_topic_probability"] == 0.1
 
 

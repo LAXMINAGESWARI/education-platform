@@ -55,9 +55,11 @@ threshold also asks the pre-Jev GPT off-topic classifier, through the same helpe
 (degrades to the prior, no-check-at-all behavior, not an outage); a Jev error fails
 closed and does not call GPT. HTTP 402, and a Jev score under the threshold, use that
 GPT helper. If the GPT call fails, the node fails closed. A missing key cannot call
-GPT. When this node refuses, `guard_stage` names the classifier that refused. When it
-allows, or when Jev errors before a probability, the injection stage already on the
-audit entry stays. The refusal
+GPT. When this node refuses, `guard_stage` names the classifier that refused. When
+Jev passed and GPT also allows, the stage is `jev_gpt`, except when injection
+already recorded `gpt` for an HTTP 402 — that fallback stays. A Jev error before
+a probability leaves the injection stage already on the audit entry, and so does
+an HTTP 402 from this node's own Jev call whose GPT check allows. The refusal
 reuses `injection_guard`'s own "safety check unavailable" wording, since the user-facing
 fact is the same, but keeps the category this node's own — an infra failure here has nothing to do
 with injection, and tagging it `INJECTION_BLOCKED` would misrepresent the audit trail for
@@ -128,6 +130,11 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
 
+    # Jev passed, so the GPT check is about to run. Record both if GPT allows.
+    # A refusal inside the helper replaces this with gpt or gpt_error. An
+    # injection HTTP 402 already stored gpt; leave that when this check allows.
+    if audit.get("guard_stage") != "gpt":
+        audit = {**audit, "guard_stage": "jev_gpt"}
     return await _gpt_off_topic_fallback(
         cast(TextToSQLState, {**state, "audit_entry": audit}),
         question,
@@ -161,5 +168,6 @@ async def _gpt_off_topic_fallback(
             "audit_entry": audit,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
-    # GPT allowed the question. Leave the injection stage that is already recorded.
+    # GPT allowed the question. The Jev-passed path already stored jev_gpt.
+    # HTTP 402 never set that, so the injection stage stays as it was.
     return {**state}
