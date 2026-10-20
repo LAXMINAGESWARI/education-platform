@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.db.session import sync_session
+from education_platform.modules.progress.stage_store import reset_stage_on_requeue
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,17 @@ def claim(session: Session, model: type[Any]) -> ClaimResult | None:
     if job is None:
         return None
     job_id = job.id
-    if _is_running(job.status) and job.attempts >= job.max_attempts:
+    was_running = _is_running(job.status)
+    if was_running and job.attempts >= job.max_attempts:
         return Exhausted(job_id)
+    # Before attempts is incremented. A running job here has a missing or
+    # expired lease. A queued job with attempts already > 0 was requeued
+    # without refunding the attempt. A first queue (attempts == 0) is not a
+    # requeue. A token-checked lease release is a different path: it must call
+    # reset_stage_on_requeue only when its own update rowcount is 1.
+    requeued = was_running or int(job.attempts or 0) >= 1
+    if getattr(model, "__tablename__", None) == "ingest_jobs" and requeued:
+        reset_stage_on_requeue(session, job)
     lease = get_settings().worker_lease_seconds
     job.attempts += 1
     job.status = running

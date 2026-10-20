@@ -180,14 +180,25 @@ A lease that expired or was released must not keep showing the dead worker's sta
 - `message` = `Restarting...`
 - `seq` = previous + 1
 
-It runs when `workers/lease.py` reclaims a running ingest job whose lease is missing
-or expired, and when the version snapshot reader heals an expired lease on connect.
-It does not run for a job that is merely queued for the first time. It does not
-change a `ready` or `failed` version. Repeating it while the row already says
+It runs from `workers/lease.py` `claim()`, and from the version snapshot reader on
+every read. Both use the same predicate:
+
+- the job is `running` and `locked_until` is null or already past, or
+- the job is `queued` and `attempts >= 1`
+
+A first queue (`attempts == 0`) stays on `File received.` A `ready` or `failed`
+version is left alone. Repeating the reset while the message is already
 `Restarting...` does not burn another `seq`.
 
-The worker pool's SIGTERM handler is a separate change. That release path should
-call `reset_stage_on_requeue` before the job is queued again.
+This branch does not merge PR #200 and does not call `release_lease`. That
+function is being reworked: the release is conditional on a lease token
+(attempts plus the caller's last `locked_until`), so it is a no-op when another
+worker has reclaimed the job, and a graceful SIGTERM refunds the attempt.
+`reset_stage_on_requeue` stays a separate function. The release path must call
+it in the same transaction only when the release update rowcount is 1. A no-op
+release must not call it, or it would clear the stage another worker is writing.
+Until that call exists, claim and the snapshot reader still clear a stage when
+they see an expired lease or a queued job whose attempt was not refunded.
 
 ## Generation stages
 

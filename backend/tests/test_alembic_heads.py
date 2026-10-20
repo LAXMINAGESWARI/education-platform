@@ -105,7 +105,9 @@ def test_gateway_migration_round_trip_on_seeded_db(seeded_db: Session, clean_db:
         engine.dispose()
     assert _count(sync_url, "llm_gateway_calls") == 1
 
-    command.downgrade(cfg, "-1")
+    # Step back across the gateway revision, not merely the current tip.
+    # Later migrations (ingest stage columns) sit on top of b3c4d5e6f7a8.
+    command.downgrade(cfg, "d6e7f8a9b0c1")
     try:
         assert "llm_gateway_calls" not in _tables(sync_url)
         assert _table_counts(sync_url) == before

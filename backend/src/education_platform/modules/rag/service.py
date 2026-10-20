@@ -27,6 +27,7 @@ from education_platform.modules.materials.models import (
     SourceMaterial,
     SourceMaterialVersion,
 )
+from education_platform.modules.progress.stage_store import mark_upload_received
 from education_platform.modules.rag import storage
 from education_platform.modules.rag.contracts import parse_required_roles
 from education_platform.modules.rag.models import (
@@ -177,6 +178,12 @@ async def get_material_version_status(
         failure_reason=version.failure_reason,
         chunk_count=chunk_count,
         blob_content_type=version.blob_content_type,
+        stage=version.stage,
+        stage_seq=version.stage_seq,
+        stage_current=version.stage_current,
+        stage_total=version.stage_total,
+        stage_message=version.stage_message,
+        stage_updated_at=version.stage_updated_at,
     )
 
 
@@ -230,6 +237,7 @@ async def upload_knowledge_document(
         blob_content_type=content_type,
         checksum=checksum,
     )
+    mark_upload_received(version)
     session.add(version)
     await session.flush()
 
@@ -391,4 +399,10 @@ async def get_knowledge_version_status(
         failure_reason=version.failure_reason,
         chunk_count=chunk_count,
         blob_content_type=version.blob_content_type,
+        stage=version.stage,
+        stage_seq=version.stage_seq,
+        stage_current=version.stage_current,
+        stage_total=version.stage_total,
+        stage_message=version.stage_message,
+        stage_updated_at=version.stage_updated_at,
     )

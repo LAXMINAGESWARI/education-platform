@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -8,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from education_platform.api.deps import Principal, get_current_user_detached
 from education_platform.db.session import get_session_factory
-from education_platform.modules.audit.service import AuditAction, record_event
+from education_platform.modules.audit.service import AuditAction, record_event_within_window
 from education_platform.modules.authorization.scope import scope_for
 from education_platform.modules.progress.sse import SSE_HEADERS, iter_sse
 from education_platform.modules.progress.subscribe import subscribe
@@ -21,6 +22,10 @@ from education_platform.modules.progress.types import (
 )
 
 router = APIRouter(tags=["progress"])
+
+# One scoped-read row per principal and subject. Reconnects inside this window
+# reuse audit_events instead of appending another row.
+_SUBSCRIBE_AUDIT_WINDOW = timedelta(minutes=10)
 
 
 async def _chain(
@@ -41,12 +46,14 @@ async def _open_stream(
     factory = get_session_factory()
     async with factory() as session:
         scope = await scope_for(session, principal)
-        await record_event(
+        await record_event_within_window(
             session,
+            window=_SUBSCRIBE_AUDIT_WINDOW,
             institution_id=principal.institution_id,
             actor_user_id=principal.user_id,
             event_type=AuditAction.SCOPED_READ,
             entity_type=resource,
+            match_payload={"detail": subject.key()},
             payload={
                 "resource": resource,
                 "unrestricted": scope.unrestricted,

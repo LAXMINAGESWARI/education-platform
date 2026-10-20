@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.modules.academics.models import Subtopic
+from education_platform.modules.audit.models import AuditEvent
 from education_platform.modules.auth.models import User
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
@@ -22,13 +24,14 @@ from education_platform.modules.progress.close import (
     should_close,
 )
 from education_platform.modules.progress.sse import iter_sse
-from education_platform.modules.progress.subscribe import subscribe
+from education_platform.modules.progress.subscribe import HEARTBEAT_SECONDS, subscribe
 from education_platform.modules.progress.types import (
     CloseFrame,
     ErrorFrame,
     EventId,
     HeartbeatFrame,
     SnapshotFrame,
+    event_id_for,
     parse_subject_key,
     run_subject,
     version_subject,
@@ -118,6 +121,28 @@ class FakeWakeWaiter:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class _BlockingHeartbeatWaiter:
+    """Returns immediately for the zero-timeout drain and fails a 15s wait."""
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+        self.closed = False
+
+    async def wait(self, subject: object, timeout: float) -> WakeResult:
+        del subject
+        self.waits.append(timeout)
+        if timeout >= HEARTBEAT_SECONDS:
+            raise AssertionError("heartbeat wait before the first byte")
+        return WakeResult.TIMED_OUT
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def _one_frame(frame: HeartbeatFrame):
+    yield frame
 
 
 def test_parse_subject_key_round_trip() -> None:
@@ -350,3 +375,64 @@ def test_failed_run_stream_sends_snapshot_and_close(
     assert '"phase":"failed"' in body
     assert "event: close" in body
     assert '"reason":"terminal"' in body
+
+
+@pytest.mark.asyncio
+async def test_unchanged_resume_flushes_connected_before_heartbeat_wait() -> None:
+    principal = _principal()
+    snapshot = _run_out(phase=RunPhase.GENERATING, jobs=[("items", "running")])
+    subject = run_subject(snapshot.id)
+    waiter = _BlockingHeartbeatWaiter()
+    stream = subscribe(
+        principal,
+        _scope(principal),
+        subject,
+        last_event_id=event_id_for(subject, snapshot),
+        reader=SequenceReader([snapshot]),
+        wakes=waiter,
+    )
+    first = await asyncio.wait_for(anext(stream), timeout=1)
+    assert isinstance(first, HeartbeatFrame)
+    assert first.comment == "connected"
+    assert waiter.waits == [0.0]
+    encoded = [chunk async for chunk in iter_sse(_one_frame(first))]
+    assert encoded == [b": connected\n\n"]
+    await stream.aclose()
+    assert waiter.closed is True
+
+
+def test_reconnects_with_last_event_id_write_one_audit_event(
+    client: TestClient, seeded_db: Session, admin_headers: dict[str, str]
+) -> None:
+    settings = get_settings()
+    topic = seeded_db.scalar(select(Subtopic).where(Subtopic.slug == SEEDED_SLUG))
+    assert topic is not None
+    admin = seeded_db.scalar(select(User).where(User.email == settings.demo_admin_email))
+    assert admin is not None
+    run = ContentGenerationRun(
+        topic_id=topic.topic_id,
+        submitted_by_user_id=admin.id,
+        title="Reconnect source",
+        phase=RunPhase.FAILED,
+        target_item_count=80,
+        failure_reason="boom",
+    )
+    seeded_db.add(run)
+    seeded_db.commit()
+    headers = {**admin_headers, "Last-Event-ID": f"run:{run.id}:stale"}
+    for _ in range(4):
+        with client.stream("GET", f"/api/v1/progress/runs/{run.id}", headers=headers) as response:
+            assert response.status_code == 200
+            body = b"".join(response.iter_bytes()).decode()
+        assert "event: snapshot" in body or "event: close" in body
+
+    seeded_db.expire_all()
+    rows = seeded_db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "data.scoped_read",
+            AuditEvent.entity_type == "progress.run",
+            AuditEvent.actor_user_id == admin.id,
+        )
+    ).all()
+    matched = [row for row in rows if row.payload.get("detail") == f"run:{run.id}"]
+    assert len(matched) == 1

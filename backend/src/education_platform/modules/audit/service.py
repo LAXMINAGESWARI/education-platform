@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -51,6 +52,47 @@ async def record_event(
     if flush:
         await session.flush()
     return event
+
+
+async def record_event_within_window(
+    session: AsyncSession,
+    *,
+    window: timedelta,
+    institution_id: UUID,
+    event_type: AuditAction | str,
+    entity_type: str,
+    match_payload: dict[str, str],
+    actor_user_id: UUID | None = None,
+    entity_id: UUID | None = None,
+    payload: dict[str, Any] | None = None,
+) -> AuditEvent | None:
+    """Insert one event unless the same actor already recorded this match inside ``window``.
+
+    Looks up ``audit_events`` (no extra table). A hit returns None and writes nothing.
+    """
+    event_name = event_type.value if isinstance(event_type, AuditAction) else str(event_type)
+    cutoff = datetime.now(UTC) - window
+    filters = [
+        AuditEvent.institution_id == institution_id,
+        AuditEvent.actor_user_id == actor_user_id,
+        AuditEvent.event_type == event_name,
+        AuditEvent.entity_type == entity_type,
+        AuditEvent.created_at >= cutoff,
+    ]
+    for key, value in match_payload.items():
+        filters.append(AuditEvent.payload[key].as_string() == value)
+    existing = await session.scalar(select(AuditEvent.id).where(*filters).limit(1))
+    if existing is not None:
+        return None
+    return await record_event(
+        session,
+        institution_id=institution_id,
+        actor_user_id=actor_user_id,
+        event_type=event_name,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        payload=payload,
+    )
 
 
 async def list_events(

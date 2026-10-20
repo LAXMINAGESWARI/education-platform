@@ -36,6 +36,19 @@ from education_platform.modules.materials.models import (
     SourceMaterialVersion,
     SourceMaterialVersionStatus,
 )
+from education_platform.modules.progress.events import (
+    DONE_MESSAGE,
+    EXTRACTING_MESSAGE,
+    PARSING_MESSAGE,
+    RECEIVED_MESSAGE,
+    chunking_message,
+    embedding_message,
+    friendly_failure_message,
+)
+from education_platform.modules.progress.stage_store import (
+    commit_upload_terminal,
+    persist_upload_stage,
+)
 from education_platform.modules.progress.types import ProgressSubject, run_subject, version_subject
 from education_platform.modules.progress.wake import publish_wake
 from education_platform.modules.rag import storage
@@ -63,6 +76,8 @@ logger = logging.getLogger(__name__)
 
 ParsePdfFn = Callable[[Path], list[TextChunk]]
 _FAILURE_REASON_LIMIT = 2000
+EMBEDDING_PROGRESS_BATCH = 16
+type _VersionRow = SourceMaterialVersion | KnowledgeDocumentVersion
 
 _CODEFORMULA_MPS_PATCHED = False
 FORMULA_VISION_BATCH_SIZE = 8
@@ -466,24 +481,50 @@ def _fail_job(session: Session, job: IngestJob, reason: str) -> None:
     session.commit()
 
 
-def _mark_source_failed(session: Session, version: SourceMaterialVersion, reason: str) -> None:
-    version.lifecycle_status = SourceMaterialVersionStatus.FAILED
-    version.failure_reason = reason
-
-
-def _mark_knowledge_failed(
-    session: Session, version: KnowledgeDocumentVersion, reason: str
+def _note_stage(
+    version: _VersionRow,
+    job: IngestJob,
+    *,
+    stage: str,
+    message: str,
+    current: int | None = None,
+    total: int | None = None,
+    force: bool = False,
 ) -> None:
-    version.lifecycle_status = KnowledgeDocumentVersionStatus.FAILED
-    version.failure_reason = reason
+    persist_upload_stage(
+        version,
+        job,
+        stage=stage,
+        message=message,
+        current=current,
+        total=total,
+        force=force,
+    )
 
 
-def _fail_source_ingest(
-    session: Session, job: IngestJob, version: SourceMaterialVersion, reason: str
-) -> None:
-    _mark_source_failed(session, version, reason)
-    fail_run_for_intake(session, version.id, reason)
-    _fail_job(session, job, reason)
+def _fail_version(session: Session, job: IngestJob, version: _VersionRow, reason: str) -> None:
+    """Mark the version and job failed, with a friendly progress message."""
+    stored = reason[:_FAILURE_REASON_LIMIT]
+    lifecycle: SourceMaterialVersionStatus | KnowledgeDocumentVersionStatus
+    if isinstance(version, SourceMaterialVersion):
+        fail_run_for_intake(session, version.id, stored)
+        lifecycle = SourceMaterialVersionStatus.FAILED
+    else:
+        lifecycle = KnowledgeDocumentVersionStatus.FAILED
+    # The worker session does not expire on commit, so reload the stage written
+    # by the short progress transactions before choosing the category.
+    session.refresh(version, attribute_names=["stage"])
+    commit_upload_terminal(
+        session,
+        version,
+        job,
+        stage="failed",
+        lifecycle=lifecycle,
+        failure_reason=stored,
+        job_status=IngestJobStatus.FAILED,
+        job_error=stored,
+        message=friendly_failure_message(version.stage, stored),
+    )
 
 
 def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
@@ -495,12 +536,13 @@ def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
     if job.source_material_version_id is not None:
         version = session.get(SourceMaterialVersion, job.source_material_version_id)
         if version is not None:
-            _fail_source_ingest(session, job, version, reason)
+            _fail_version(session, job, version, reason)
             return
     if job.knowledge_document_version_id is not None:
         version_k = session.get(KnowledgeDocumentVersion, job.knowledge_document_version_id)
         if version_k is not None:
-            _mark_knowledge_failed(session, version_k, reason)
+            _fail_version(session, job, version_k, reason)
+            return
     job.status = IngestJobStatus.FAILED
     job.error = reason[:2000]
     _wake_ingest(session, job)
@@ -543,6 +585,7 @@ def _persist_and_embed(
     doc_type: str | None,
     create_chunk: Callable[[TextChunk], Any],
     clear_existing: Callable[[], None],
+    embeddings: list[list[float]],
 ) -> None:
     clear_existing()
     session.flush()
@@ -557,7 +600,6 @@ def _persist_and_embed(
         orm_chunks.append(row)
     session.flush()
 
-    embeddings = embed_texts([c.text for c in chunks])
     vector_rows = [
         VectorRow(
             chunk_id=orm.id,
@@ -617,18 +659,111 @@ def process_ingest_job_sync(
             if job.source_material_version_id is not None:
                 version = session.get(SourceMaterialVersion, job.source_material_version_id)
                 if version is not None:
-                    _mark_source_failed(session, version, reason)
-                    fail_run_for_intake(session, version.id, reason)
+                    _fail_version(session, job, version, reason)
+                    return
             elif job.knowledge_document_version_id is not None:
                 version_k = session.get(KnowledgeDocumentVersion, job.knowledge_document_version_id)
                 if version_k is not None:
-                    _mark_knowledge_failed(session, version_k, reason)
+                    _fail_version(session, job, version_k, reason)
+                    return
             job.status = IngestJobStatus.FAILED
             job.error = reason
             _wake_ingest(session, job)
             session.commit()
     finally:
         session.close()
+
+
+def _embed_texts(version: _VersionRow, job: IngestJob, texts: list[str]) -> list[list[float]]:
+    """Embed in batches so chunk counts can move without committing chunk rows."""
+    total = len(texts)
+    _note_stage(
+        version,
+        job,
+        stage="embedding",
+        message=embedding_message(0, total),
+        current=0,
+        total=total,
+        force=True,
+    )
+    vectors: list[list[float]] = []
+    step = EMBEDDING_PROGRESS_BATCH
+    for start in range(0, total, step):
+        batch = texts[start : start + step]
+        vectors.extend(embed_texts(batch))
+        done = start + len(batch)
+        _note_stage(
+            version,
+            job,
+            stage="embedding",
+            message=embedding_message(done, total),
+            current=done,
+            total=total,
+        )
+    return vectors
+
+
+def _parsed_chunks(
+    session: Session,
+    job: IngestJob,
+    version: _VersionRow,
+    parse: ParsePdfFn,
+) -> tuple[list[TextChunk], list[list[float]]] | None:
+    """Walk the upload stages through extracting_topics. None means the job was failed."""
+    _note_stage(version, job, stage="received", message=RECEIVED_MESSAGE, force=True)
+    if not version.blob_object_key:
+        _fail_version(session, job, version, "Missing blob object key")
+        return None
+    _note_stage(version, job, stage="parsing", message=PARSING_MESSAGE, force=True)
+    chunks = parse(storage.resolve_blob_path(version.blob_object_key))
+    if not chunks:
+        _fail_version(session, job, version, "No extractable text")
+        return None
+    count = len(chunks)
+    _note_stage(
+        version,
+        job,
+        stage="chunking",
+        message=chunking_message(count),
+        current=count,
+        total=count,
+        force=True,
+    )
+    embeddings = _embed_texts(version, job, [chunk.text for chunk in chunks])
+    headed = sum(1 for chunk in chunks if chunk.section_heading)
+    _note_stage(
+        version,
+        job,
+        stage="extracting_topics",
+        message=EXTRACTING_MESSAGE,
+        current=headed,
+        total=count,
+        force=True,
+    )
+    return chunks, embeddings
+
+
+def _finish_ready(
+    session: Session,
+    job: IngestJob,
+    version: _VersionRow,
+    *,
+    lifecycle: SourceMaterialVersionStatus | KnowledgeDocumentVersionStatus,
+    notify_intake: bool,
+) -> None:
+    if notify_intake and isinstance(version, SourceMaterialVersion):
+        on_intake_indexed(session, version.id)
+    commit_upload_terminal(
+        session,
+        version,
+        job,
+        stage="done",
+        lifecycle=lifecycle,
+        failure_reason=None,
+        job_status=IngestJobStatus.SUCCEEDED,
+        job_error=None,
+        message=DONE_MESSAGE,
+    )
 
 
 def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
@@ -642,24 +777,19 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
     _wake_ingest(session, job)
     session.commit()
 
-    if not version.blob_object_key:
-        _fail_source_ingest(session, job, version, "Missing blob object key")
+    prepared = _parsed_chunks(session, job, version, parse)
+    if prepared is None:
         return
-
-    path = storage.resolve_blob_path(version.blob_object_key)
-    chunks = parse(path)
-    if not chunks:
-        _fail_source_ingest(session, job, version, "No extractable text")
-        return
+    chunks, embeddings = prepared
 
     material = session.get(SourceMaterial, version.source_material_id)
     if material is None:
-        _fail_source_ingest(session, job, version, "Source material missing")
+        _fail_version(session, job, version, "Source material missing")
         return
 
     institution_id = _institution_for_material(session, material)
     if institution_id is None:
-        _fail_source_ingest(session, job, version, "Unable to resolve institution")
+        _fail_version(session, job, version, "Unable to resolve institution")
         return
 
     def clear_existing() -> None:
@@ -694,14 +824,15 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
         doc_type="curriculum",
         create_chunk=create_chunk,
         clear_existing=clear_existing,
+        embeddings=embeddings,
     )
-    version.lifecycle_status = SourceMaterialVersionStatus.READY
-    version.failure_reason = None
-    on_intake_indexed(session, version.id)
-    job.status = IngestJobStatus.SUCCEEDED
-    job.error = None
-    _wake_ingest(session, job)
-    session.commit()
+    _finish_ready(
+        session,
+        job,
+        version,
+        lifecycle=SourceMaterialVersionStatus.READY,
+        notify_intake=True,
+    )
 
 
 def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
@@ -715,22 +846,14 @@ def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePd
     _wake_ingest(session, job)
     session.commit()
 
-    if not version.blob_object_key:
-        _mark_knowledge_failed(session, version, "Missing blob object key")
-        _fail_job(session, job, "Missing blob object key")
+    prepared = _parsed_chunks(session, job, version, parse)
+    if prepared is None:
         return
-
-    path = storage.resolve_blob_path(version.blob_object_key)
-    chunks = parse(path)
-    if not chunks:
-        _mark_knowledge_failed(session, version, "No extractable text")
-        _fail_job(session, job, "No extractable text")
-        return
+    chunks, embeddings = prepared
 
     document = session.get(KnowledgeDocument, version.document_id)
     if document is None:
-        _mark_knowledge_failed(session, version, "Knowledge document missing")
-        _fail_job(session, job, "Knowledge document missing")
+        _fail_version(session, job, version, "Knowledge document missing")
         return
 
     roles = [str(r) for r in (document.required_roles or ["administrator", "teacher"])]
@@ -762,10 +885,12 @@ def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePd
         doc_type=document.doc_type,
         create_chunk=create_chunk,
         clear_existing=clear_existing,
+        embeddings=embeddings,
     )
-    version.lifecycle_status = KnowledgeDocumentVersionStatus.READY
-    version.failure_reason = None
-    job.status = IngestJobStatus.SUCCEEDED
-    job.error = None
-    _wake_ingest(session, job)
-    session.commit()
+    _finish_ready(
+        session,
+        job,
+        version,
+        lifecycle=KnowledgeDocumentVersionStatus.READY,
+        notify_intake=False,
+    )
