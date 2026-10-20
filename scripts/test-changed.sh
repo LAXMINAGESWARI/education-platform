@@ -61,8 +61,10 @@ for path in "${changed[@]}"; do
     backend/src/education_platform/workers/*)
       while IFS= read -r name || [[ -n "${name:-}" ]]; do
         name="${name%%$'\r'}"
+        name="${name%%#*}"
         name="${name#"${name%%[![:space:]]*}"}"
-        [[ -z "$name" || "$name" == \#* ]] && continue
+        name="${name%"${name##*[![:space:]]}"}"
+        [[ -z "$name" ]] && continue
         selected["tests/${name}"]=1
       done < "$ml_list"
       add_matches "tests/test_worker*.py"

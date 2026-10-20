@@ -200,3 +200,28 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  quality:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, backend-fast, backend-ml, coverage, frontend]
+    permissions:
+      contents: read
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS_JSON"
+          bad="$(echo "$NEEDS_JSON" | jq -r '
+            to_entries[]
+            | select(.value.result != "success")
+            | "\(.key)=\(.value.result // "missing")"
+          ')"
+          if [ -n "$bad" ]; then
+            echo "::error::Needed jobs must all be success. Skipped, cancelled, and failure fail this job."
+            echo "$bad"
+            exit 1
+          fi
+          echo "All needed jobs succeeded."

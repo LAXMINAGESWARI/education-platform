@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import os
 import re
-import shutil
 import time
 from collections.abc import AsyncIterator, Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -110,11 +111,10 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Drop this worker's cloned database and this run's ready directory.
+    """Drop this worker's cloned database and its ready marker.
 
     Idle workers clone during collection and never run the session fixture, so
-    cleanup lives here. Only the database and `/tmp/curioed-xdist-<run>` directory
-    created for this process are removed.
+    cleanup lives here. The run directory is removed only after its last marker is gone.
     """
     del session, exitstatus
     if os.environ.get("PYTEST_XDIST_WORKER") and _CLONED_WORKER_DB is not None:
@@ -327,11 +327,22 @@ def _drop_cloned_database() -> None:
 
 
 def _remove_run_ready_dir() -> None:
+    """Unlink this worker's marker, then remove the run directory if it is empty."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return
     run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
     safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
     ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
-    if ready_dir.is_dir():
-        shutil.rmtree(ready_dir, ignore_errors=True)
+    with suppress(FileNotFoundError):
+        (ready_dir / worker).unlink()
+    try:
+        ready_dir.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        if exc.errno != errno.ENOTEMPTY:
+            raise
 
 
 def _clone_worker_database(base_url: str, worker: str) -> str:
