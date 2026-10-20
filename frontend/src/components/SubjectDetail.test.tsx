@@ -132,6 +132,19 @@ describe("SubjectDetail", () => {
       "href",
       "/subjects/math-1/feedback/topics/topic-2",
     );
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+  });
+
+  it("hides Weak topics when no attempted topic is below the pass bar", () => {
+    renderDetail(
+      subject({
+        topics: [
+          topic({ overall_quiz: { ...topic().overall_quiz!, best_score_percent: 70, passed: true } }),
+        ],
+      }),
+    );
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Subject feedback" })).toBeInTheDocument();
   });
 
   it("renders an empty subject without topic cards", () => {
@@ -174,6 +187,11 @@ describe("SubjectDetail", () => {
       subject({
         topics: [
           topic({
+            overall_quiz: {
+              ...topic().overall_quiz!,
+              best_score_percent: 55,
+              passed: false,
+            },
             topic_lesson_progress: {
               status: "opened",
               opened_at: "2026-08-09T21:00:00Z",

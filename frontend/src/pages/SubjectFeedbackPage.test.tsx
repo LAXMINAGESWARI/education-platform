@@ -414,39 +414,65 @@ describe("feedback hierarchy", () => {
     const previous = HTMLElement.prototype.scrollIntoView;
     const scrollIntoView = vi.fn();
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    render(
-      <MemoryRouter initialEntries={["/feedback?section=due#feedback-due"]}>
-        <FeedbackSubjectPickerPage />
-      </MemoryRouter>,
-    );
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due#feedback-due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
 
-    const heading = await screen.findByRole("heading", { name: "Due for review" });
-    await waitFor(() => {
-      expect(heading).toHaveFocus();
-    });
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
-    HTMLElement.prototype.scrollIntoView = previous;
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
   });
 
   it("scrolls to needs attention and focuses that heading after subject feedback loads", async () => {
     const previous = HTMLElement.prototype.scrollIntoView;
     const scrollIntoView = vi.fn();
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    render(
-      <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
-        <Routes>
-          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
 
-    const heading = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
-    await waitFor(() => {
-      expect(heading).toHaveFocus();
-    });
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
-    expect(heading).toHaveAttribute("tabindex", "-1");
-    HTMLElement.prototype.scrollIntoView = previous;
+      const heading = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      expect(heading).toHaveAttribute("tabindex", "-1");
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("does not scroll or move focus on a feedback load without a hash or section", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByRole("heading", { name: "Feedback by subject" })).toBeInTheDocument();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(document.body);
+      expect(screen.queryByRole("heading", { name: "Due for review" })).not.toBeInTheDocument();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
   });
 
   it("lists topics in order and leaves an unattempted topic blank", async () => {

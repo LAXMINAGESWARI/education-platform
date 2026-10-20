@@ -1978,13 +1978,6 @@ a.list-item__title:hover {
   white-space: normal;
 }
 
-.topic-entries {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem;
-  padding: 0 1rem 1rem;
-}
-
 .page-head + .topic-actions {
   padding: 0;
   width: min(100%, 48rem);
@@ -2936,8 +2929,7 @@ a.list-item__title:hover {
     max-width: none;
   }
 
-  .action-boxes,
-  .topic-entries {
+  .action-boxes {
     grid-template-columns: 1fr;
   }
 
