@@ -3,15 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SubjectNode, TopicNode } from "../api/types";
+import type { FeedbackSubjectDetail, SubjectNode, TopicNode } from "../api/types";
 import { SchoolMaterialPanel } from "./SchoolMaterialPanel";
 import { SubjectDetail, SubjectRouteStatus } from "./SubjectDetail";
 
 vi.mock("../api/feedback", () => ({
   getFeedbackHighlights: vi.fn(),
+  getFeedbackSubject: vi.fn(),
 }));
 
-import { getFeedbackHighlights } from "../api/feedback";
+import { getFeedbackHighlights, getFeedbackSubject } from "../api/feedback";
 
 function topic(overrides: Partial<TopicNode> = {}): TopicNode {
   return {
@@ -88,9 +89,14 @@ function renderDetail(node: SubjectNode = subject()) {
   );
 }
 
+function feedbackDetail(names: string[]): FeedbackSubjectDetail {
+  return { topics_needing_attention: names } as FeedbackSubjectDetail;
+}
+
 describe("SubjectDetail", () => {
   beforeEach(() => {
     vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail([]));
   });
 
   it("shows the subject heading, progress, and topic actions", () => {
@@ -135,16 +141,34 @@ describe("SubjectDetail", () => {
     expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
   });
 
-  it("hides Weak topics when no attempted topic is below the pass bar", () => {
+  it("hides Weak topics when a retired topic quiz is low and needs-attention is empty", async () => {
     renderDetail(
       subject({
         topics: [
-          topic({ overall_quiz: { ...topic().overall_quiz!, best_score_percent: 70, passed: true } }),
+          topic({
+            id: "retired",
+            title: "Retired unit",
+            overall_quiz: {
+              ...topic().overall_quiz!,
+              best_score_percent: 40,
+              passed: false,
+            },
+          }),
         ],
       }),
     );
+    await waitFor(() => expect(getFeedbackSubject).toHaveBeenCalledWith("math-1"));
     expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Subject feedback" })).toBeInTheDocument();
+  });
+
+  it("shows Weak topics from the needs-attention list when directory scores are passing", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail(["Fractions"]));
+    renderDetail();
+    expect(await screen.findByRole("link", { name: "Weak topics" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback#needs-attention",
+    );
   });
 
   it("renders an empty subject without topic cards", () => {
@@ -169,6 +193,7 @@ describe("SubjectDetail", () => {
   });
 
   it("links resume, feedback, and a due pill from saved progress", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue(feedbackDetail(["Fractions"]));
     vi.mocked(getFeedbackHighlights).mockResolvedValue({
       due_reviews: [
         {
@@ -230,7 +255,7 @@ describe("SubjectDetail", () => {
       "href",
       "/feedback?subject=math-1&section=due#feedback-due",
     );
-    expect(screen.getByRole("link", { name: "Weak topics" })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: "Weak topics" })).toHaveAttribute(
       "href",
       "/subjects/math-1/feedback#needs-attention",
     );

@@ -1,4 +1,4 @@
-import { scoreNumber } from "./feedbackHierarchy";
+import { PASS_PERCENT, scoreNumber } from "./feedbackHierarchy";
 
 export type BadgeTone = "ok" | "warn" | "info" | "locked" | "danger" | "neutral";
 
@@ -40,11 +40,11 @@ export type ScoreBand = {
   rating: string;
 };
 
-/** Pass bar is 70%. 80% and above reads as strong. */
+/** 80% and above reads as strong. Anything lower uses PASS_PERCENT as the pass bar. */
 export function scoreBand(value: string | number | null | undefined): ScoreBand | null {
   const score = scoreNumber(value);
   if (score === null) return null;
   if (Math.round(score) >= 80) return { tone: "ok", rating: "Strong" };
-  if (Math.round(score) >= 70) return { tone: "info", rating: "On track" };
+  if (Math.round(score) >= PASS_PERCENT) return { tone: "info", rating: "On track" };
   return { tone: "warn", rating: "Needs work" };
 }
