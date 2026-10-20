@@ -58,6 +58,12 @@ from education_platform.modules.rag.models import (
     KnowledgeDocumentVersionStatus,
 )
 from education_platform.modules.rag.vector_store import VectorRow, delete_by_version, upsert_rows
+from education_platform.workers.lease import (
+    close_session,
+    commit_owned,
+    exceeded_max_attempts_message,
+    prepare_leased_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +469,7 @@ def _fail_job(session: Session, job: IngestJob, reason: str) -> None:
     job.status = IngestJobStatus.FAILED
     job.error = reason
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
 
 def _mark_source_failed(session: Session, version: SourceMaterialVersion, reason: str) -> None:
@@ -491,7 +497,7 @@ def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
     job = session.get(IngestJob, job_id)
     if job is None:
         return
-    reason = f"Worker lost this job {job.attempts} times"
+    reason = exceeded_max_attempts_message(int(job.max_attempts))
     if job.source_material_version_id is not None:
         version = session.get(SourceMaterialVersion, job.source_material_version_id)
         if version is not None:
@@ -504,7 +510,7 @@ def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
     job.status = IngestJobStatus.FAILED
     job.error = reason[:2000]
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
 
 def _institution_for_material(session: Session, material: SourceMaterial) -> UUID | None:
@@ -582,6 +588,7 @@ def process_ingest_job_sync(
 ) -> None:
     parse = parse_pdf or parse_pdf_with_docling
     session = _sync_session()
+    prepare_leased_writes(session)
     try:
         job = session.get(IngestJob, UUID(ingest_job_id))
         if job is None:
@@ -594,11 +601,11 @@ def process_ingest_job_sync(
             logger.error("Ingest job %s failed claim validation: %s", ingest_job_id, exc)
             job.status = IngestJobStatus.FAILED
             job.error = f"Invalid ingest job claim: {exc}"[:2000]
-            session.commit()
+            commit_owned(session)
             return
 
         job.status = IngestJobStatus.RUNNING
-        session.commit()
+        commit_owned(session)
 
         try:
             if claim.source_material_version_id is not None:
@@ -626,9 +633,9 @@ def process_ingest_job_sync(
             job.status = IngestJobStatus.FAILED
             job.error = reason
             _wake_ingest(session, job)
-            session.commit()
+            commit_owned(session)
     finally:
-        session.close()
+        close_session(session)
 
 
 def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
@@ -640,7 +647,7 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
     version.lifecycle_status = SourceMaterialVersionStatus.PROCESSING
     version.failure_reason = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
     if not version.blob_object_key:
         _fail_source_ingest(session, job, version, "Missing blob object key")
@@ -701,7 +708,7 @@ def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn
     job.status = IngestJobStatus.SUCCEEDED
     job.error = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
 
 def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:
@@ -713,7 +720,7 @@ def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePd
     version.lifecycle_status = KnowledgeDocumentVersionStatus.PROCESSING
     version.failure_reason = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
     if not version.blob_object_key:
         _mark_knowledge_failed(session, version, "Missing blob object key")
@@ -768,4 +775,4 @@ def _process_knowledge_document(session: Session, job: IngestJob, parse: ParsePd
     job.status = IngestJobStatus.SUCCEEDED
     job.error = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)

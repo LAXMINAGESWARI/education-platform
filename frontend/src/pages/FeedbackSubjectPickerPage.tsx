@@ -1,57 +1,35 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
 
 import { getFeedbackHighlights, getFeedbackOverview } from "../api/feedback";
 import { fetchLearningDirectory } from "../api/materials";
-import type { FeedbackOverview, FeedbackSubjectCard, ReviewNudgeOut } from "../api/types";
+import type { FeedbackOverview, ReviewNudgeOut } from "../api/types";
 import { ApiError } from "../api/types";
+import { RatingBadge } from "../components/BadgePill";
 import { Crumbs } from "../components/Crumbs";
-import { AchievementBanner, FocusLine } from "../components/FeedbackExtras";
-import { formatScore, formatTrend } from "../lib/feedbackHierarchy";
+import {
+  DueReviewsTable,
+  FeedbackEntriesTable,
+  type DueReviewRow,
+} from "../components/FeedbackEntriesTable";
+import { formatScore, scoreNumber } from "../lib/feedbackHierarchy";
 
-function SubjectCard({ subject }: { subject: FeedbackSubjectCard }) {
-  const trend = formatTrend(subject.trend, subject.trend_delta);
-  return (
-    <Link to={`/subjects/${subject.subject_id}/feedback`} className="card feedback-card">
-      <p className="kicker">{subject.grade_name}</p>
-      <h2>{subject.subject_name}</h2>
-      <p className="feedback-card__score">{formatScore(subject.score_percent)}</p>
-      <p className="progress-label">
-        {subject.quizzes_taken === 0
-          ? "No topic quizzes yet"
-          : `${subject.quizzes_taken} topic ${subject.quizzes_taken === 1 ? "quiz" : "quizzes"} taken`}
-      </p>
-      {trend && <p className="feedback-card__trend">{trend}</p>}
-      <FocusLine focus={subject.focus} />
-      <AchievementBanner tier={subject.achievement} />
-      <span className="badge badge--info">View feedback</span>
-      {subject.strongest_topic && (
-        <p className="progress-label">
-          Strongest topic: {subject.strongest_topic.topic_name} (
-          {formatScore(subject.strongest_topic.best_score_percent)})
-        </p>
-      )}
-      {subject.weakest_topic && (
-        <p className="progress-label">
-          Weakest topic: {subject.weakest_topic.topic_name} (
-          {formatScore(subject.weakest_topic.best_score_percent)})
-        </p>
-      )}
-    </Link>
-  );
-}
+type ReviewTarget = { subjectId: string; subjectName: string };
 
 export function FeedbackSubjectPickerPage() {
   const [overview, setOverview] = useState<FeedbackOverview | null>(null);
   const [dueReviews, setDueReviews] = useState<ReviewNudgeOut[]>([]);
-  const [subjectBySubtopic, setSubjectBySubtopic] = useState<Map<string, string>>(new Map());
+  const [reviewTargets, setReviewTargets] = useState<Map<string, ReviewTarget>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     void getFeedbackOverview()
       .then((data) => {
-        if (!cancelled) setOverview(data);
+        if (!cancelled) {
+          setOverview(data);
+          setError(null);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -61,24 +39,52 @@ export function FeedbackSubjectPickerPage() {
     void Promise.all([getFeedbackHighlights(), fetchLearningDirectory()])
       .then(([highlights, directory]) => {
         if (cancelled) return;
-        const map = new Map<string, string>();
+        const map = new Map<string, ReviewTarget>();
         for (const subject of directory.subjects) {
           for (const topic of subject.topics) {
             for (const subtopic of topic.subtopics) {
-              map.set(subtopic.id, subject.id);
+              map.set(subtopic.id, { subjectId: subject.id, subjectName: subject.name });
             }
           }
         }
-        setSubjectBySubtopic(map);
+        setReviewTargets(map);
         setDueReviews(highlights.due_reviews);
       })
       .catch(() => {
-        if (!cancelled) setDueReviews([]);
+        if (!cancelled) {
+          setDueReviews([]);
+          setReviewTargets(new Map());
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
+
+  const dueRows = useMemo<DueReviewRow[]>(
+    () =>
+      dueReviews.map((nudge) => {
+        const target = reviewTargets.get(nudge.subtopic_id);
+        return {
+          subtopicId: nudge.subtopic_id,
+          subtopicName: nudge.subtopic_name,
+          topicName: nudge.topic_name,
+          daysSinceLastAttempt: nudge.days_since_last_attempt,
+          dueIntervalDays: nudge.due_interval_days,
+          subjectName: target?.subjectName ?? null,
+          href: target ? `/subjects/${target.subjectId}/feedback` : null,
+        };
+      }),
+    [dueReviews, reviewTargets],
+  );
+
+  const attempted = overview?.subjects.filter((subject) => scoreNumber(subject.score_percent) !== null).length ?? 0;
+  const quizzes =
+    overview?.subjects.reduce((sum, subject) => sum + subject.quizzes_taken, 0) ?? 0;
+  const mastered =
+    overview?.subjects.reduce((sum, subject) => sum + subject.concepts_mastered, 0) ?? 0;
+  const concepts =
+    overview?.subjects.reduce((sum, subject) => sum + subject.concepts_attempted, 0) ?? 0;
 
   return (
     <div className="feedback-view">
@@ -89,58 +95,94 @@ export function FeedbackSubjectPickerPage() {
       </header>
 
       {error && (
-        <p className="form__error" role="alert">
-          {error}
-        </p>
+        <div className="alert alert--warning" role="alert">
+          <div className="alert__row">
+            <p>{error}</p>
+            <button
+              type="button"
+              className="btn btn--sm btn--outline"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
       )}
 
       {!overview && !error && (
-        <p className="muted" role="status">
-          Loading feedback…
-        </p>
-      )}
-
-      {dueReviews.length > 0 && (
-        <section className="feedback-due" aria-label="Due for review">
-          <h2 className="section-title">Due for review</h2>
-          <ul className="feedback-concepts">
-            {dueReviews.map((nudge) => {
-              const subjectId = subjectBySubtopic.get(nudge.subtopic_id);
-              return (
-                <li key={nudge.subtopic_id} className="feedback-concept">
-                  <span className="feedback-concept__name">{nudge.subtopic_name}</span>
-                  <span className="feedback-concept__meta">
-                    Last attempted {nudge.days_since_last_attempt} days ago
-                  </span>
-                  {subjectId && (
-                    <Link to={`/subjects/${subjectId}/feedback`} className="btn btn--sm">
-                      Review
-                    </Link>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        <div className="panel panel--static" role="status" aria-live="polite" aria-busy="true">
+          <p className="muted">Loading feedback…</p>
+        </div>
       )}
 
       {overview && (
         <>
           <section className="feedback-summary" aria-label="Across all subjects">
             <p className="feedback-summary__kicker">Across all subjects</p>
-            <p className="feedback-card__score">{formatScore(overview.score_percent)}</p>
-            <p className="progress-label">
-              Average of each subject you have attempted. A subject with no topic quiz yet is left out.
-            </p>
-          </section>
-          {overview.subjects.length === 0 ? (
-            <div className="alert alert--info">No enrolled subjects yet.</div>
-          ) : (
-            <div className="feedback-grid">
-              {overview.subjects.map((subject) => (
-                <SubjectCard key={subject.subject_id} subject={subject} />
-              ))}
+            <div className="stat-kpis">
+              <article className="stat-kpi">
+                <p className="kicker">Average score</p>
+                <p className="stat-kpi__value">{formatScore(overview.score_percent)}</p>
+                {scoreNumber(overview.score_percent) !== null && (
+                  <RatingBadge value={overview.score_percent} />
+                )}
+                <p>Average of each subject you have attempted. A subject with no topic quiz yet is left out.</p>
+              </article>
+              <article className="stat-kpi">
+                <p className="kicker">Subjects attempted</p>
+                <p className="stat-kpi__value">
+                  {attempted}
+                  <span className="stat-kpi__of">/{overview.subjects.length}</span>
+                </p>
+                <p>Subjects with at least one scored topic quiz</p>
+              </article>
+              <article className="stat-kpi">
+                <p className="kicker">Topic quizzes</p>
+                <p className="stat-kpi__value">{quizzes}</p>
+                <p>Quizzes taken across every subject</p>
+              </article>
+              <article className="stat-kpi">
+                <p className="kicker">Concepts mastered</p>
+                <p className="stat-kpi__value">
+                  {concepts === 0 ? "—" : mastered}
+                  {concepts > 0 && <span className="stat-kpi__of">/{concepts}</span>}
+                </p>
+                <p>
+                  {concepts === 0
+                    ? "Concepts mastered out of those you've tried"
+                    : `${mastered} mastered out of ${concepts} you've tried`}
+                </p>
+              </article>
             </div>
+          </section>
+
+          <section className="panel panel--static catalog-panel" aria-labelledby="feedback-entries-heading">
+            <header className="catalog-panel__head">
+              <h2 id="feedback-entries-heading">Feedback by subject</h2>
+              <p>Score, status, trend, and the topics to revisit for each subject.</p>
+            </header>
+            {overview.subjects.length === 0 ? (
+              <div className="alert alert--info" role="status">
+                No enrolled subjects yet.
+              </div>
+            ) : (
+              <FeedbackEntriesTable subjects={overview.subjects} />
+            )}
+          </section>
+
+          {dueRows.length > 0 && (
+            <section className="panel panel--static catalog-panel" aria-labelledby="feedback-due-heading">
+              <header className="catalog-panel__head">
+                <h2 id="feedback-due-heading" className="section-title">
+                  Due for review
+                </h2>
+                <p>
+                  {dueRows.length} {dueRows.length === 1 ? "lesson is" : "lessons are"} past the
+                  review interval.
+                </p>
+              </header>
+              <DueReviewsTable rows={dueRows} />
+            </section>
           )}
         </>
       )}

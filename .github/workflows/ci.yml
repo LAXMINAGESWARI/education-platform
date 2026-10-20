@@ -11,8 +11,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-groups --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - uses: actions/cache@v4
+        with:
+          path: backend/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}-${{ hashFiles('backend/src/**/*.py') }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('backend/uv.lock') }}-
+            mypy-${{ runner.os }}-
+      - run: uv run mypy src
+
+  backend-fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     defaults:
       run:
         working-directory: backend
@@ -32,20 +60,136 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://education:education@localhost:5432/education_test
+      # libpq (psycopg, including `alembic upgrade`) waits forever unless this is set.
+      # asyncpg does not read it; tests cap that driver in tests/postgres_connect.py.
+      PGCONNECT_TIMEOUT: "5"
+      PYTEST_SHARD: ${{ matrix.shard }}
+      PYTEST_SHARD_COUNT: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
       - run: uv sync --all-groups --locked
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run mypy src
+      - name: Wait for Postgres
+        run: |
+          set -euo pipefail
+          if ! command -v pg_isready >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql-client
+          fi
+          attempts=6
+          for attempt in $(seq 1 "$attempts"); do
+            if pg_isready -h localhost -p 5432 -U education -d education_test -t 5; then
+              echo "Postgres is accepting connections on localhost:5432/education_test."
+              exit 0
+            fi
+            echo "Postgres is not ready (attempt ${attempt}/${attempts})."
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 1
+            fi
+          done
+          echo "::error::Postgres did not become ready after ${attempts} attempts (5s connect timeout each). localhost:5432/education_test is unreachable."
+          exit 1
       - run: uv run alembic upgrade head
-      - run: uv run pytest
+      - run: uv run pytest -n 4 --dist loadfile -m "not ml" --cov-fail-under=0
+      - name: Save shard coverage
+        run: mv .coverage coverage.shard-${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-fast-${{ matrix.shard }}
+          path: backend/coverage.shard-${{ matrix.shard }}
+          if-no-files-found: error
+
+  backend-ml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: education
+          POSTGRES_PASSWORD: education
+          POSTGRES_DB: education_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U education -d education_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://education:education@localhost:5432/education_test
+      PGCONNECT_TIMEOUT: "5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-groups --locked
+      - name: Wait for Postgres
+        run: |
+          set -euo pipefail
+          if ! command -v pg_isready >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql-client
+          fi
+          attempts=6
+          for attempt in $(seq 1 "$attempts"); do
+            if pg_isready -h localhost -p 5432 -U education -d education_test -t 5; then
+              echo "Postgres is accepting connections on localhost:5432/education_test."
+              exit 0
+            fi
+            echo "Postgres is not ready (attempt ${attempt}/${attempts})."
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 1
+            fi
+          done
+          echo "::error::Postgres did not become ready after ${attempts} attempts (5s connect timeout each). localhost:5432/education_test is unreachable."
+          exit 1
+      - run: uv run alembic upgrade head
+      - run: uv run pytest -n 4 --dist loadfile -m ml --cov-fail-under=0
+      - name: Save ml coverage
+        run: mv .coverage coverage.ml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ml
+          path: backend/coverage.ml
+          if-no-files-found: error
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [backend-fast, backend-ml]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-groups --locked
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: backend/coverage-parts
+          merge-multiple: true
+      - name: Combine coverage and enforce 80%
+        run: |
+          set -euo pipefail
+          uv run coverage combine \
+            coverage-parts/coverage.shard-0 \
+            coverage-parts/coverage.shard-1 \
+            coverage-parts/coverage.ml
+          uv run coverage report --fail-under=80
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
@@ -119,3 +263,28 @@ jobs:
             nginx:1.27-alpine \
             cloudflare/cloudflared:2026.10.1 \
             ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
+
+  quality:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, backend-fast, backend-ml, coverage, frontend, helm]
+    permissions:
+      contents: read
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS_JSON"
+          bad="$(echo "$NEEDS_JSON" | jq -r '
+            to_entries[]
+            | select(.value.result != "success")
+            | "\(.key)=\(.value.result // "missing")"
+          ')"
+          if [ -n "$bad" ]; then
+            echo "::error::Needed jobs must all be success. Skipped, cancelled, and failure fail this job."
+            echo "$bad"
+            exit 1
+          fi
+          echo "All needed jobs succeeded."

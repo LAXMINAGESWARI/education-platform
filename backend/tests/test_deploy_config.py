@@ -12,9 +12,10 @@ from education_platform.core.config import Settings
 _REPO = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO / "deploy" / "docker-compose.prod.yml"
 
-# Cold start of the api image on a small VM: import the process, seed an empty
-# curriculum, and answer the first probe. The worker in this compose file allows
-# 180s before its checks count; the api window must cover at least that long.
+# Cold start of the api image on a small VM: import the process and answer the
+# first probe. Curriculum seeding is the one-off `seed` service or Job, not api
+# startup. The worker in this compose file allows 180s before its checks count;
+# the api window must cover at least that long.
 _WORST_CASE_STARTUP_SECONDS = 180
 
 
