@@ -21,12 +21,15 @@ enforce inside the pipeline, applied one layer further out. `user_role` is hardc
 capability specifically, so the pipeline should apply teacher scoping even for a principal
 who happens to also hold another role, not whichever role happened to be "first."
 
-**Progress stream**: `POST /text-to-sql/ask/stream` always runs the lean pipeline and
-writes the shared progress envelope (`docs/design/text-to-sql-stream-events.md`). It
-checks the teacher role the same way `require_role("teacher")` does, but resolves the
-principal with `get_current_user_detached` so the request database session is released
-before the first frame. `Last-Event-ID` is ignored. A second post with the same
-``request_id`` for the same user replays the stored run and does not execute SQL again.
+**Progress stream**: `POST /text-to-sql/ask/stream` runs the lean pipeline when
+``TEXT_TO_SQL_PIPELINE`` is ``lean``. When it is ``legacy`` the route returns 404
+with a detail that names ``POST /text-to-sql/ask``, so a client falls back to that
+endpoint. The stream writes the shared progress envelope
+(`docs/design/text-to-sql-stream-events.md`). It checks the teacher role the same
+way `require_role("teacher")` does, but resolves the principal with
+`get_current_user_detached` so the request database session is released before the
+first frame. `Last-Event-ID` is ignored. A second post with the same ``request_id``
+for the same user replays the stored run and does not execute SQL again.
 
 **The compiled graph is built once, at import time** (`_GRAPH`), not per request.
 `build_text_to_sql_graph()` takes no per-request arguments — every node reads identity from
@@ -78,6 +81,11 @@ from education_platform.modules.text_to_sql.stream import iter_ask_stream
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["text-to-sql"])
+
+STREAM_UNAVAILABLE_DETAIL: Final[str] = (
+    "Text-to-SQL streaming is off because TEXT_TO_SQL_PIPELINE is legacy. "
+    "Use POST /api/v1/text-to-sql/ask."
+)
 
 # See module docstring: built once, reused for every request.
 _GRAPH = build_text_to_sql_graph()
@@ -209,8 +217,10 @@ async def ask_stream(
     body: AskStreamIn,
     principal: Principal = Depends(get_current_user_detached),
 ) -> StreamingResponse:
-    """Stream one lean ask. The same ``request_id`` replays the stored run."""
+    """Stream one lean ask. Legacy mode is a 404 so the client uses ``/ask``."""
     _require_teacher(principal)
+    if pipeline_mode(get_settings()) != LEAN:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=STREAM_UNAVAILABLE_DETAIL)
     request_id = str(body.request_id)
     initial = _initial_state(question=body.question, principal=principal, request_id=request_id)
     return StreamingResponse(

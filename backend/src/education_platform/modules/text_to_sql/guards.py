@@ -13,36 +13,28 @@ from typing import Any
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.modules.guard.classifier import (
-    DATA_GPT_INJECTION,
-    DATA_GPT_OFF_TOPIC,
     DATA_INJECTION,
     DATA_OFF_TOPIC,
     guard_state,
     is_positive,
-    legacy_gpt_flag,
 )
 from education_platform.modules.judge.client import post_decisions
 from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.judge.types import NoulAnswer
-from education_platform.modules.text_to_sql.llm import gateway_json
 from education_platform.modules.text_to_sql.meter import note_llm_call, note_tokens
 from education_platform.modules.text_to_sql.nodes.injection_guard import (
     _CLASSIFIER_BLOCKED_REPLY,
     _GUARD_UNAVAILABLE_REPLY,
     _heuristic_injection,
+    gpt_injection_decision,
     injection_guard,
 )
 from education_platform.modules.text_to_sql.nodes.question_validator import (
-    _GUARD_UNAVAILABLE_REPLY as _OFF_TOPIC_UNAVAILABLE,
-)
-from education_platform.modules.text_to_sql.nodes.question_validator import (
     _OFF_TOPIC_REPLY,
+    _gpt_off_topic_fallback,
     question_validator,
 )
-from education_platform.modules.text_to_sql.pipeline import (
-    guard_batch_enabled,
-    use_text_to_sql_gateway,
-)
+from education_platform.modules.text_to_sql.pipeline import guard_batch_enabled
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
     OFF_TOPIC_REJECTED,
@@ -53,35 +45,6 @@ from education_platform.modules.text_to_sql.state import (
 
 def _audit(state: TextToSQLState, **fields: Any) -> dict[str, Any]:
     return {**(state.get("audit_entry") or {}), **fields}
-
-
-async def _gpt_flag(
-    *,
-    step: str,
-    settings: Settings,
-    system: str,
-    user: str,
-    field: str,
-    state: TextToSQLState,
-) -> bool:
-    note_llm_call()
-    if not use_text_to_sql_gateway(settings, state):
-        return await legacy_gpt_flag(settings=settings, system=system, user=user, field=field)
-    try:
-        data = await gateway_json(
-            step,
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            settings,
-        )
-    except Exception as exc:
-        raise JudgeError("GPT classifier failed") from exc
-    value = data.get(field)
-    if not isinstance(value, bool):
-        raise JudgeError(f"GPT classifier omitted {field}")
-    return value
 
 
 def _unit_noul(answer: object, key: str) -> float:
@@ -143,108 +106,21 @@ async def _batched(state: TextToSQLState, settings: Settings) -> TextToSQLState:
             "audit_entry": noted,
             "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
         }
-    # Same OR as the legacy nodes: a passing Jev score still asks GPT.
-    # Generation is already running beside this task. checking/done and SQL wait
-    # until this returns.
-    return await _gpt_after_jev(state, question, settings, noted)
-
-
-async def _gpt_after_jev(
-    state: TextToSQLState,
-    question: str,
-    settings: Settings,
-    noted: dict[str, Any],
-) -> TextToSQLState:
-    """GPT injection, then GPT off-topic. Either flag refuses."""
-    try:
-        injection = await _gpt_flag(
-            step="text_to_sql.guard",
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-            state=state,
-        )
-    except JudgeError:
-        return {
-            **state,
-            "audit_entry": {**noted, "guard_stage": "gpt_error"},
-            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
-        }
-    if injection:
-        return {
-            **state,
-            "audit_entry": {**noted, "guard_stage": "gpt"},
-            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
-        }
-    try:
-        off_topic = await _gpt_flag(
-            step="text_to_sql.validator",
-            settings=settings,
-            system=DATA_GPT_OFF_TOPIC,
-            user=question,
-            field="off_topic",
-            state=state,
-        )
-    except JudgeError:
-        return {
-            **state,
-            "audit_entry": {**noted, "guard_stage": "gpt_error"},
-            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_UNAVAILABLE),
-        }
-    if off_topic:
-        return {
-            **state,
-            "audit_entry": {**noted, "guard_stage": "gpt"},
-            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
-        }
-    return {**state, "audit_entry": {**noted, "guard_stage": "jev_gpt"}}
+    # Same OR as the legacy nodes. Generation is already running beside this
+    # task. checking/done and SQL wait until this returns.
+    passed: TextToSQLState = {**state, "audit_entry": noted}
+    decided = await gpt_injection_decision(passed, question, settings, jev_passed=True)
+    if decided.get("error"):
+        return decided
+    return await _gpt_off_topic_fallback(decided, question, settings)
 
 
 async def _gpt_both(state: TextToSQLState, question: str, settings: Settings) -> TextToSQLState:
-    try:
-        injection = await _gpt_flag(
-            step="text_to_sql.guard",
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-            state=state,
-        )
-    except JudgeError:
-        return {
-            **state,
-            "audit_entry": _audit(state, guard_stage="gpt_error"),
-            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
-        }
-    if injection:
-        return {
-            **state,
-            "audit_entry": _audit(state, guard_stage="gpt"),
-            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
-        }
-    try:
-        off_topic = await _gpt_flag(
-            step="text_to_sql.validator",
-            settings=settings,
-            system=DATA_GPT_OFF_TOPIC,
-            user=question,
-            field="off_topic",
-            state=state,
-        )
-    except JudgeError:
-        return {
-            **state,
-            "audit_entry": _audit(state, guard_stage="gpt"),
-            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_UNAVAILABLE),
-        }
-    if off_topic:
-        return {
-            **state,
-            "audit_entry": _audit(state, guard_stage="gpt"),
-            "error": format_error(OFF_TOPIC_REJECTED, _OFF_TOPIC_REPLY),
-        }
-    return {**state, "audit_entry": _audit(state, guard_stage="gpt")}
+    """HTTP 402: the legacy GPT injection decision, then the legacy off-topic one."""
+    decided = await gpt_injection_decision(state, question, settings, jev_passed=False)
+    if decided.get("error"):
+        return decided
+    return await _gpt_off_topic_fallback(decided, question, settings)
 
 
 async def run_data_guards(state: TextToSQLState) -> TextToSQLState:

@@ -1,7 +1,8 @@
 """Optional compose hooks for the text-to-SQL progress stream.
 
-The lean runner installs these only after ``execute_sql`` and ``sanity_check``
-have both succeeded, so a table or answer delta cannot precede those gates.
+The lean runner installs these only after ``execute_sql``, the audit write, and
+``sanity_check`` have succeeded, so a table or answer delta cannot precede those
+gates.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ class AskEvents(ComposeStream, Protocol):
     async def progress(self, stage: str, status: str) -> None: ...
 
     async def refusal(self, message: str) -> None: ...
+
+    async def error(self, message: str) -> None: ...
 
     async def final(
         self, natural_answer: str, confidence: str | None, provenance: str | None

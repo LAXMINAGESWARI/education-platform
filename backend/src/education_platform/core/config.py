@@ -1,6 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from education_platform.db.url import with_credentials
@@ -122,8 +124,17 @@ class Settings(BaseSettings):
     ai_gateway_policy_chat: bool = False
     ai_gateway_text_to_sql: bool = False
     # Teacher ask pipeline. "lean" runs guards, intent, and speculative SQL
-    # together and repairs at most once. Anything else stays on the legacy graph.
-    text_to_sql_pipeline: str = "legacy"
+    # together and repairs at most once. Only these two values are valid; an
+    # unknown value fails when Settings is constructed.
+    text_to_sql_pipeline: Literal["legacy", "lean"] = "legacy"
+
+    @field_validator("text_to_sql_pipeline", mode="before")
+    @classmethod
+    def _normalize_text_to_sql_pipeline(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     # Lean guards: one Jev request for injection and off-topic when true.
     # False keeps the two separate calls so the guard eval can compare them.
     text_to_sql_guard_batch: bool = True

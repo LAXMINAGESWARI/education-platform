@@ -181,7 +181,6 @@ def _install() -> list[Any]:
         (llm_mod, "complete", _complete),
         (injection, "legacy_gpt_flag", _gpt),
         (validator, "legacy_gpt_flag", _gpt),
-        (guards_mod, "legacy_gpt_flag", _gpt),
         (injection, "get_settings", lambda: settings),
         (validator, "get_settings", lambda: settings),
         (guards_mod, "get_settings", lambda: settings),

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Coroutine
+from contextvars import ContextVar, Token
 from typing import Any
 
 from education_platform.modules.text_to_sql import guards, nodes
@@ -30,6 +31,7 @@ from education_platform.modules.text_to_sql.meter import (
 from education_platform.modules.text_to_sql.pipeline import LEAN, LEAN_MAX_RETRIES
 from education_platform.modules.text_to_sql.run_store import active_store
 from education_platform.modules.text_to_sql.state import (
+    AUDIT_ERROR,
     LLM_ERROR,
     SCHEMA_ERROR,
     TextToSQLState,
@@ -66,6 +68,50 @@ async def _join(task: asyncio.Task[TextToSQLState]) -> TextToSQLState | None:
         return await task
     except asyncio.CancelledError:
         return None
+
+
+async def _stop(*tasks: asyncio.Task[TextToSQLState] | None) -> None:
+    """Cancel speculative work and wait until it has released its resources."""
+    live = [task for task in tasks if task is not None]
+    for task in live:
+        _cancel(task)
+    for task in live:
+        await _join(task)
+
+
+def _parent_cancelled() -> bool:
+    current = asyncio.current_task()
+    return current is not None and current.cancelling() > 0
+
+
+class Speculative:
+    """Intent, schema load, and generation tasks a disconnect can cancel."""
+
+    def __init__(self) -> None:
+        self.tasks: list[asyncio.Task[TextToSQLState]] = []
+
+    def track(self, task: asyncio.Task[TextToSQLState]) -> None:
+        self.tasks.append(task)
+
+    async def cancel(self) -> None:
+        await _stop(*self.tasks)
+
+
+_speculative_work: ContextVar[Speculative | None] = ContextVar(
+    "text_to_sql_speculative", default=None
+)
+
+
+def push_speculative(spec: Speculative) -> Token[Speculative | None]:
+    return _speculative_work.set(spec)
+
+
+def reset_speculative(token: Token[Speculative | None]) -> None:
+    _speculative_work.reset(token)
+
+
+def active_speculative() -> Speculative | None:
+    return _speculative_work.get()
 
 
 async def _speculative(state: TextToSQLState) -> TextToSQLState:
@@ -200,9 +246,8 @@ async def _refuse(
     return logged
 
 
-async def _summarise(
-    state: TextToSQLState, events: AskEvents | None, audits: _AuditOnce | None = None
-) -> TextToSQLState:
+async def _summarise(state: TextToSQLState, events: AskEvents | None) -> TextToSQLState:
+    """Compose after the audit write. This does not audit again."""
     await _stage(events, "summarising", "running")
     hook = push_compose_stream(events) if events is not None else None
     try:
@@ -210,31 +255,45 @@ async def _summarise(
     finally:
         if hook is not None:
             reset_compose_stream(hook)
-    logged = await (audits.wait(composed) if audits is not None else nodes.audit_log(composed))
-    if logged.get("error"):
+    if composed.get("error"):
         await _stage(events, "summarising", "failed")
         if events is not None:
-            await events.refusal(logged.get("natural_answer") or "")
-        return logged
+            await events.refusal(composed.get("natural_answer") or "")
+        return composed
     await _stage(events, "summarising", "done")
     if events is not None:
         await events.final(
-            logged.get("natural_answer") or "",
-            logged.get("confidence"),
-            logged.get("provenance"),
+            composed.get("natural_answer") or "",
+            composed.get("confidence"),
+            composed.get("provenance"),
         )
-    return logged
+    return composed
 
 
-async def _after_rows(
-    state: TextToSQLState, events: AskEvents | None, audits: _AuditOnce | None = None
-) -> TextToSQLState:
+async def _commit_audit(state: TextToSQLState, audits: _AuditOnce | None) -> TextToSQLState:
+    if audits is None:
+        return await nodes.audit_log(state)
+    return await audits.wait(state)
+
+
+async def _audit_error_frame(state: TextToSQLState, events: AskEvents | None) -> TextToSQLState:
+    await _stage(events, "running", "failed")
+    if events is not None:
+        await events.error(state.get("natural_answer") or "")
+    return state
+
+
+async def _after_rows(state: TextToSQLState, events: AskEvents | None) -> TextToSQLState:
+    """Sanity and compose. The execute path has already written the audit row."""
     checked = await nodes.sanity_check(state)
     if checked.get("error"):
         await _stage(events, "running", "failed")
-        return await _refuse(checked, events, audits)
+        refused = await nodes.honest_refusal(checked)
+        if events is not None:
+            await events.refusal(refused.get("natural_answer") or "")
+        return refused
     await _stage(events, "running", "done")
-    return await _summarise(checked, events, audits)
+    return await _summarise(checked, events)
 
 
 def _needs_repair(state: TextToSQLState) -> bool:
@@ -306,7 +365,10 @@ async def _sql_path(
         return await _refuse(executed, events, audits)
     if executed_box is not None:
         await _note_executed(executed, executed_box)
-    return await _after_rows(executed, events, audits)
+    logged = await _commit_audit(executed, audits)
+    if error_category(logged.get("error")) == AUDIT_ERROR:
+        return await _audit_error_frame(logged, events)
+    return await _after_rows(logged, events)
 
 
 async def _service_path(
@@ -322,7 +384,10 @@ async def _service_path(
         return await _refuse(resolved, events, audits)
     if executed_box is not None:
         executed_box["state"] = resolved
-    return await _after_rows(resolved, events, audits)
+    logged = await _commit_audit(resolved, audits)
+    if error_category(logged.get("error")) == AUDIT_ERROR:
+        return await _audit_error_frame(logged, events)
+    return await _after_rows(logged, events)
 
 
 def _spawn(key: str, work: Coroutine[Any, Any, TextToSQLState]) -> asyncio.Task[TextToSQLState]:
@@ -343,6 +408,8 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
     token = start_meter()
     audits = _AuditOnce()
     executed_box: dict[str, TextToSQLState] = {}
+    intent_task: asyncio.Task[TextToSQLState] | None = None
+    generate_task: asyncio.Task[TextToSQLState] | None = None
     try:
         initial: TextToSQLState = {**state, "pipeline": LEAN}
         await _stage(events, "checking", "running")
@@ -350,25 +417,40 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
         guard_task = _spawn("guard_ms", guards.run_data_guards(initial))
         intent_task = _spawn("intent_ms", nodes.intent_router(initial))
         generate_task = _spawn("generate_ms", _speculative(initial))
+        spec = active_speculative()
+        if spec is not None:
+            spec.track(intent_task)
+            spec.track(generate_task)
 
-        guarded = await guard_task
+        try:
+            guarded = await guard_task
+        except Exception:
+            await _stop(intent_task, generate_task)
+            raise
         if guarded.get("error"):
-            _cancel(intent_task)
-            _cancel(generate_task)
-            await _join(intent_task)
-            await _join(generate_task)
+            await _stop(intent_task, generate_task)
             blocked: TextToSQLState = {**guarded, "pipeline": LEAN, "generated_sql": None}
             await _stage(events, "checking", "failed")
             return _measured(await _refuse(blocked, events, audits))
 
         await _stage(events, "checking", "done")
-        intent_state = await intent_task
+        try:
+            intent_state = await intent_task
+        except asyncio.CancelledError:
+            if _parent_cancelled():
+                raise
+            await _stop(generate_task)
+            await _stage(events, "understanding", "failed")
+            cancelled: TextToSQLState = {
+                **initial,
+                "error": format_error(LLM_ERROR, "intent_router: cancelled"),
+            }
+            return _measured(await _refuse(cancelled, events, audits))
         await _stage(events, "understanding", "done")
         route = intent_state.get("intent_route")
         source = intent_state.get("query_source")
         if route == "template" and source == "service":
-            _cancel(generate_task)
-            await _join(generate_task)
+            await _stop(generate_task)
             return _measured(
                 await _service_path(
                     _take_service(guarded, intent_state), events, audits, executed_box
@@ -385,10 +467,12 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
                     _take_template(guarded, intent_state, generated), events, audits, executed_box
                 )
             )
-        if not generate_task.done():
+        try:
             generated = await generate_task
-        else:
-            generated = await _join(generate_task)
+        except asyncio.CancelledError:
+            if _parent_cancelled():
+                raise
+            generated = None
         return _measured(
             await _sql_path(
                 _take_free_form(guarded, intent_state, generated), events, audits, executed_box
@@ -396,6 +480,7 @@ async def run_lean(state: TextToSQLState, events: AskEvents | None = None) -> Te
         )
     finally:
         try:
+            await _stop(intent_task, generate_task)
             await audits.finish(executed_box.get("state"))
         finally:
             reset_meter(token)

@@ -18,7 +18,9 @@ stores its own row, described under Reconnect.
 
 `POST /text-to-sql/ask` is unchanged: teacher role, `AskIn` (`question` only), and
 the three-field `AskOut` (`natural_answer`, `confidence`, `provenance`). Streaming
-is a separate endpoint and always runs the lean pipeline.
+is a separate endpoint and runs only when `TEXT_TO_SQL_PIPELINE` is `lean`. When
+the flag is `legacy`, `POST /text-to-sql/ask/stream` returns 404 with a detail
+that names `POST /api/v1/text-to-sql/ask`, and the client uses that endpoint.
 
 ## Endpoint
 
@@ -153,22 +155,31 @@ The stream does not include a status code, a stack, or the exception text.
    `validating` `running`, then `validate_sql` and `apply_role_scope`. On
    success, `validating` / `done`. On refusal, `validating` / `failed`, one
    `refusal`, close.
-5. `running` / `running`, then `execute_sql` and `sanity_check`. On success,
-   `running` / `done`. On refusal, `running` / `failed`, one `refusal`, close.
+5. `running` / `running`, then `execute_sql`. The audit row is written
+   immediately after a successful execute, before `sanity_check` and before any
+   `table`, `answer_delta`, or `final`. If that write fails, the stream emits
+   `running` / `failed` and one `error` frame carrying the fail-closed message,
+   and it does not emit a data frame. On an execution refusal, `running` /
+   `failed`, one `refusal`, close.
 6. The at-risk service path skips `writing_query` and `validating` (there is no
    SQL). It still waits for both guard verdicts, then uses `running` for the
-   service read and `sanity_check`.
-7. `summarising` / `running`. A small deterministic table emits one `table`
+   service read. The audit row is written immediately after that read succeeds,
+   on the same fail-closed rule as execute.
+7. After the audit write succeeds, `sanity_check` runs. On success, `running` /
+   `done`. On refusal, `running` / `failed`, one `refusal`, close. The executed
+   query was already audited, so this refusal does not write a second row.
+8. `summarising` / `running`. A small deterministic table emits one `table`
    event and no `answer_delta`. The GPT compose path emits one or more
    `answer_delta` events and no `table`. Then `summarising` / `done` and one
-   `final`.
-8. Heartbeats may appear between any of the frames above. They are not ordered
+   `final`. None of those frames are emitted before the audit write succeeds.
+9. Heartbeats may appear between any of the frames above. They are not ordered
    relative to pipeline stages except that they only fire on a 15 s quiet gap.
 
 A refusal or an unexpected failure yields exactly one `refusal` or one `error`,
-and no frame after it. `final` is not sent on those paths. `audit_log` still
-runs before the stream closes, and an audit fail-closed refusal replaces the
-answer the same way `/ask` does (one `refusal`, not an `error`).
+and no frame after it. `final` is not sent on those paths. An audit fail-closed
+result is an `error` frame, not a `refusal`, and it carries no table, delta, or
+final. `/ask` still withholds the answer in `natural_answer` when the same
+write fails.
 
 ## What must not leak
 
@@ -179,9 +190,10 @@ by filtering a free-form payload.
   result rows is emitted before both guard verdicts have passed and, on a SQL
   path, `validate_sql` and `apply_role_scope` have both succeeded.
 - `table` rows and `answer_delta` text (the compose view of those rows) are
-  emitted only after `execute_sql` and `sanity_check` have both finished
-  successfully. The at-risk path uses the same rule with the service result in
-  place of `execute_sql`.
+  emitted only after `execute_sql`, the audit write, and `sanity_check` have
+  all finished successfully. The at-risk path uses the same rule with the
+  service result in place of `execute_sql`. An audit write failure emits one
+  `error` and no data frame.
 - No guard probability, no `INJECTION_BLOCKED` / `OFF_TOPIC_REJECTED` / other
   category names, no raw SQL, and no template name appear in any frame. `/ask`
   does not return SQL, and this stream matches that.
@@ -212,10 +224,14 @@ A client that drops and posts the same body again:
   their own run.
 - After the row expires, a new post may claim it and run again.
 
-A dropped connection does not cancel the run. The producer finishes, writes
-the audit row, and stores the terminal frames. `audit_log` still runs exactly
-once for that execution, including when the client is already gone. A client
-disconnect is logged at INFO with no traceback.
+A dropped connection cancels speculative work (intent routing, schema load, and
+SQL generation) and waits until those tasks have stopped, so they do not keep a
+database connection. The same cancellation runs when a guard refuses or raises.
+The audit row for a query that already executed is written immediately after
+`execute_sql`, before any data frame, so a drop after that write is already
+audited. `audit_log` still runs exactly once for that execution. The producer
+then finishes compose and stores the terminal frames when it is already past
+the speculative stage. A client disconnect is logged at INFO with no traceback.
 
 ## Timeouts
 

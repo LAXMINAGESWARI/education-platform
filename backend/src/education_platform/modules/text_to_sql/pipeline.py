@@ -14,8 +14,8 @@ LEAN_MAX_RETRIES: Final[int] = 1
 
 
 def pipeline_mode(settings: Settings) -> str:
-    """``lean`` or ``legacy``. Any other value stays on the legacy graph."""
-    if settings.text_to_sql_pipeline.strip().lower() == LEAN:
+    """``lean`` or ``legacy``. Settings rejects any other value at startup."""
+    if settings.text_to_sql_pipeline == LEAN:
         return LEAN
     return LEGACY
 

@@ -17,7 +17,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from education_platform.modules.text_to_sql.lean import run_lean
+from education_platform.modules.text_to_sql.lean import (
+    Speculative,
+    active_speculative,
+    push_speculative,
+    reset_speculative,
+    run_lean,
+)
 from education_platform.modules.text_to_sql.run_store import (
     AskRunView,
     DbRunStore,
@@ -325,6 +331,8 @@ async def iter_ask_stream(
     encoder = _Encoder(request_id, queue, runs, user_id)
     held = _Held()
     store_token = push_store(runs)
+    spec = active_speculative() or Speculative()
+    spec_token = push_speculative(spec)
 
     async def produce() -> None:
         try:
@@ -364,6 +372,10 @@ async def iter_ask_stream(
                 current.uncancel()
     finally:
         reset_store(store_token)
-        if not producer.done():
-            logger.info("text_to_sql.ask_stream: client disconnected request_id=%s", request_id)
-            _detach(producer)
+        try:
+            if not producer.done():
+                logger.info("text_to_sql.ask_stream: client disconnected request_id=%s", request_id)
+                await spec.cancel()
+                _detach(producer)
+        finally:
+            reset_speculative(spec_token)
