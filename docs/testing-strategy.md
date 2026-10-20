@@ -92,13 +92,28 @@ review + assistant, admin PDF upload; `chats.spec.ts`: teacher assistant, admin 
 They need a running stack and today tolerate a missing OpenRouter key by recording
 `blocked`.
 
-**Proposal (not runnable yet).** A CI job `e2e` in `ci.yml` (needs `quality`) that runs
-`--grep @regression --project desktop` against a live stack. Before it can run it needs:
+**Proposal (not runnable yet).** A CI job `e2e` in `ci.yml` (needs `quality`) would run
+`--grep @regression --project desktop` in LLM replay mode against a live stack. This
+replay-mode job is a proposal: `ci.yml` does not define it. Before it can run it needs:
 
 - **Postgres service:** the same `pgvector/pgvector:pg16` service block as `quality`.
-- **Env vars for the API:** `DATABASE_URL` (as in `quality`) and `JWT_SECRET`
-  (any 32+ byte test value; the `Settings` default is dev-only). `ENVIRONMENT` stays unset /
-  non-development so no extra demo users are created. No `OPENROUTER_API_KEY`.
+- **Env vars for the API:** `DATABASE_URL` (as in `quality`), `JWT_SECRET`
+  (any 32+ byte test value; the `Settings` default is dev-only), `ENVIRONMENT=test`,
+  and `CORS_ORIGINS='["http://127.0.0.1:4173"]'`. No `OPENROUTER_API_KEY`.
+  `Settings.environment` (`core/config.py`) is an unconstrained `str` defaulting to
+  `"development"`. `is_development` is true only when the value lowercases to
+  `development`, so `test` is accepted and `is_development` is false. API startup
+  still calls `seed_demo_student` and `seed_demo_admin`
+  (`modules/materials/seed.py`); both return immediately, so they do not create
+  `student@demo.school` or `admin@demo.school`. Dev-only routes return 403:
+  `POST /api/v1/auth/provision-student`, `POST /api/v1/me/enrollments/poc-math`,
+  `POST /api/v1/me/demo/bootstrap`, and `POST /api/v1/me/demo/reset`.
+  The frontend stays on Vite preview's default port 4173 (already
+  `PLAYWRIGHT_BASE_URL` below). `frontend/vite.config.ts` sets `server.port` to 5173
+  for the dev server only; preview has no port override and no proxy (Vite
+  `DEFAULT_PREVIEW_PORT` is 4173). Default `cors_origins` allows `localhost` and
+  `127.0.0.1` on ports 3000 and 5173, and middleware sets `allow_credentials=True`,
+  so this job sets `CORS_ORIGINS` to the preview origin `http://127.0.0.1:4173`.
 - **Schema + seed data:** `uv run alembic upgrade head`, then the synthetic Al Noor school
   the specs log in as (`frontend/src/auth/demoAccounts.ts`, password `demo1234`):
   `uv run python -m education_platform.modules.synthetic.cli`. Curriculum topics are seeded by
@@ -110,7 +125,7 @@ They need a running stack and today tolerate a missing OpenRouter key by recordi
 - **Tagged specs:** no spec is tagged `@regression` today. Tag the login, student
   lesson + quiz, admin upload and admin policy chat tests in `frontend/e2e/workflow.spec.ts`
   and `frontend/e2e/chats.spec.ts` first.
-- **LLM replay mode in the API:** an env switch (proposed `AI_GATEWAY_REPLAY_DIR` **(new)**)
+- **LLM replay mode in the API (proposal):** an env switch (proposed `AI_GATEWAY_REPLAY_DIR` **(new)**)
   that binds the gateway to recorded fixtures. This depends on the gateway (pending #189);
   until then upload/chat flows hit the unconfigured-key path, which the specs record as
   `blocked`.
@@ -118,7 +133,7 @@ They need a running stack and today tolerate a missing OpenRouter key by recordi
   Playwright starts (`/health/ready` once #188 lands), so a dead API fails in ~60 s, not 240 s
   per test. Upload `frontend/playwright-report/` and `frontend/e2e/artifacts/` on failure.
 
-Full both-project runs stay nightly.
+Full both-project runs are a separate nightly proposal (`nightly.yml`, section 7).
 
 ## 5. Migration tests
 
@@ -140,8 +155,9 @@ Avoid hard-coding the head id in tests; compare with `ScriptDirectory.get_curren
 `deploy/load/k6-smoke.js` **(new)**, run by a `workflow_dispatch` workflow against staging,
 never on PRs. Target **300 req/s** constant arrival for 10 min, thresholds
 `http_req_failed < 1%` and `http_req_duration p(95) < 800`. Mix: `/health/ready` (pending #188),
-login, materials list, quiz fetch, at-risk flags; LLM routes excluded (or replay mode only)
-so load tests never spend money. Gate the cutover on two consecutive green runs.
+login, materials list, quiz fetch, at-risk flags; LLM routes excluded (or the section 4
+replay-mode proposal only) so load tests never spend money. Gate the cutover on two
+consecutive green runs.
 
 ## 7. How it runs in CI
 
@@ -149,7 +165,7 @@ so load tests never spend money. Gate the cutover on two consecutive green runs.
 | --- | --- | --- | --- |
 | ruff, mypy, alembic upgrade, pytest (incl. `@regression`, migrations, stubbed-LLM integration; stubbed-gateway once #189 lands) | `ci.yml` / `quality` | `pull_request` | none on `main`; pending (`2f70918`): job `timeout-minutes: 60`, per-test `timeout = 120` (`pytest-timeout`), `PGCONNECT_TIMEOUT: "5"`, "Wait for Postgres" step (below) |
 | Vitest + build | `ci.yml` / `frontend` | `pull_request` | none on `main`; pending (`2f70918`): `timeout-minutes: 10` |
-| Playwright `@regression` smoke | `ci.yml` / `e2e` **(proposal, section 4)** | `pull_request` | `timeout-minutes: 20`; Playwright `timeout: 240_000` per test (config), API-ready curl ~60 s |
+| Playwright `@regression` smoke in replay mode | `ci.yml` / `e2e` **(proposal, section 4; not defined in `ci.yml` today)** | `pull_request` | `timeout-minutes: 20`; Playwright `timeout: 240_000` per test (config), API-ready curl ~60 s |
 | Full Playwright both projects | `nightly.yml` **(new)** | `schedule` + `workflow_dispatch` | `timeout-minutes: 45` |
 | AI regression evals (paid) | `ai-evals.yml` **(new)** | `schedule` + `workflow_dispatch` only | `timeout-minutes: 30` + spend cap (section 8) |
 | k6 | `load.yml` **(new)** | `workflow_dispatch` | `timeout-minutes: 20` |
@@ -165,9 +181,10 @@ service health check (`pg_isready`, 10 x 5 s) and the `SELECT 1` + `pytest.fail`
 
 Commit `2f70918` on `cursor/ci-fail-fast-timeouts-0adb` adds:
 
-- `.github/workflows/ci.yml`: `quality` `timeout-minutes: 60` (green runs take about
-  35-45 min) and `frontend` `timeout-minutes: 10`; `PGCONNECT_TIMEOUT: "5"` in `quality`'s
-  env so libpq (psycopg, `alembic upgrade`) gives up after 5 s; a "Wait for Postgres" step
+- `.github/workflows/ci.yml`: `quality` `timeout-minutes: 60` (a green `quality` job
+  took about 43 min on GitHub Actions run 39366496245) and `frontend` `timeout-minutes: 10`;
+  `PGCONNECT_TIMEOUT: "5"` in `quality`'s env so libpq (psycopg, `alembic upgrade`) gives
+  up after 5 s; a "Wait for Postgres" step
   before `alembic upgrade head` that runs `pg_isready -h localhost -p 5432 -U education
   -d education_test -t 5` up to 6 times and fails with an explicit error.
 - `backend/pyproject.toml`: `pytest-timeout>=2.3` in the `dev` group and `timeout = 120`
