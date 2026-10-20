@@ -134,8 +134,14 @@ from education_platform.modules.generation.types import (
     TeacherRoundNumber,
 )
 from education_platform.modules.judge.checks import ItemTarget, LessonTarget
-from education_platform.modules.judge.evaluate import open_judge
-from education_platform.modules.judge.hook import blind_fields, fold_item, fold_lesson, remember
+from education_platform.modules.judge.evaluate import Evaluation, evaluate_lesson, open_judge
+from education_platform.modules.judge.hook import ItemJudgeTracker, blind_fields, remember
+from education_platform.modules.judge.lesson_gate import (
+    lesson_hold,
+    review_lesson_sections,
+    source_rejected,
+)
+from education_platform.modules.judge.policy import judge_mode
 from education_platform.modules.judge.protocol import Judge
 from education_platform.modules.materials.models import SourceChunk
 from education_platform.modules.progress.types import run_subject
@@ -661,6 +667,16 @@ def _finish_lesson(session: Session, run_id: UUID, *, writer: TopicLessonWriter 
         return
     if run.phase is not RunPhase.GENERATING:
         return
+    markdown, judged_sections = _apply_lesson_judge(
+        session,
+        run,
+        lesson_nodes,
+        written.sections,
+        texts_by_node,
+        grade_voice,
+        writer=writer,
+        job_id=None,
+    )
     snapshots = tuple(
         LessonSectionSnapshot(
             section_key=node.id,
@@ -668,19 +684,10 @@ def _finish_lesson(session: Session, run_id: UUID, *, writer: TopicLessonWriter 
             markdown=section.markdown,
             sequence=node.sequence,
         )
-        for node, section in zip(lesson_nodes, written.sections, strict=True)
+        for node, section in zip(lesson_nodes, judged_sections, strict=True)
     )
     replace_run_lesson_sections(session, run.id, snapshots)
-    run.draft_lesson_markdown = written.markdown
-    _record_lesson_judge(
-        session,
-        run,
-        lesson_nodes,
-        written.sections,
-        texts_by_node,
-        grade_voice,
-        job_id=None,
-    )
+    run.draft_lesson_markdown = markdown
     run.failure_reason = None
     _enqueue_generation_job(session, run.id, GenerationJobKind.ITEMS)
     _maybe_advance_to_qa_review(session, run, completing=GenerationJobKind.LESSON)
@@ -936,6 +943,21 @@ def _open_item_judge() -> Judge | None:
         return None
 
 
+def _item_tracker(
+    judge: Judge | None,
+    request: NodeItemRequest,
+    grade_voice: str,
+    mode: str,
+) -> ItemJudgeTracker | None:
+    if judge is None or mode == "off":
+        return None
+
+    def target_for(item: GeneratedItem) -> ItemTarget:
+        return _item_target(item, request, grade_voice)
+
+    return ItemJudgeTracker(judge, target_for, enforce=mode == "enforce")
+
+
 def _item_target(item: GeneratedItem, request: NodeItemRequest, grade_voice: str) -> ItemTarget:
     return ItemTarget(
         heading=request.heading,
@@ -950,7 +972,7 @@ def _item_target(item: GeneratedItem, request: NodeItemRequest, grade_voice: str
     )
 
 
-def _record_lesson_judge(
+def _apply_lesson_judge(
     session: Session,
     run: ContentGenerationRun,
     nodes: Sequence[ContentGenerationOutlineNode],
@@ -958,51 +980,76 @@ def _record_lesson_judge(
     texts_by_node: Mapping[UUID, tuple[str, ...]],
     grade_voice: str,
     *,
+    writer: TopicLessonWriter | None,
     job_id: UUID | None,
-) -> None:
+) -> tuple[str, tuple[LessonSection, ...]]:
+    """Judge sections, rewrite a source reject once, and return stitched markdown."""
+    targets = tuple(
+        LessonTarget(
+            heading=section.heading,
+            grade=grade_voice,
+            outcomes=_outcome_statements(node),
+            chunks=texts_by_node.get(node.id, ()),
+            markdown=section.markdown,
+            kind="lesson_section",
+        )
+        for node, section in zip(nodes, sections, strict=True)
+    )
     judge = _open_item_judge()
-    if judge is None:
-        return
-    combined_outcomes: list[str] = []
-    combined_chunks: list[str] = []
-    for node, section in zip(nodes, sections, strict=True):
-        outcomes = _outcome_statements(node)
-        chunks = texts_by_node.get(node.id, ())
-        combined_outcomes.extend(outcomes)
-        combined_chunks.extend(chunks)
-        _remember_lesson(
+    mode = judge_mode()
+    reviews, held = review_lesson_sections(
+        targets,
+        judge,
+        mode=mode,
+        rewrite=_section_rewriter(writer, job_id=job_id) if mode == "enforce" else None,
+    )
+    updated = tuple(
+        replace(section, heading=review.target.heading, markdown=review.target.markdown)
+        for section, review in zip(sections, reviews, strict=True)
+    )
+    markdown = stitch_sections(StitchRequest(grade_voice=grade_voice, sections=updated))
+    for node, review in zip(nodes, reviews, strict=True):
+        _store_lesson_evaluation(
             session,
             run,
-            judge,
-            LessonTarget(
-                heading=section.heading,
-                grade=grade_voice,
-                outcomes=outcomes,
-                chunks=chunks,
-                markdown=section.markdown,
-                kind="lesson_section",
-            ),
+            review.evaluation,
             subject_key=node.id,
             job_id=job_id,
-            include_claims=True,
+            mode=mode,
         )
-    if run.draft_lesson_markdown:
-        _remember_lesson(
+    whole = _whole_lesson_evaluation(
+        run,
+        judge,
+        grade_voice=grade_voice,
+        markdown=markdown,
+        reviews=reviews,
+        mode=mode,
+    )
+    if whole is not None and source_rejected(whole):
+        held = True
+    if held:
+        reasons = tuple(
+            reason
+            for review in reviews
+            if review.evaluation is not None and source_rejected(review.evaluation)
+            for reason in (review.evaluation.gate_reasons or review.evaluation.reasons)
+        )
+        if whole is not None and source_rejected(whole):
+            reasons = reasons + (whole.gate_reasons or whole.reasons)
+        if not reasons:
+            reasons = ("A section stayed ungrounded or off the source after one rewrite.",)
+        model = whole.model if whole is not None else None
+        _store_lesson_evaluation(
             session,
             run,
-            judge,
-            LessonTarget(
-                heading=run.title,
-                grade=grade_voice,
-                outcomes=tuple(dict.fromkeys(combined_outcomes)),
-                chunks=tuple(dict.fromkeys(combined_chunks)),
-                markdown=run.draft_lesson_markdown,
-                kind="lesson",
-            ),
+            lesson_hold(reasons, model=model),
             subject_key=run.id,
             job_id=job_id,
-            include_claims=False,
+            mode=mode,
         )
+    else:
+        _store_lesson_evaluation(session, run, whole, subject_key=run.id, job_id=job_id, mode=mode)
+    return markdown, updated
 
 
 def _record_repaired_lesson(
@@ -1011,10 +1058,9 @@ def _record_repaired_lesson(
     snapshots: Sequence[LessonSectionSnapshot],
     texts_by_node: Mapping[UUID, tuple[str, ...]],
     grade_voice: str,
-    section_keys: frozenset[UUID],
+    writer: TopicLessonWriter | None,
 ) -> None:
-    judge = _open_item_judge()
-    if judge is None:
+    if _open_item_judge() is None or judge_mode() == "off":
         return
     nodes = {
         node.id: node
@@ -1024,56 +1070,123 @@ def _record_repaired_lesson(
             )
         ).all()
     }
+    ordered: list[ContentGenerationOutlineNode] = []
+    sections: list[LessonSection] = []
     for snapshot in snapshots:
-        if snapshot.section_key not in section_keys:
-            continue
         node = nodes.get(snapshot.section_key)
-        _remember_lesson(
-            session,
-            run,
-            judge,
-            LessonTarget(
+        if node is None:
+            return
+        ordered.append(node)
+        sections.append(
+            LessonSection(
                 heading=snapshot.heading,
-                grade=grade_voice,
-                outcomes=_outcome_statements(node) if node is not None else (),
-                chunks=texts_by_node.get(snapshot.section_key, ()),
                 markdown=snapshot.markdown,
-                kind="lesson_section",
-            ),
-            subject_key=snapshot.section_key,
-            job_id=None,
-            include_claims=True,
+                recap=snapshot.heading,
+                defined_terms=(),
+            )
         )
-    if run.draft_lesson_markdown:
-        _remember_lesson(
-            session,
-            run,
-            judge,
+    markdown, updated = _apply_lesson_judge(
+        session,
+        run,
+        ordered,
+        tuple(sections),
+        texts_by_node,
+        grade_voice,
+        writer=writer,
+        job_id=None,
+    )
+    replace_run_lesson_sections(
+        session,
+        run.id,
+        tuple(
+            LessonSectionSnapshot(
+                section_key=node.id,
+                heading=section.heading,
+                markdown=section.markdown,
+                sequence=snapshot.sequence,
+            )
+            for node, section, snapshot in zip(ordered, updated, snapshots, strict=True)
+        ),
+    )
+    run.draft_lesson_markdown = markdown
+
+
+def _whole_lesson_evaluation(
+    run: ContentGenerationRun,
+    judge: Judge | None,
+    *,
+    grade_voice: str,
+    markdown: str,
+    reviews: Sequence[object],
+    mode: str,
+) -> Evaluation | None:
+    if judge is None or mode == "off" or not markdown.strip():
+        return None
+    outcomes: list[str] = []
+    chunks: list[str] = []
+    for review in reviews:
+        target = getattr(review, "target", None)
+        if target is None:
+            continue
+        outcomes.extend(target.outcomes)
+        chunks.extend(target.chunks)
+    try:
+        return evaluate_lesson(
             LessonTarget(
                 heading=run.title,
                 grade=grade_voice,
-                outcomes=(),
-                chunks=(),
-                markdown=run.draft_lesson_markdown,
+                outcomes=tuple(dict.fromkeys(outcomes)),
+                chunks=tuple(dict.fromkeys(chunks)),
+                markdown=markdown,
                 kind="lesson",
             ),
-            subject_key=run.id,
-            job_id=None,
+            judge,
             include_claims=False,
         )
+    except Exception:
+        logger.warning("Jev whole-lesson judge failed open", exc_info=True)
+        return None
 
 
-def _remember_lesson(
+def _section_rewriter(
+    writer: TopicLessonWriter | None, *, job_id: UUID | None
+) -> Callable[[LessonTarget, tuple[str, ...]], str | None]:
+    def rewrite(target: LessonTarget, reasons: tuple[str, ...]) -> str | None:
+        note = "Jev rejected this section as ungrounded or off the source. Rewrite it. " + " ".join(
+            reasons
+        )
+        request = LessonSectionRequest(
+            heading=target.heading,
+            objectives=target.outcomes,
+            chunk_texts=target.chunks,
+            grade_voice=target.grade,
+            glossary=(),
+            prior_titles=(),
+            defined_terms=(),
+            prior_recap="",
+            repair_note=note,
+        )
+        try:
+            produced = write_topic_lesson_document((request,), write_section=writer, job_id=job_id)
+        except Exception:
+            logger.warning("Jev section rewrite failed open", exc_info=True)
+            return None
+        if not produced.sections:
+            return None
+        return produced.sections[0].markdown
+
+    return rewrite
+
+
+def _store_lesson_evaluation(
     session: Session,
     run: ContentGenerationRun,
-    judge: Judge,
-    target: LessonTarget,
+    evaluation: Evaluation | None,
     *,
     subject_key: UUID,
     job_id: UUID | None,
-    include_claims: bool,
+    mode: str,
 ) -> None:
-    evaluation = fold_lesson(target, judge, include_claims=include_claims)
     remember(
         session,
         evaluation,
@@ -1085,6 +1198,7 @@ def _remember_lesson(
         gate_servable=None,
         blind_status=None,
         blind_answer=None,
+        mode=mode,
     )
 
 
@@ -1105,6 +1219,8 @@ def _persist_produced(
     judge: Judge | None = None,
     grade_voice: str = "",
 ) -> int:
+    mode = judge_mode()
+    tracker = _item_tracker(judge, request, grade_voice, mode)
     for item in produced:
         gated = gate_generated_item(
             item,
@@ -1116,12 +1232,10 @@ def _persist_produced(
                 job_id=job_id,
             ),
             taken=taken,
+            judge=tracker,
+            enforce_judge=mode == "enforce",
         )
-        gated, evaluation = fold_item(
-            gated,
-            _item_target(gated.item, request, grade_voice),
-            judge,
-        )
+        evaluation = tracker.evaluation if tracker is not None else None
         stats[gated.verdict] = stats.get(gated.verdict, 0) + 1
         version = _persist_generated_item(
             session,
@@ -1603,7 +1717,7 @@ def _repair_lesson_sections(
     run.draft_lesson_markdown = stitch_sections(
         StitchRequest(grade_voice=grade_voice, sections=tuple(stitch_sections_in))
     )
-    _record_repaired_lesson(session, run, snapshots, texts_by_node, grade_voice, section_keys)
+    _record_repaired_lesson(session, run, snapshots, texts_by_node, grade_voice, writer)
     return True
 
 
@@ -1719,6 +1833,8 @@ def _replace_selected_items(
             _fail_run(session, run, "Item writer produced no replacement item.")
             return None
         taken = _topic_prompts(session, run.topic_id)
+        mode = judge_mode()
+        tracker = _item_tracker(judge, request, grade_voice, mode)
         gated = gate_generated_item(
             produced[0],
             solve=_solver_for(solver) if solver is not None else None,
@@ -1729,12 +1845,10 @@ def _replace_selected_items(
                 job_id=None,
             ),
             taken=taken,
+            judge=tracker,
+            enforce_judge=mode == "enforce",
         )
-        gated, evaluation = fold_item(
-            gated,
-            _item_target(gated.item, request, grade_voice),
-            judge,
-        )
+        evaluation = tracker.evaluation if tracker is not None else None
         if version.lifecycle_status is QuestionVersionStatus.DRAFT:
             version.lifecycle_status = QuestionVersionStatus.ARCHIVED
         new_version = _persist_question_version(

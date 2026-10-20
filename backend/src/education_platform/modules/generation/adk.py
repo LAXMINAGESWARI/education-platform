@@ -159,6 +159,7 @@ class LessonSectionSpec:
     prior_recap: str = ""
     pass_kind: str = "full"
     heading_style: str = "section"
+    repair_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)

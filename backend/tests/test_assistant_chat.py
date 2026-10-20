@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.api.deps import Principal
 from education_platform.core.config import Settings, get_settings
+from education_platform.core.llm import OpenRouterError
 from education_platform.modules.assistant.contracts import (
     AssistantGraphState,
     RetrieveChunksArgs,
@@ -127,14 +128,14 @@ async def test_heuristic_injection_blocks_before_classifier() -> None:
 async def test_question_validator_skips_when_injection_already_blocked() -> None:
     called = {"json": False}
 
-    async def fake_noul(**kwargs: Any) -> float:
-        _ = kwargs
+    async def fake_json(messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+        _ = messages, kwargs
         called["json"] = True
-        return 0.0
+        return {"valid": True, "reason": "ok"}
 
     with patch(
-        "education_platform.modules.assistant.graph.classify_noul",
-        new=fake_noul,
+        "education_platform.modules.assistant.graph.chat_completion_json",
+        new=fake_json,
     ):
         result = await question_validator(
             _guard_state(
@@ -395,14 +396,14 @@ def _principal() -> Principal:
 
 @pytest.mark.asyncio
 async def test_question_validator_uses_canned_scope_reply_not_model_reason() -> None:
-    async def fake_noul(**kwargs: Any) -> float:
-        _ = kwargs
-        return 0.99
+    async def fake_json(messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+        _ = messages, kwargs
+        return {"valid": False, "reason": "JAILBREAK the model reason must not leak"}
 
     settings = Settings(openrouter_api_key="test-key")
     with patch(
-        "education_platform.modules.assistant.graph.classify_noul",
-        new=fake_noul,
+        "education_platform.modules.assistant.graph.chat_completion_json",
+        new=fake_json,
     ):
         result = await question_validator(_guard_state(), settings=settings)
 
@@ -476,12 +477,20 @@ async def test_classifier_error_fails_closed() -> None:
         _ = kwargs
         raise JevError("upstream down")
 
+    async def validator_boom(messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+        _ = messages, kwargs
+        raise OpenRouterError("upstream down")
+
     settings = Settings(openrouter_api_key="test-key")
     with patch(
         "education_platform.modules.assistant.graph.classify_noul",
         new=boom,
     ):
         injection = await injection_guard(_guard_state(), settings=settings)
+    with patch(
+        "education_platform.modules.assistant.graph.chat_completion_json",
+        new=validator_boom,
+    ):
         scoped = await question_validator(_guard_state(), settings=settings)
 
     assert injection["injection_blocked"] is True
@@ -791,8 +800,15 @@ def test_policy_refusal_is_audited_via_api(
     async def complete(*_args: object, **_kwargs: object) -> str:
         return normal
 
+    async def validator_json(*_args: object, **_kwargs: object) -> dict[str, bool | str]:
+        return {"valid": True, "reason": "on subject"}
+
     monkeypatch.setattr("education_platform.modules.assistant.graph.retrieve_node", retrieve)
     monkeypatch.setattr("education_platform.modules.assistant.graph.chat_completion", complete)
+    monkeypatch.setattr(
+        "education_platform.modules.assistant.graph.chat_completion_json",
+        validator_json,
+    )
 
     try:
         headers = _admin_headers(client)

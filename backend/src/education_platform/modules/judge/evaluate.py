@@ -1,9 +1,8 @@
 """Run lesson and item checks and fold them into the existing item gate.
 
-Shadow mode stores the policy and returns the gated item unchanged. Augment
-drops an item Jev rejects on a check it owns. Replace lets Jev override a
-blind-solve drop on non-computational items. Keyed-answer checks on
-computational items stay with the solver in every mode.
+``enforce`` treats a Jev reject as a gate failure. ``shadow`` stores the
+policy and returns the gated item unchanged. A Jev error leaves the gate
+alone so generation can continue on the blind-solve result.
 """
 
 from __future__ import annotations
@@ -43,8 +42,6 @@ from education_platform.modules.judge.types import CheckResult, DecisionRequest,
 
 logger = logging.getLogger(__name__)
 
-_SOLVER_REASON = "blind solve"
-
 
 @dataclass(frozen=True, slots=True)
 class Evaluation:
@@ -70,7 +67,14 @@ class Evaluation:
 def open_judge(settings: Settings | None = None) -> Judge | None:
     """Live client when this mode should call Jev. Missing credentials skip the call."""
     cfg = settings or get_settings()
-    if judge_mode(cfg) == "off" or not cfg.openrouter_configured:
+    mode = judge_mode(cfg)
+    if mode == "off":
+        return None
+    if not cfg.openrouter_configured:
+        logger.warning(
+            "Jev judge skipped: OPENROUTER_API_KEY is not configured. "
+            "Falling back to the existing gate."
+        )
         return None
     return HttpJudge(cfg)
 
@@ -150,13 +154,26 @@ def apply_to_gate(
     *,
     mode: str,
 ) -> GatedItem:
-    """Shadow and errors leave the gate result alone."""
+    """Shadow, off, and Jev errors leave the gate result alone.
+
+    Enforce drops a rejected item and flags needs-review. The item retry loop
+    is what feeds those reasons back to the writer; this fold is the final
+    state when the loop has already finished an attempt.
+    """
     if evaluation is None or mode in {"off", "shadow"} or evaluation.decision == DECISION_ERROR:
         return gated
-    if mode == "augment":
-        return _augment(gated, evaluation)
-    if mode == "replace":
-        return _replace(gated, evaluation)
+    if mode != "enforce":
+        return gated
+    if evaluation.gate_decision == DECISION_REJECT or evaluation.decision == DECISION_REJECT:
+        return replace(
+            gated,
+            verdict="dropped",
+            servable=False,
+            reasons=gated.reasons + evaluation.gate_reasons,
+            needs_review=False,
+        )
+    if evaluation.decision == "needs_review" or evaluation.gate_decision == "needs_review":
+        return replace(gated, needs_review=True)
     return gated
 
 
@@ -182,7 +199,7 @@ def store_evaluation(
             subject_kind=evaluation.subject_kind,
             subject_key=subject_key,
             label=evaluation.label[:200],
-            mode=mode if mode in {"off", "shadow", "augment", "replace"} else "shadow",
+            mode=mode if mode in {"off", "shadow", "enforce"} else "enforce",
             decision=evaluation.decision
             if evaluation.decision in {"accept", "needs_review", "reject", "error"}
             else "error",
@@ -217,6 +234,7 @@ def _evaluate(
     try:
         result = judge.decide(request_state)
     except JudgeError as exc:
+        logger.warning("Jev unavailable; falling back to the existing gate: %s", exc)
         return evaluation_from_error(
             subject_kind=subject_kind,
             label=label,
@@ -226,7 +244,6 @@ def _evaluate(
     outcome = apply_policy(
         plan,
         dict(result.answers),
-        computational=computational,
         thresholds=Thresholds.from_settings(settings),
     )
     cost = (
@@ -250,40 +267,3 @@ def _evaluate(
         error=None,
         computational=computational,
     )
-
-
-def _augment(gated: GatedItem, evaluation: Evaluation) -> GatedItem:
-    if evaluation.gate_decision != DECISION_REJECT or not gated.servable:
-        return gated
-    return replace(
-        gated,
-        verdict="dropped",
-        servable=False,
-        reasons=gated.reasons + evaluation.gate_reasons,
-    )
-
-
-def _replace(gated: GatedItem, evaluation: Evaluation) -> GatedItem:
-    structural = tuple(reason for reason in gated.reasons if not reason.startswith(_SOLVER_REASON))
-    if evaluation.computational:
-        if evaluation.gate_decision == DECISION_REJECT and gated.servable:
-            return replace(
-                gated,
-                verdict="dropped",
-                servable=False,
-                reasons=gated.reasons + evaluation.gate_reasons,
-            )
-        return gated
-    if structural and not gated.servable:
-        return gated
-    if evaluation.gate_decision == DECISION_ACCEPT and not gated.servable and not structural:
-        verdict = "passed" if gated.attempts == 1 else "fixed_on_retry"
-        return replace(gated, verdict=verdict, servable=True, reasons=())
-    if evaluation.gate_decision == DECISION_REJECT:
-        return replace(
-            gated,
-            verdict="dropped",
-            servable=False,
-            reasons=structural + evaluation.gate_reasons,
-        )
-    return gated

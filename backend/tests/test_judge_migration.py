@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from alembic import command
@@ -23,6 +24,12 @@ INSERT INTO judge_evaluations (
     CAST('[]' AS json), CAST('[]' AS json), now(), now()
 )
 """
+
+
+def _skip_unless_test_database(url: str) -> None:
+    name = urlsplit(url).path.rpartition("/")[2]
+    if "test" not in name:
+        pytest.skip("refusing to downgrade a database whose name does not contain 'test'")
 
 
 def _config(sync_url: str) -> Config:
@@ -46,6 +53,10 @@ def test_check_constraint_rejects_an_unknown_decision(clean_db: str) -> None:
     engine = create_engine(sync_url)
     with engine.begin() as conn:
         conn.execute(text(_INSERT), {"subject_kind": "quiz_item", "decision": "accept"})
+        conn.execute(
+            text(_INSERT.replace("'shadow'", "'enforce'")),
+            {"subject_kind": "lesson", "decision": "needs_review"},
+        )
     with engine.begin() as conn, pytest.raises(IntegrityError):
         conn.execute(text(_INSERT), {"subject_kind": "quiz_item", "decision": "nope"})
     engine.dispose()
@@ -53,6 +64,7 @@ def test_check_constraint_rejects_an_unknown_decision(clean_db: str) -> None:
 
 def test_downgrade_drops_the_table_and_upgrade_restores_it(clean_db: str) -> None:
     sync_url = to_sync_url(clean_db)
+    _skip_unless_test_database(sync_url)
     cfg = _config(sync_url)
     assert _table_exists(sync_url)
     command.downgrade(cfg, "b1c2d3e4f5a6")

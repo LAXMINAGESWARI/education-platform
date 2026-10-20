@@ -1,8 +1,7 @@
 """Turn Jev probabilities into accept, needs review, or reject.
 
-Thresholds come from settings. A check Jev should not own (the keyed answer
-on a computation-heavy item) is still stored, and ``drives_gate`` is false so
-augment and replace leave that call to the blind solver.
+Thresholds come from settings. Every rejecting check drives the gate. The
+blind solver still runs as well: an item is kept only when both pass.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from education_platform.core.config import Settings, get_settings
-from education_platform.modules.judge.checks import SOLVER_OWNED_CHECKS
 from education_platform.modules.judge.types import (
     Answer,
     CheckResult,
@@ -60,17 +58,16 @@ class PolicyOutcome:
 
 
 def judge_mode(settings: Settings | None = None) -> str:
-    value = (settings or get_settings()).jev_mode.strip().lower()
-    if value in {"off", "shadow", "augment", "replace"}:
+    value = (settings or get_settings()).jev_judge_mode.strip().lower()
+    if value in {"off", "shadow", "enforce"}:
         return value
-    return "shadow"
+    return "enforce"
 
 
 def apply_policy(
     plan: Sequence[PlannedCheck],
     answers: dict[str, Answer],
     *,
-    computational: bool = False,
     thresholds: Thresholds | None = None,
 ) -> PolicyOutcome:
     limits = thresholds or Thresholds.from_settings()
@@ -81,7 +78,6 @@ def apply_policy(
             checks.append(_missing(planned))
             continue
         scored = _score_check(planned, answer, limits)
-        drives = not (computational and planned.check_id in SOLVER_OWNED_CHECKS)
         checks.append(
             CheckResult(
                 check_id=scored.check_id,
@@ -90,7 +86,7 @@ def apply_policy(
                 summary=scored.summary,
                 reasons=scored.reasons,
                 probabilities=scored.probabilities,
-                drives_gate=drives,
+                drives_gate=True,
                 noul=scored.noul,
                 choice=scored.choice,
                 score=scored.score,

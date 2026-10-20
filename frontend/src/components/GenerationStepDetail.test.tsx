@@ -33,6 +33,7 @@ function detail(step: "lesson" | "items"): GenerationStepDetail {
         ? {
             markdown: "# Area\n\nThe area of a rectangle is length times width.",
             published_lesson_version_id: null,
+            needs_review: true,
             judge: [
               {
                 subject_kind: "lesson_section",
@@ -83,6 +84,7 @@ function detail(step: "lesson" | "items"): GenerationStepDetail {
                 distractor_rationales: {},
                 subtopic_id: "sub",
                 sequence: 1,
+                judge_needs_review: true,
               },
             ],
             judge: [
@@ -118,6 +120,7 @@ describe("GenerationStepDetail Jev scores", () => {
       <GenerationStepDetailPanel runId="run-1" step="lesson" onClose={() => undefined} />,
     );
     expect(await screen.findByRole("heading", { name: "Jev scores" })).toBeInTheDocument();
+    expect(screen.getByText("Needs review before publish")).toBeInTheDocument();
     expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0);
     expect(screen.getByText(/grounded: 0.91/)).toBeInTheDocument();
     expect(screen.getByText(/true 0.91/)).toBeInTheDocument();
@@ -129,6 +132,7 @@ describe("GenerationStepDetail Jev scores", () => {
     vi.mocked(getGenerationStepDetail).mockResolvedValue(detail("items"));
     render(<GenerationStepDetailPanel runId="run-1" step="items" onClose={() => undefined} />);
     expect((await screen.findAllByText("Reject")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
     expect(screen.getByText(/keyed_correct: 0.22/)).toBeInTheDocument();
     expect(screen.getByText(/noul 0.22 is at or below 0.35/)).toBeInTheDocument();
   });

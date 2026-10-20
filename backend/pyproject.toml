@@ -104,11 +104,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q --cov=education_platform --cov-report=term-missing --cov-fail-under=80"
 asyncio_mode = "auto"
+markers = [
+    "regression: multi-step journeys replayed against fixtures",
+]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = [
-  "regression: multi-step journeys replayed against fixtures",
-]
 
 [tool.coverage.run]
 branch = true

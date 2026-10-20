@@ -69,13 +69,12 @@ class Settings(BaseSettings):
     # check is not grading items in the same voice that wrote them. Override with
     # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
     blind_solver_model: str = "openai/gpt-4o"
-    # Shadow records Jev scores and leaves the blind-solve gate in charge.
-    # augment also drops items Jev rejects. replace lets Jev override a
-    # blind-solve drop, except keyed-answer checks on computational items.
+    # enforce: a Jev reject fails the item gate and can hold a lesson for QA.
+    # shadow stores scores and changes nothing. off skips the call.
     jev_model: str = "typesafe/jev-1.14"
     jev_timeout_seconds: float = 30.0
     jev_max_retries: int = 2
-    jev_mode: str = "shadow"
+    jev_judge_mode: str = "enforce"
     jev_noul_accept: float = 0.80
     jev_noul_reject: float = 0.35
     jev_confidence_accept: float = 0.55
@@ -101,6 +100,30 @@ class Settings(BaseSettings):
     # never used once the env var is set.
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
+
+    # LLM gateway. Defaults keep every caller on its existing client. Set a
+    # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.
+    ai_gateway_features: str = ""
+    ai_gateway_policy_chat: bool = False
+    ai_gateway_text_to_sql: bool = False
+    ai_gateway_generation: bool = False
+    ai_gateway_feedback: bool = False
+    ai_gateway_review_chat: bool = False
+    ai_gateway_authoring: bool = False
+    ai_gateway_timeout_chat_answer_seconds: float = 30.0
+    ai_gateway_timeout_sql_generate_seconds: float = 20.0
+    ai_gateway_timeout_guard_seconds: float = 8.0
+    ai_gateway_timeout_generation_seconds: float = 120.0
+    ai_gateway_timeout_feedback_seconds: float = 20.0
+    ai_gateway_max_retries: int = 2
+    ai_gateway_retry_base_seconds: float = 0.25
+    ai_gateway_retry_max_seconds: float = 8.0
+    ai_gateway_circuit_failure_threshold: int = 5
+    ai_gateway_circuit_cooldown_seconds: float = 30.0
+    ai_gateway_concurrency_interactive: int = 8
+    ai_gateway_concurrency_guard: int = 16
+    ai_gateway_concurrency_generation: int = 2
+    ai_gateway_concurrency_batch: int = 2
 
     @property
     def is_development(self) -> bool:

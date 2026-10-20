@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from contextvars import ContextVar
 from typing import Any, Literal, TypedDict
@@ -10,11 +11,18 @@ from uuid import UUID
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
+from education_platform.ai_platform.gateway.api import CallContext, complete
+from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.core.config import Settings, get_settings
-from education_platform.core.llm import OpenRouterError, chat_completion
+from education_platform.core.llm import (
+    OpenRouterError,
+    chat_completion,
+    chat_completion_json,
+)
 from education_platform.modules.assistant.contracts import (
     AssistantGraphState,
     CitationModel,
+    QuestionValidatorResult,
     RetrieveChunksResult,
     dump_graph_state,
     parse_graph_state,
@@ -27,7 +35,6 @@ from education_platform.modules.assistant.tools.registry import (
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.guard.classifier import (
     POLICY_INJECTION,
-    POLICY_OUT_OF_SCOPE,
     classify_noul,
     guard_state,
     is_positive,
@@ -103,6 +110,13 @@ def _output_leaks_scope(text: str) -> bool:
     return bool(_OUTPUT_BLOCK_PATTERNS.search(text))
 
 
+def _classifier_transcript(current: AssistantGraphState) -> str:
+    """Current message plus recent history so multi-turn jailbreaks are visible."""
+    lines = [f"{turn.role}: {turn.content}" for turn in current.history[-_HISTORY_TURNS:]]
+    prior = "\n".join(lines) if lines else "(none)"
+    return f"Prior conversation:\n{prior}\n\nCurrent user message:\n{current.user_message}"
+
+
 def _guards_failed(current: AssistantGraphState) -> bool:
     return bool(current.injection_blocked or current.question_valid is False or current.early_reply)
 
@@ -154,6 +168,7 @@ async def injection_guard(state: GraphState, *, settings: Settings) -> GraphStat
     if not settings.openrouter_configured:
         current.injection_blocked = False
         return _exit(current)
+    # Jev Decisions stay on classify_noul. The gateway flag does not select this call.
     try:
         probability = await classify_noul(
             state=guard_state(
@@ -182,19 +197,29 @@ async def question_validator(state: GraphState, *, settings: Settings) -> GraphS
         current.question_valid = True
         return _exit(current)
     try:
-        probability = await classify_noul(
-            state=guard_state(
-                current.user_message,
-                [(turn.role, turn.content) for turn in current.history],
-            ),
-            question=POLICY_OUT_OF_SCOPE,
+        data = await _policy_json(
+            "policy_chat.validator",
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify whether the CURRENT user message is a valid question about "
+                        "school policy, attendance, assessments, enrollment, or curriculum. "
+                        'Return JSON {"valid": true|false, "reason": "..."}. '
+                        "Greetings alone are invalid; off-topic chat is invalid. "
+                        "Prior turns are context: a slow-roll away from school policy is invalid. "
+                        "Never copy the user message into reason."
+                    ),
+                },
+                {"role": "user", "content": _classifier_transcript(current)},
+            ],
             settings=settings,
         )
-    except JevError:
+        classified = QuestionValidatorResult.model_validate(data)
+        if not classified.valid:
+            return _refuse_scope(current, SCOPE_REPLY)
+    except (OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
         return _refuse_scope(current, GUARD_UNAVAILABLE_REPLY)
-    current.scope_probability = probability
-    if is_positive(probability, settings):
-        return _refuse_scope(current, SCOPE_REPLY)
     current.question_valid = True
     return _exit(current)
 
@@ -290,7 +315,7 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
         )
 
     try:
-        content = await chat_completion(messages, settings=settings, temperature=0.2)
+        content = await _policy_answer(messages, settings=settings)
         kept_citations = citations if chunks else []
     except OpenRouterError as exc:
         content = f"The language model is temporarily unavailable ({exc}). Please try again."
@@ -302,6 +327,48 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
         citations=kept_citations,
         prompt_tokens=prompt_tokens,
     )
+
+
+async def _policy_json(
+    step: str,
+    messages: list[dict[str, str]],
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Flag off calls the legacy chat client with the same arguments as before.
+
+    This helper is only for chat completions. Jev Decisions (``classify_noul``
+    on ``jev_client``) is a different API and stays outside ``complete``. When
+    the guard moves to that client, call it from the node and leave this helper
+    on the answer path.
+    """
+    if not gateway_enabled("policy_chat", settings):
+        return await chat_completion_json(messages, settings=settings)
+    result = await complete(
+        step,
+        messages,
+        ctx=CallContext(feature="policy_chat", settings=settings),
+        response_format={"type": "json_object"},
+    )
+    if result.parsed_json is None:
+        raise OpenRouterError("Expected a JSON object from OpenRouter")
+    return result.parsed_json
+
+
+async def _policy_answer(
+    messages: list[dict[str, str]],
+    *,
+    settings: Settings,
+) -> str:
+    """Flag off calls the legacy client with the same arguments as before."""
+    if not gateway_enabled("policy_chat", settings):
+        return await chat_completion(messages, settings=settings, temperature=0.2)
+    result = await complete(
+        "policy_chat.answer",
+        messages,
+        ctx=CallContext(feature="policy_chat", settings=settings),
+    )
+    return result.text
 
 
 def _commit_answer(
