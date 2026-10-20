@@ -61,6 +61,11 @@ function checkBadge(item: GenerationQaItem): string | null {
   return verdict;
 }
 
+function reviewBadge(item: GenerationQaItem): string | null {
+  if (item.judge_needs_review === true) return "Needs review";
+  return null;
+}
+
 function disputedBadge(item: GenerationQaItem): string | null {
   if (item.key_disputed !== true || item.blind_answer == null || item.blind_answer === "") {
     return null;
@@ -97,6 +102,7 @@ export function QuizItemCards({
           const misconceptions = item.misconception_labels ?? [];
           const disputed = disputedBadge(item);
           const checked = checkBadge(item);
+          const review = reviewBadge(item);
           return (
             <li key={item.question_id} className="quiz-item-card">
               <div className="quiz-item-card__meta">
@@ -124,6 +130,11 @@ export function QuizItemCards({
               <div className="quiz-item-card__prompt">
                 <MarkdownContent>{presentQuizText(item.prompt)}</MarkdownContent>
               </div>
+              {review ? (
+                <p className="qa-review__disputed">
+                  <span className="badge badge--warn">{review}</span>
+                </p>
+              ) : null}
               {disputed ? (
                 <p className="qa-review__disputed">
                   <span className="badge badge--warn">{disputed}</span>

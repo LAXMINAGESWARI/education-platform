@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -32,6 +35,8 @@ from education_platform.modules.generation.lesson import LessonSectionRequest, s
 from education_platform.modules.generation.models import ContentGenerationRun, GenerationJob
 from education_platform.modules.generation.types import GenerationJobKind, RunPhase
 from education_platform.modules.generation.worker import process_generation_job_sync
+from education_platform.modules.judge.client import HttpJudge
+from education_platform.modules.judge.models import JudgeEvaluation
 from education_platform.modules.materials.models import (
     SourceMaterial,
     SourceMaterialVersion,
@@ -368,3 +373,397 @@ def test_reject_items_returns_to_generating(
     )
     assert kept_ids <= after_ids
     get_settings.cache_clear()
+
+
+def test_jev_hold_blocks_publish_until_qa_accept(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = _reach_qa_review(
+        client, admin_headers, seeded_topic_id, seeded_db, monkeypatch, tmp_path
+    )
+    seeded_db.add(
+        JudgeEvaluation(
+            run_id=run_id,
+            subject_kind="lesson",
+            subject_key=run_id,
+            label="Lesson needs review",
+            mode="enforce",
+            decision="needs_review",
+            reasons=["A section stayed ungrounded after one rewrite."],
+            checks=[
+                {
+                    "check_id": "hold",
+                    "kind": "marker",
+                    "decision": "needs_review",
+                    "summary": "hold",
+                    "reasons": [],
+                    "probabilities": {},
+                    "drives_gate": False,
+                }
+            ],
+        )
+    )
+    seeded_db.commit()
+    blocked = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/publish",
+        headers=admin_headers,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "needs review" in blocked.text.lower()
+
+    workspace = client.get(
+        f"/api/v1/teaching/generation-runs/{run_id}/review",
+        headers=admin_headers,
+    )
+    assert workspace.status_code == 200, workspace.text
+    body = workspace.json()
+    open_round = body["open_round"]
+    active = body["active_revision"]
+    assert isinstance(open_round, dict)
+    assert isinstance(active, dict)
+    accepted = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/review-rounds/{open_round['id']}/close",
+        headers=admin_headers,
+        json={"revision_id": active["id"], "action": "accept_current"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    published = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/publish",
+        headers=admin_headers,
+    )
+    assert published.status_code == 200, published.text
+    get_settings.cache_clear()
+
+
+def _replay_answer(
+    question_id: str, question: dict[str, Any], state: dict[str, Any]
+) -> dict[str, Any]:
+    kind = question.get("type")
+    subject = state.get("kind")
+    if kind == "noul":
+        noul = 0.95
+        if subject in {"lesson", "lesson_section"} and (
+            question_id == "grounded" or question_id.startswith("claim_")
+        ):
+            noul = float(state.get("_source_noul", 0.95))
+        elif subject == "quiz_item" and question_id == "keyed_correct":
+            noul = float(state.get("_item_noul", 0.95))
+        return {"type": "noul", "noul": noul}
+    if kind == "choice":
+        stated = str(state.get("stated_difficulty") or "medium")
+        return {
+            "type": "choice",
+            "choice": stated,
+            "confidence": 0.9,
+            "probabilities": {stated: 0.9},
+        }
+    if question_id == "grade_level":
+        return {
+            "type": "score",
+            "score": 1.0,
+            "confidence": 0.9,
+            "probabilities": {"0": 0.1, "1": 0.8, "2": 0.1},
+        }
+    return {
+        "type": "score",
+        "score": 2.0,
+        "confidence": 0.9,
+        "probabilities": {"0": 0.0, "1": 0.1, "2": 0.8, "3": 0.1},
+    }
+
+
+def _install_judge_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_noul: float,
+    item_noul: float,
+) -> None:
+    """Replay OpenRouter decisions. The transport never leaves the process."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        state = body.get("state") if isinstance(body.get("state"), dict) else {}
+        tagged = {**state, "_source_noul": source_noul, "_item_noul": item_noul}
+        questions = body.get("questions") if isinstance(body.get("questions"), dict) else {}
+        answers = {
+            str(question_id): _replay_answer(str(question_id), question, tagged)
+            for question_id, question in questions.items()
+            if isinstance(question, dict)
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "replayed-decision",
+                "model": "typesafe/jev-1.14",
+                "provider": "replay",
+                "answers": answers,
+                "usage": {"input_tokens": 8, "output_tokens": 0, "cost": 0},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport)
+    original = HttpJudge.__init__
+
+    def patched(
+        self: HttpJudge,
+        settings: Any = None,
+        *,
+        client: httpx.Client | None = None,
+        sleep: Any = None,
+        clock: Any = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {"client": client or replay_client, "sleep": lambda _seconds: None}
+        if clock is not None:
+            kwargs["clock"] = clock
+        original(self, settings, **kwargs)
+
+    replay_client = client
+    monkeypatch.setattr(HttpJudge, "__init__", patched)
+    # A configured key would also turn on the live blind solver. These journeys
+    # replay Jev only, so the solver stays the same no-op the rest of the suite uses.
+    monkeypatch.setattr(
+        "education_platform.modules.generation.worker.resolve_blind_solver",
+        lambda _injected: None,
+    )
+
+
+def _reach_qa_with_replay(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    source_noul: float,
+    item_noul: float,
+    mode: str = "enforce",
+) -> UUID:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "replay-not-a-live-key")
+    monkeypatch.setenv("JEV_JUDGE_MODE", mode)
+    get_settings.cache_clear()
+    _install_judge_replay(monkeypatch, source_noul=source_noul, item_noul=item_noul)
+    return _reach_qa_review(
+        client, admin_headers, seeded_topic_id, seeded_db, monkeypatch, tmp_path
+    )
+
+
+def _accept_current(client: TestClient, admin_headers: dict[str, str], run_id: UUID) -> None:
+    workspace = client.get(
+        f"/api/v1/teaching/generation-runs/{run_id}/review",
+        headers=admin_headers,
+    )
+    assert workspace.status_code == 200, workspace.text
+    body = workspace.json()
+    accepted = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/review-rounds/{body['open_round']['id']}/close",
+        headers=admin_headers,
+        json={"revision_id": body["active_revision"]["id"], "action": "accept_current"},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+
+@pytest.mark.regression
+def test_worker_enforce_lesson_hold_blocks_publish(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    try:
+        run_id = _reach_qa_with_replay(
+            client,
+            admin_headers,
+            seeded_topic_id,
+            seeded_db,
+            monkeypatch,
+            tmp_path,
+            source_noul=0.1,
+            item_noul=0.95,
+        )
+        seeded_db.expire_all()
+        hold = seeded_db.scalar(
+            select(JudgeEvaluation).where(
+                JudgeEvaluation.run_id == run_id,
+                JudgeEvaluation.subject_kind == "lesson",
+                JudgeEvaluation.decision == "needs_review",
+            )
+        )
+        assert hold is not None
+        assert hold.mode == "enforce"
+        step = client.get(
+            f"/api/v1/admin/generation-runs/{run_id}/steps/lesson",
+            headers=admin_headers,
+        )
+        assert step.status_code == 200, step.text
+        assert step.json()["lesson"]["needs_review"] is True
+        blocked = client.post(
+            f"/api/v1/teaching/generation-runs/{run_id}/publish",
+            headers=admin_headers,
+        )
+        assert blocked.status_code == 409, blocked.text
+        _accept_current(client, admin_headers, run_id)
+        cleared = client.get(
+            f"/api/v1/admin/generation-runs/{run_id}/steps/lesson",
+            headers=admin_headers,
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["lesson"]["needs_review"] is False
+        published = client.post(
+            f"/api/v1/teaching/generation-runs/{run_id}/publish",
+            headers=admin_headers,
+        )
+        assert published.status_code == 200, published.text
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_new_hold_after_accept_blocks_again(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    try:
+        run_id = _reach_qa_with_replay(
+            client,
+            admin_headers,
+            seeded_topic_id,
+            seeded_db,
+            monkeypatch,
+            tmp_path,
+            source_noul=0.1,
+            item_noul=0.95,
+        )
+        blocked = client.post(
+            f"/api/v1/teaching/generation-runs/{run_id}/publish",
+            headers=admin_headers,
+        )
+        assert blocked.status_code == 409, blocked.text
+        _accept_current(client, admin_headers, run_id)
+        seeded_db.add(
+            JudgeEvaluation(
+                run_id=run_id,
+                subject_kind="lesson",
+                subject_key=run_id,
+                label="Lesson needs review",
+                mode="enforce",
+                decision="needs_review",
+                reasons=["A later source check failed."],
+                checks=[
+                    {
+                        "check_id": "hold",
+                        "kind": "marker",
+                        "decision": "needs_review",
+                        "summary": "hold",
+                        "reasons": [],
+                        "probabilities": {},
+                        "drives_gate": False,
+                    }
+                ],
+                created_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+        )
+        seeded_db.commit()
+        again = client.post(
+            f"/api/v1/teaching/generation-runs/{run_id}/publish",
+            headers=admin_headers,
+        )
+        assert again.status_code == 409, again.text
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_shadow_needs_review_does_not_block_publish(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    try:
+        run_id = _reach_qa_with_replay(
+            client,
+            admin_headers,
+            seeded_topic_id,
+            seeded_db,
+            monkeypatch,
+            tmp_path,
+            source_noul=0.5,
+            item_noul=0.95,
+            mode="shadow",
+        )
+        seeded_db.expire_all()
+        row = seeded_db.scalar(
+            select(JudgeEvaluation).where(
+                JudgeEvaluation.run_id == run_id,
+                JudgeEvaluation.subject_kind == "lesson",
+            )
+        )
+        assert row is not None
+        assert row.mode == "shadow"
+        assert row.decision == "needs_review"
+        step = client.get(
+            f"/api/v1/admin/generation-runs/{run_id}/steps/lesson",
+            headers=admin_headers,
+        )
+        assert step.status_code == 200, step.text
+        assert step.json()["lesson"]["needs_review"] is False
+        published = client.post(
+            f"/api/v1/teaching/generation-runs/{run_id}/publish",
+            headers=admin_headers,
+        )
+        assert published.status_code == 200, published.text
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_qa_items_expose_judge_needs_review(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    try:
+        run_id = _reach_qa_with_replay(
+            client,
+            admin_headers,
+            seeded_topic_id,
+            seeded_db,
+            monkeypatch,
+            tmp_path,
+            source_noul=0.95,
+            item_noul=0.5,
+        )
+        preview = client.get(
+            f"/api/v1/teaching/generation-runs/{run_id}",
+            headers=admin_headers,
+        )
+        assert preview.status_code == 200, preview.text
+        items = preview.json()["qa_items"]
+        assert items
+        assert all(item["judge_needs_review"] is True for item in items)
+        version_ids = [UUID(item["question_version_id"]) for item in items]
+        versions = seeded_db.scalars(
+            select(QuestionVersion).where(QuestionVersion.id.in_(version_ids))
+        ).all()
+        assert versions
+        assert all(version.lifecycle_status is QuestionVersionStatus.DRAFT for version in versions)
+    finally:
+        get_settings.cache_clear()

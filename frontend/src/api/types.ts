@@ -830,6 +830,7 @@ export type GenerationQaItem = {
   check_verdict?: string | null;
   difficulty?: string | null;
   subtopic_title?: string | null;
+  judge_needs_review?: boolean;
 };
 
 export type GenerationStepId =
@@ -925,6 +926,7 @@ export type GenerationStepDetail = {
     markdown: string | null;
     published_lesson_version_id: string | null;
     judge?: JudgeReadout[];
+    needs_review?: boolean;
   } | null;
   items: {
     count: number;

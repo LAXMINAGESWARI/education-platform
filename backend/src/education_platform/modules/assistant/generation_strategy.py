@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from education_platform.core.config import get_settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import OpenRouterError, chat_completion_json
 from education_platform.modules.assistant.strategy import (
     AssistantContext,
@@ -22,6 +23,7 @@ from education_platform.modules.assistant.tools.retrieve_run_chunks import (
     RunChunk,
     retrieve_run_chunks,
 )
+from education_platform.modules.audit.service import AuditAction, record_event
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.generation.models import ContentGenerationRun, GenerationRevision
 from education_platform.modules.generation.revisions import (
@@ -47,7 +49,19 @@ from education_platform.modules.generation.types import (
     QuizItemTarget,
     ReviewTarget,
 )
+from education_platform.modules.guard.classifier import (
+    REVIEW_GPT_INJECTION,
+    REVIEW_INJECTION,
+    classify_noul,
+    guard_state,
+    is_positive,
+    legacy_gpt_flag,
+    message_preview_field,
+)
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 
+# Known false positives ("jailbreak school tablets", "developer mode setting")
+# stay until the shared-guards change.
 _INJECTION_PATTERNS = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instructions|"
     r"forget\s+(all\s+)?(the\s+)?((previous|prior)\s+)?(instructions|commands)|"
@@ -57,6 +71,12 @@ _INJECTION_PATTERNS = re.compile(
 
 INJECTION_BLOCKED_REPLY = (
     "I can't process that request. Ask about this frozen outline, lesson, or quiz."
+)
+# This surface previously had only the regex. A Jev error fails closed, except
+# HTTP 402, which falls back to a GPT injection classifier. A missing key stays
+# on the regex (GPT needs the same key).
+GUARD_UNAVAILABLE_REPLY = (
+    "This review assistant's safety check is unavailable. Please try again shortly."
 )
 REFUSAL_REPLY = (
     "Ask a concrete question about this generation review so I can explain the "
@@ -76,6 +96,86 @@ _SYSTEM = (
 )
 
 
+async def _record_refusal(
+    session: AsyncSession,
+    principal: Principal,
+    message: str,
+    *,
+    guard_stage: str,
+    settings: Settings,
+) -> None:
+    await record_event(
+        session,
+        institution_id=principal.institution_id,
+        actor_user_id=principal.user_id,
+        event_type=AuditAction.ASSISTANT_REFUSED,
+        entity_type="generation_review",
+        payload={
+            "surface": "generation_review",
+            "guard_stage": guard_stage,
+            **message_preview_field(message, settings),
+        },
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewGuard:
+    reply: str
+    guard_stage: str
+
+
+def _review_transcript(message: str, history: tuple[ChatTurn, ...]) -> str:
+    lines = [f"{turn.role}: {turn.content}" for turn in history[-_HISTORY_TURNS:]]
+    prior = "\n".join(lines) if lines else "(none)"
+    return f"Prior conversation:\n{prior}\n\nCurrent user message:\n{message}"
+
+
+async def screen_review_message(
+    message: str,
+    history: tuple[ChatTurn, ...],
+    settings: Settings,
+) -> ReviewGuard | None:
+    """Jev stage after the regex has already missed. None means continue.
+
+    Unconfigured Jev fails open. A Jev error fails closed. HTTP 402 falls back
+    to the GPT classifier. This surface previously stopped at the regex.
+    """
+    if not settings.openrouter_configured:
+        return None
+    try:
+        probability = await classify_noul(
+            state=guard_state(message, [(turn.role, turn.content) for turn in history]),
+            question=REVIEW_INJECTION,
+            settings=settings,
+        )
+    except JudgePaymentRequired:
+        return await _gpt_review_guard(message, history, settings)
+    except JudgeError:
+        return ReviewGuard(GUARD_UNAVAILABLE_REPLY, "jev_error")
+    if is_positive(probability, settings):
+        return ReviewGuard(INJECTION_BLOCKED_REPLY, "jev")
+    return None
+
+
+async def _gpt_review_guard(
+    message: str,
+    history: tuple[ChatTurn, ...],
+    settings: Settings,
+) -> ReviewGuard | None:
+    try:
+        flagged = await legacy_gpt_flag(
+            settings=settings,
+            system=REVIEW_GPT_INJECTION,
+            user=_review_transcript(message, history),
+            field="injection",
+        )
+    except JudgeError:
+        return ReviewGuard(GUARD_UNAVAILABLE_REPLY, "gpt_error")
+    if flagged:
+        return ReviewGuard(INJECTION_BLOCKED_REPLY, "gpt")
+    return None
+
+
 class GenerationReviewStrategy:
     kind = AssistantKind.GENERATION_REVIEW
 
@@ -88,16 +188,29 @@ class GenerationReviewStrategy:
         history: tuple[ChatTurn, ...],
         message: str,
     ) -> AssistantReply:
-        del principal
         if context.kind != "generation_review":
             raise TypeError("generation review graph requires a generation_review context")
         text = message.strip()
+        settings = get_settings()
         if _INJECTION_PATTERNS.search(text):
+            await _record_refusal(
+                session, principal, text, guard_stage="heuristic", settings=settings
+            )
             return AssistantReply(
                 content=INJECTION_BLOCKED_REPLY, citations=(), draft_change_request=None
             )
         if len(text) < 3:
             return AssistantReply(content=REFUSAL_REPLY, citations=(), draft_change_request=None)
+        refusal = await screen_review_message(text, history, settings)
+        if refusal is not None:
+            await _record_refusal(
+                session,
+                principal,
+                text,
+                guard_stage=refusal.guard_stage,
+                settings=settings,
+            )
+            return AssistantReply(content=refusal.reply, citations=(), draft_change_request=None)
 
         run = await session.get(ContentGenerationRun, context.run_id)
         if run is None:
@@ -120,7 +233,6 @@ class GenerationReviewStrategy:
             ChatCitation(id=chunk.id, label=chunk.label, excerpt=chunk.excerpt[:280])
             for chunk in chunks
         )
-        settings = get_settings()
         if not settings.openrouter_configured:
             return AssistantReply(
                 content=_heuristic_content(revision, context.target, chunks),

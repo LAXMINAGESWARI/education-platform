@@ -57,7 +57,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008", "UP042"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["education_platform"]
+known-first-party = ["education_platform", "evals"]
 
 [tool.ruff.lint.per-file-ignores]
 "alembic/versions/*.py" = ["E501"]
@@ -104,6 +104,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q --cov=education_platform --cov-report=term-missing --cov-fail-under=80"
 asyncio_mode = "auto"
+markers = [
+    "regression: key user journeys run on every PR",
+]
 testpaths = ["tests"]
 pythonpath = ["."]
 

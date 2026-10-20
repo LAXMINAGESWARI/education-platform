@@ -1,12 +1,14 @@
 """Retry a failing item with the solver's working, then drop it.
 
-The writer gets at most two retries. A blind-solve disagreement, an error, a
-choice of "none of these is correct", a failed numeric check, or a duplicate
-stem blocks the item. After the last retry the item is not shippable.
+The writer gets at most two retries. A blind-solve disagreement, a Jev reject
+when the judge is enforcing, an error, a choice of "none of these is correct",
+a failed numeric check, or a duplicate stem blocks the item. After the last
+retry the item is not shippable. A Jev error or a missing judge does not.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -14,10 +16,24 @@ from education_platform.modules.assessments.prompt_identity import same_stem
 from education_platform.modules.generation.item_checks import numeric_problems, structural_problems
 from education_platform.modules.generation.items import GeneratedItem
 
+logger = logging.getLogger(__name__)
+
 MAX_RETRIES = 2
 
 Rewrite = Callable[[GeneratedItem, str], GeneratedItem | None]
 Solve = Callable[[GeneratedItem], Mapping[str, object] | None]
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeAttempt:
+    """One Jev pass over an item. ``error`` means the call was unavailable."""
+
+    decision: str
+    reasons: tuple[str, ...] = ()
+    needs_review: bool = False
+
+
+JudgeAttemptFn = Callable[[GeneratedItem], JudgeAttempt | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +44,7 @@ class GatedItem:
     servable: bool
     reasons: tuple[str, ...]
     blind_solve: dict[str, object] | None
+    needs_review: bool = False
 
     def rubric(self) -> dict[str, object]:
         return {
@@ -35,6 +52,7 @@ class GatedItem:
             "verdict": self.verdict,
             "servable": self.servable,
             "reasons": list(self.reasons),
+            "needs_review": self.needs_review,
         }
 
 
@@ -44,14 +62,33 @@ def gate_generated_item(
     solve: Solve | None,
     rewrite: Rewrite | None,
     taken: list[str],
+    judge: JudgeAttemptFn | None = None,
+    enforce_judge: bool = False,
 ) -> GatedItem:
-    """Review ``item``. ``taken`` collects stems already kept or dropped."""
+    """Review ``item``. ``taken`` collects stems already kept or dropped.
+
+    When ``enforce_judge`` is set, a Jev reject is another failure and the
+    writer sees those reasons. Needs-review keeps the item and sets the flag.
+    A missing judge, an error decision, or ``enforce_judge`` false does not
+    add a failure.
+    """
     current = item
     reasons: tuple[str, ...] = ()
     blind: dict[str, object] | None = None
+    needs_review = False
     attempt = 1
     for attempt in range(1, MAX_RETRIES + 2):
         reasons, blind = _review(current, solve=solve, taken=taken)
+        judged = _judge_attempt(current, judge)
+        if enforce_judge and judged is not None and judged.decision == "reject":
+            extra = judged.reasons or ("Jev rejected this item.",)
+            reasons = tuple(reasons) + tuple(extra)
+        needs_review = bool(
+            enforce_judge
+            and judged is not None
+            and judged.needs_review
+            and judged.decision != "reject"
+        )
         if not reasons:
             taken.append(current.prompt)
             verdict = "passed" if attempt == 1 else "fixed_on_retry"
@@ -62,6 +99,7 @@ def gate_generated_item(
                 servable=True,
                 reasons=(),
                 blind_solve=blind,
+                needs_review=needs_review,
             )
         if attempt > MAX_RETRIES or rewrite is None:
             break
@@ -77,7 +115,18 @@ def gate_generated_item(
         servable=False,
         reasons=reasons,
         blind_solve=blind,
+        needs_review=False,
     )
+
+
+def _judge_attempt(item: GeneratedItem, judge: JudgeAttemptFn | None) -> JudgeAttempt | None:
+    if judge is None:
+        return None
+    try:
+        return judge(item)
+    except Exception:
+        logger.warning("Jev item judge failed open", exc_info=True)
+        return None
 
 
 def _review(
