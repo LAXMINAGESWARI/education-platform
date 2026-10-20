@@ -30,9 +30,13 @@ def test_settings_has_no_duplicate_fields() -> None:
     settings = Settings(_env_file=None)
     assert settings.jev_guard_timeout_seconds == 5.0
     assert settings.guard_jev_block_threshold == 0.6
-    assert settings.guard_jev_model == ""
+    assert settings.guard_jev_model == "typesafe/jev-1.14"
     assert settings.guard_audit_store_preview is False
-    assert settings.resolved_guard_jev_model == settings.jev_model
+    assert settings.resolved_guard_jev_model == "typesafe/jev-1.14"
+    changed_judge = Settings(_env_file=None, jev_model="typesafe/jev-other")
+    assert changed_judge.resolved_guard_jev_model == "typesafe/jev-1.14"
+    blank = Settings(_env_file=None, guard_jev_model="  ")
+    assert blank.resolved_guard_jev_model == "typesafe/jev-1.14"
     override = Settings(
         _env_file=None,
         jev_model="typesafe/jev-1.14",
