@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from education_platform.core.config import Settings, get_settings
@@ -16,8 +19,21 @@ from education_platform.main import app
 # A realistic async URL. The failure response must not echo any of it.
 _SECRET_URL = "postgresql+asyncpg://education:super-secret-password@db.internal:5432/education"
 
-# deploy/docker-compose.prod.yml healthcheck timeout.
-_COMPOSE_HEALTHCHECK_TIMEOUT_SECONDS = 5
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def _compose_healthcheck_timeout_seconds() -> int:
+    document = yaml.safe_load(
+        (_REPO / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    )
+    timeout = document["services"]["api"]["healthcheck"]["timeout"]
+    match = re.fullmatch(r"(\d+)s", timeout)
+    assert match is not None
+    return int(match.group(1))
+
+
+# deploy/docker-compose.prod.yml api healthcheck timeout.
+_COMPOSE_HEALTHCHECK_TIMEOUT_SECONDS = _compose_healthcheck_timeout_seconds()
 
 
 def test_default_ready_timeout_fits_compose_healthcheck() -> None:
