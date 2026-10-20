@@ -129,7 +129,7 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
     settings = get_settings()
     if not settings.openrouter_configured:
         # Fail open -- see module docstring's "Fail-open when unconfigured" section.
-        return {**state}
+        return {**state, "audit_entry": _note(state, guard_stage="unconfigured")}
 
     try:
         # The question text only. Identity stays in state for apply_role_scope.

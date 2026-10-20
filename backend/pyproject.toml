@@ -106,6 +106,9 @@ addopts = "-q --cov=education_platform --cov-report=term-missing --cov-fail-unde
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "regression: multi-step journeys replayed against fixtures",
+]
 
 [tool.coverage.run]
 branch = true
@@ -115,6 +118,7 @@ omit = [
   "*/alembic/*",
   "*/modules/materials/seed.py",
   "*/db/session.py",
+  "*/modules/guard/eval_live.py",
 ]
 
 [tool.coverage.report]

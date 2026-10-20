@@ -10,10 +10,15 @@ other question that has validated SQL is an in-domain negative.
 Does not run from pytest. From ``backend/``::
 
     uv run python scripts/eval_chat_guard.py
+
+``--max-rows`` (default 5) and ``--max-calls`` (default 10) cap the paid calls.
+Each row costs one Jev call and one GPT call, so the call budget keeps half of
+that for each side.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import time
@@ -219,12 +224,19 @@ def _print_block(name: str, rows: list[Row], scores: list[Score]) -> None:
         print(f"  usage.cost_usd_per_1000={mean_cost * 1000:.6f}")
 
 
-async def run() -> int:
+def _cap_rows(rows: list[Row], *, max_rows: int, max_calls: int) -> list[Row]:
+    """Keep the spend bounded. Two calls (Jev and GPT) are made per row."""
+    row_limit = max(0, max_rows)
+    call_limit = max(0, max_calls) // 2
+    return rows[: min(row_limit, call_limit)]
+
+
+async def run(*, max_rows: int = 5, max_calls: int = 10) -> int:
     settings = get_settings()
     if not settings.openrouter_configured or not settings.openrouter_api_key:
         print("OPENROUTER_API_KEY is not set. Live eval skipped.")
         return 0
-    rows = load_rows()
+    rows = _cap_rows(load_rows(), max_rows=max_rows, max_calls=max_calls)
     print(
         f"rows={len(rows)} jev={settings.jev_model} gpt={settings.openrouter_model} "
         f"threshold={settings.jev_block_threshold} decisions={decisions_endpoint(settings)}"
@@ -260,4 +272,8 @@ async def run() -> int:
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(run()))
+    parser = argparse.ArgumentParser(description="Live Jev versus GPT guard comparison.")
+    parser.add_argument("--max-rows", type=int, default=5)
+    parser.add_argument("--max-calls", type=int, default=10)
+    args = parser.parse_args()
+    raise SystemExit(asyncio.run(run(max_rows=args.max_rows, max_calls=args.max_calls)))
