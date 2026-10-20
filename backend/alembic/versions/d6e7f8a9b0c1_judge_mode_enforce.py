@@ -19,6 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.drop_constraint("ck_judge_evaluations_mode", "judge_evaluations", type_="check")
+    op.execute("UPDATE judge_evaluations SET mode = 'enforce' WHERE mode IN ('augment', 'replace')")
     op.create_check_constraint(
         "ck_judge_evaluations_mode",
         "judge_evaluations",
@@ -28,6 +29,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint("ck_judge_evaluations_mode", "judge_evaluations", type_="check")
+    op.execute("UPDATE judge_evaluations SET mode = 'shadow' WHERE mode = 'enforce'")
     op.create_check_constraint(
         "ck_judge_evaluations_mode",
         "judge_evaluations",
