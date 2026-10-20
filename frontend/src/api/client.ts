@@ -207,7 +207,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
 export async function apiStream(
   path: string,
-  options: { signal?: AbortSignal; lastEventId?: string; skipRefresh?: boolean } = {},
+  options: {
+    signal?: AbortSignal;
+    lastEventId?: string;
+    skipRefresh?: boolean;
+    method?: "GET" | "POST";
+    body?: unknown;
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = { Accept: "text/event-stream" };
   const token = getAccessToken();
@@ -217,9 +223,13 @@ export async function apiStream(
   if (options.lastEventId) {
     headers["Last-Event-ID"] = options.lastEventId;
   }
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(`${getApiBaseUrl()}/api/v1${path}`, {
-    method: "GET",
+    method: options.method ?? "GET",
     headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
   });
   if (res.status === 401 && !options.skipRefresh) {
