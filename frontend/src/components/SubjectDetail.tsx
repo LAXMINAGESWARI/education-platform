@@ -103,8 +103,11 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
       .then((highlights) => {
         if (cancelled || !highlights) return;
         const next = dueTopicIds(subject.topics, highlights.due_reviews);
-        if (next.length === 0) return;
-        setDueTopics(next);
+        setDueTopics((current) =>
+          current.length === next.length && current.every((id, index) => id === next[index])
+            ? current
+            : next,
+        );
       })
       .catch(() => {
         if (!cancelled) setDueTopics([]);

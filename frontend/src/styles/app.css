@@ -2073,50 +2073,6 @@ a.list-item__title:hover {
   list-style: none;
 }
 
-.topic-entry {
-  display: grid;
-  gap: 0.2rem;
-  align-content: start;
-  min-width: 0;
-  padding: 0.85rem 0.95rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: inherit;
-  text-decoration: none;
-}
-
-a.topic-entry:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-}
-
-.topic-entry.is-locked {
-  background: var(--surface-2);
-}
-
-.topic-entry__kicker {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.topic-entry__action {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-}
-
-.topic-entry__detail {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--ink-muted);
-}
-
 @media (max-width: 860px) {
   .lesson-layout {
     grid-template-columns: 1fr;
@@ -6654,6 +6610,13 @@ a.btn:disabled:hover {
    everywhere else; headings keep the styles they already have. */
 .main__inner:has(.feedback-view) .crumbs {
   font-family: var(--font-body);
+}
+
+.feedback-summary h2.progress-label {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.4;
 }
 
 .feedback-view .kicker,

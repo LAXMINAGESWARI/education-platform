@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -410,6 +410,45 @@ describe("feedback hierarchy", () => {
     expect(due).not.toHaveTextContent("Forces practice");
   });
 
+  it("scrolls to due reviews and focuses the heading after feedback loads", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    render(
+      <MemoryRouter initialEntries={["/feedback?section=due#feedback-due"]}>
+        <FeedbackSubjectPickerPage />
+      </MemoryRouter>,
+    );
+
+    const heading = await screen.findByRole("heading", { name: "Due for review" });
+    await waitFor(() => {
+      expect(heading).toHaveFocus();
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    HTMLElement.prototype.scrollIntoView = previous;
+  });
+
+  it("scrolls to needs attention and focuses that heading after subject feedback loads", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const heading = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
+    await waitFor(() => {
+      expect(heading).toHaveFocus();
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(heading).toHaveAttribute("tabindex", "-1");
+    HTMLElement.prototype.scrollIntoView = previous;
+  });
+
   it("lists topics in order and leaves an unattempted topic blank", async () => {
     const user = userEvent.setup();
     render(
@@ -428,7 +467,10 @@ describe("feedback hierarchy", () => {
     expect(screen.getByRole("region", { name: "Subject summary" })).toHaveTextContent(
       "You're doing well in Mensuration.",
     );
-    expect(screen.getByText("Needs attention: Algebra")).toHaveAttribute("id", "needs-attention");
+    expect(screen.getByRole("heading", { name: "Needs attention: Algebra" })).toHaveAttribute(
+      "id",
+      "needs-attention",
+    );
     const links = screen.getAllByRole("link");
     const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
     expect(topicLinks.map((link) => link.textContent)).toEqual(["Mensuration", "Decimals"]);
