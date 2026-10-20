@@ -1,16 +1,10 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
 from education_platform.db import models as _models
-from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.router import router as academics_router
 from education_platform.modules.assessments.router import router as assessments_router
 from education_platform.modules.assistant.router import router as assistant_router
@@ -22,29 +16,12 @@ from education_platform.modules.engagement.router import router as engagement_ro
 from education_platform.modules.generation.router import router as generation_router
 from education_platform.modules.insights.router import router as insights_router
 from education_platform.modules.materials.router import router as materials_router
-from education_platform.modules.materials.seed import seed_approved_materials
 from education_platform.modules.progress.router import router as progress_router
 from education_platform.modules.rag.router import router as rag_router
 from education_platform.modules.self_evaluation.router import router as self_evaluation_router
 from education_platform.modules.text_to_sql.router import router as text_to_sql_router
 
 _ = _models
-
-
-def _seed_if_empty() -> None:
-    settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            seed_approved_materials(session, replace=False)
-    finally:
-        engine.dispose()
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    _seed_if_empty()
-    yield
 
 
 def cors_origin_regex(origin_regex: str) -> str | None:
@@ -57,7 +34,9 @@ def cors_origin_regex(origin_regex: str) -> str | None:
 
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+# Curriculum loading is a one-off job (`python -m education_platform.modules.materials.seed`).
+# Replicas must not write that catalog on boot.
+app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

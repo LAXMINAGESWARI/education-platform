@@ -113,7 +113,6 @@ source = ["education_platform"]
 concurrency = ["thread", "greenlet"]
 omit = [
   "*/alembic/*",
-  "*/modules/materials/seed.py",
   "*/db/session.py",
 ]
 
