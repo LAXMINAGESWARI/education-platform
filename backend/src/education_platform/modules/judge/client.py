@@ -151,7 +151,9 @@ def _snippet(body: str) -> str:
     return text
 
 
-def _parse_result(payload: object, *, latency_ms: int) -> DecisionResult:
+def _parse_result(
+    payload: object, *, latency_ms: int, strict_units: bool = False
+) -> DecisionResult:
     if not isinstance(payload, dict):
         raise JudgeResponseError("Jev response was not a JSON object.")
     answers_raw = payload.get("answers")
@@ -161,7 +163,7 @@ def _parse_result(payload: object, *, latency_ms: int) -> DecisionResult:
     for key, value in answers_raw.items():
         if not isinstance(key, str) or not isinstance(value, dict):
             raise JudgeResponseError("Jev returned an answer that is not an object.")
-        answers[key] = _parse_answer(key, value)
+        answers[key] = _parse_answer(key, value, strict_units=strict_units)
     usage = payload.get("usage")
     input_tokens = 0
     output_tokens = 0
@@ -185,10 +187,10 @@ def _parse_result(payload: object, *, latency_ms: int) -> DecisionResult:
     )
 
 
-def _parse_answer(key: str, value: Mapping[str, object]) -> Answer:
+def _parse_answer(key: str, value: Mapping[str, object], *, strict_units: bool = False) -> Answer:
     kind = value.get("type")
     if kind == "noul":
-        noul = _required_unit(value.get("noul"), key)
+        noul = _required_unit(value.get("noul"), key, strict=strict_units)
         return NoulAnswer(noul=noul)
     if kind == "choice":
         choice = value.get("choice")
@@ -196,8 +198,8 @@ def _parse_answer(key: str, value: Mapping[str, object]) -> Answer:
             raise JudgeResponseError(f"Jev choice answer {key} did not name an option.")
         return ChoiceAnswer(
             choice=choice,
-            probabilities=_probability_map(value.get("probabilities")),
-            confidence=_optional_unit(value.get("confidence")),
+            probabilities=_probability_map(value.get("probabilities"), strict=strict_units),
+            confidence=_optional_unit(value.get("confidence"), strict=strict_units),
         )
     if kind == "score":
         score = value.get("score")
@@ -206,16 +208,18 @@ def _parse_answer(key: str, value: Mapping[str, object]) -> Answer:
         score_value = float(score)
         if math.isnan(score_value):
             raise JudgeResponseError(f"Jev score answer {key} was NaN.")
+        if math.isinf(score_value):
+            raise JudgeResponseError(f"Jev score answer {key} was infinite.")
         return ScoreAnswer(
             score=score_value,
-            probabilities=_probability_map(value.get("probabilities")),
-            confidence=_optional_unit(value.get("confidence")),
+            probabilities=_probability_map(value.get("probabilities"), strict=strict_units),
+            confidence=_optional_unit(value.get("confidence"), strict=strict_units),
             legend=_legend(value.get("legend")),
         )
     raise JudgeResponseError(f"Jev answer {key} has unexpected type {kind!r}.")
 
 
-def _probability_map(raw: object) -> dict[str, float] | None:
+def _probability_map(raw: object, *, strict: bool = False) -> dict[str, float] | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -224,7 +228,7 @@ def _probability_map(raw: object) -> dict[str, float] | None:
     for key, value in raw.items():
         if not isinstance(key, str):
             raise JudgeResponseError("Jev probability keys must be strings.")
-        parsed[key] = _required_unit(value, key)
+        parsed[key] = _required_unit(value, key, strict=strict)
     return parsed
 
 
@@ -240,14 +244,20 @@ def _legend(raw: object) -> dict[str, str] | None:
     return parsed
 
 
-def _required_unit(raw: object, key: str) -> float:
-    value = _optional_unit(raw)
+def _required_unit(raw: object, key: str, *, strict: bool = False) -> float:
+    value = _optional_unit(raw, strict=strict)
     if value is None:
         raise JudgeResponseError(f"Jev answer {key} is missing a probability.")
     return value
 
 
-def _optional_unit(raw: object) -> float | None:
+def _optional_unit(raw: object, *, strict: bool = False) -> float | None:
+    """Parse a probability.
+
+    The lesson and quiz judge clamps a finite value outside 0-1. NaN and
+    ±infinity are rejected on that path and on the chat guard, which also
+    rejects a finite value outside 0-1 (``strict=True``).
+    """
     if raw is None:
         return None
     if isinstance(raw, bool) or not isinstance(raw, int | float):
@@ -255,8 +265,14 @@ def _optional_unit(raw: object) -> float | None:
     value = float(raw)
     if math.isnan(value):
         raise JudgeResponseError("Jev returned a NaN probability.")
-    if math.isinf(value) or value < 0.0 or value > 1.0:
+    if math.isinf(value):
+        raise JudgeResponseError("Jev returned an infinite probability.")
+    if strict and (value < 0.0 or value > 1.0):
         raise JudgeResponseError("Jev returned a probability outside 0-1.")
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
     return value
 
 
@@ -335,7 +351,7 @@ async def _post_guard_once(
     except ValueError as exc:
         raise JudgeError("Decisions response was not JSON") from exc
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    return _parse_result(payload, latency_ms=max(elapsed_ms, 0))
+    return _parse_result(payload, latency_ms=max(elapsed_ms, 0), strict_units=True)
 
 
 async def post_decisions(

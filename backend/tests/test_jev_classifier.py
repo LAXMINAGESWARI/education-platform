@@ -386,6 +386,27 @@ async def test_nan_noul_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_guard_rejects_infinite_and_out_of_range_noul() -> None:
+    settings = Settings(openrouter_api_key="test-key")
+    for raw in ("Infinity", "-Infinity", "1.5", "-0.1"):
+
+        def handler(_request: httpx.Request, raw: str = raw) -> httpx.Response:
+            body = '{"answers": {"decision": {"type": "noul", "noul": ' + raw + "}}}"
+            return httpx.Response(
+                200, content=body.encode(), headers={"content-type": "application/json"}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(JudgeResponseError):
+                await post_decisions(
+                    state="hello",
+                    questions={"decision": DATA_INJECTION},
+                    settings=settings,
+                    client=client,
+                )
+
+
+@pytest.mark.asyncio
 async def test_timeout_and_5xx_retry_once_then_fail() -> None:
     settings = Settings(openrouter_api_key="test-key", jev_guard_timeout_seconds=5.0)
     calls = {"n": 0}

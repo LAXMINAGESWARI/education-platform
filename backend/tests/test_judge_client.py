@@ -208,28 +208,39 @@ def _json_response(body: str) -> httpx.Response:
     return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
 
 
-def test_probability_outside_0_1_is_rejected() -> None:
-    def high(_request: httpx.Request) -> httpx.Response:
-        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}')
+def _noul(body: str) -> float:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(body)
 
     judge = HttpJudge(
         _settings(),
-        client=httpx.Client(transport=httpx.MockTransport(high)),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
         sleep=lambda _seconds: None,
     )
-    with pytest.raises(JudgeResponseError, match="outside 0-1"):
-        judge.decide(_request())
+    answer = judge.decide(_request()).answers["is_bug"]
+    assert isinstance(answer, NoulAnswer)
+    return answer.noul
 
-    def low(_request: httpx.Request) -> httpx.Response:
-        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}')
 
-    low_judge = HttpJudge(
-        _settings(),
-        client=httpx.Client(transport=httpx.MockTransport(low)),
-        sleep=lambda _seconds: None,
-    )
-    with pytest.raises(JudgeResponseError, match="outside 0-1"):
-        low_judge.decide(_request())
+def test_judge_clamps_a_finite_probability_and_rejects_infinity() -> None:
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}') == 1.0
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}') == 0.0
+
+    def infinite(body: str) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return _json_response(body)
+
+        judge = HttpJudge(
+            _settings(),
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            sleep=lambda _seconds: None,
+        )
+        with pytest.raises(JudgeResponseError, match="infinite"):
+            judge.decide(_request())
+
+    infinite('{"answers": {"is_bug": {"type": "noul", "noul": Infinity}}}')
+    infinite('{"answers": {"is_bug": {"type": "noul", "noul": -Infinity}}}')
+    infinite('{"answers": {"urgency": {"type": "score", "score": Infinity}}}')
 
 
 def test_nan_noul_and_score_are_rejected() -> None:
