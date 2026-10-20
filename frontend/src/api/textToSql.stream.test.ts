@@ -7,11 +7,13 @@ vi.mock("./client", () => ({
 }));
 
 import { apiStream } from "./client";
+import { TEXT_TO_SQL_STAGE_ORDER, stageVisuals } from "./stageOrder";
 import { progressReconnectDelayMs } from "./sseReconnect";
 import {
   TEXT_TO_SQL_STAGES,
   askQuestionStream,
   parseTextToSqlFrame,
+  type TextToSqlProgress,
 } from "./textToSql";
 
 const REQUEST_ID = "2f1c0c2e-7b1a-4e0a-9c3d-1a2b3c4d5e6f";
@@ -279,6 +281,56 @@ describe("askQuestionStream", () => {
       { question: "How many students do I teach?", request_id: REQUEST_ID },
     ]);
     expect(vi.mocked(apiStream).mock.calls.every((call) => call[1]?.lastEventId === undefined)).toBe(true);
+  });
+
+  it("ignores a lower seq and applies a mid-stream snapshot after reconnect", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const accepted: TextToSqlProgress[] = [];
+    vi.mocked(apiStream)
+      .mockResolvedValueOnce(
+        streamResponse([
+          progressFrame("checking", "running", 1, "Checking your question"),
+          progressFrame("running", "running", 4, "Looking up the data"),
+          progressFrame("understanding", "running", 2, "Stale"),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        streamResponse([
+          progressFrame("validating", "running", 1, "Checking the query"),
+          finalFrame(),
+        ]),
+      );
+
+    const pending = askQuestionStream("How many students do I teach?", {
+      requestId: REQUEST_ID,
+      onProgress: (progress) => {
+        accepted.push(progress);
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(accepted.map((progress) => `${progress.seq}:${progress.stage}`)).toEqual([
+      "1:checking",
+      "4:running",
+    ]);
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    await pending;
+
+    expect(accepted.map((progress) => `${progress.seq}:${progress.stage}`)).toEqual([
+      "1:checking",
+      "4:running",
+      "1:validating",
+    ]);
+    const snapshot = accepted.at(-1) ?? null;
+    expect(stageVisuals(TEXT_TO_SQL_STAGE_ORDER, snapshot).map((item) => item.visual)).toEqual([
+      "complete",
+      "complete",
+      "complete",
+      "current",
+      "pending",
+      "pending",
+    ]);
   });
 
   it("does not reconnect after a terminal frame", async () => {

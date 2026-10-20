@@ -4861,10 +4861,6 @@ button.admin-published-row {
   accent-color: var(--accent);
 }
 
-.assistant-chat .generation-stepper__step.is-skipped {
-  opacity: 0.55;
-}
-
 .assistant-chat__table-wrap {
   max-width: 100%;
 }

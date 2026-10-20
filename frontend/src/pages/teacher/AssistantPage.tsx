@@ -1,28 +1,22 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
-import { ApiError } from "../../api/types";
 import { ProgressReconnectError } from "../../api/progress";
+import { stageVisuals, type StageVisual } from "../../api/stageOrder";
 import {
   askQuestion,
   askQuestionStream,
-  TEXT_TO_SQL_STAGES,
   TEXT_TO_SQL_STAGE_LABEL,
+  TEXT_TO_SQL_STAGES,
   type Confidence,
   type TextToSqlProgress,
-  type TextToSqlStage,
   type TextToSqlTable,
 } from "../../api/textToSql";
+import { ApiError } from "../../api/types";
 import { Crumbs } from "../../components/Crumbs";
 import { claimHaptic, triggerHaptic } from "../../lib/haptics";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { ProgressReconnectStatus, ProgressStreamAlert } from "../../components/ProgressReconnect";
 import { PushButton } from "../../components/PushButton";
-
-type StageState = {
-  status: TextToSqlProgress["status"];
-  message: string | null;
-  percent: number | null;
-};
 
 type EntryStatus = "pending" | "done" | "refusal" | "error" | "cancelled";
 
@@ -30,7 +24,7 @@ type ThreadEntry = {
   id: string;
   question: string;
   status: EntryStatus;
-  stages: Partial<Record<TextToSqlStage, StageState>>;
+  progress: TextToSqlProgress | null;
   answer: string;
   table?: TextToSqlTable;
   confidence?: Confidence | null;
@@ -106,22 +100,6 @@ function isStreamMissing(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 404 || error.status === 405);
 }
 
-type StageVisual = "pending" | "current" | "complete" | "failed" | "skipped";
-
-function stageVisual(
-  stage: TextToSqlStage,
-  stages: Partial<Record<TextToSqlStage, StageState>>,
-): StageVisual {
-  const known = stages[stage];
-  if (known?.status === "failed") return "failed";
-  if (known?.status === "done") return "complete";
-  if (known?.status === "running") return "current";
-  const index = TEXT_TO_SQL_STAGES.indexOf(stage);
-  const laterStarted = TEXT_TO_SQL_STAGES.slice(index + 1).some((later) => stages[later] !== undefined);
-  if (laterStarted) return "skipped";
-  return "pending";
-}
-
 function stageVisualLabel(visual: StageVisual): string {
   switch (visual) {
     case "pending":
@@ -132,8 +110,6 @@ function stageVisualLabel(visual: StageVisual): string {
       return "Done";
     case "failed":
       return "Failed";
-    case "skipped":
-      return "Not used";
     default: {
       const _never: never = visual;
       return _never;
@@ -141,70 +117,42 @@ function stageVisualLabel(visual: StageVisual): string {
   }
 }
 
-function latestRunningStage(
-  stages: Partial<Record<TextToSqlStage, StageState>>,
-): TextToSqlStage | undefined {
-  for (let index = TEXT_TO_SQL_STAGES.length - 1; index >= 0; index -= 1) {
-    const stage = TEXT_TO_SQL_STAGES[index];
-    if (stage !== undefined && stages[stage]?.status === "running") return stage;
-  }
-  return undefined;
-}
-
-function currentStageMessage(stages: Partial<Record<TextToSqlStage, StageState>>): {
-  message: string;
-  percent: number | null;
-} | null {
-  for (let index = TEXT_TO_SQL_STAGES.length - 1; index >= 0; index -= 1) {
-    const stage = TEXT_TO_SQL_STAGES[index];
-    if (stage === undefined) continue;
-    const known = stages[stage];
-    if (known?.status === "running" && known.message) {
-      return { message: known.message, percent: known.percent };
-    }
-  }
-  return null;
-}
-
 function cellText(value: TextToSqlTable["rows"][number][number]): string {
   if (value === null) return "";
   return String(value);
 }
 
-function AskStageStepper({ stages }: { stages: Partial<Record<TextToSqlStage, StageState>> }) {
-  const live = currentStageMessage(stages);
+function AskStageStepper({ progress }: { progress: TextToSqlProgress | null }) {
+  const steps = stageVisuals(TEXT_TO_SQL_STAGES, progress);
   return (
     <div className="assistant-chat__stages">
       <ol className="generation-stepper" aria-label="Answer progress">
-        {TEXT_TO_SQL_STAGES.map((stage) => {
-          const visual = stageVisual(stage, stages);
-          return (
-            <li
-              key={stage}
-              className={`generation-stepper__step is-${visual}`}
-              aria-current={stage === latestRunningStage(stages) ? "step" : undefined}
-            >
-              <span className="generation-stepper__label">{TEXT_TO_SQL_STAGE_LABEL[stage]}</span>
-              <span className="generation-stepper__state">{stageVisualLabel(visual)}</span>
-            </li>
-          );
-        })}
+        {steps.map(({ stage, visual }) => (
+          <li
+            key={stage}
+            className={`generation-stepper__step is-${visual}`}
+            aria-current={visual === "current" ? "step" : undefined}
+          >
+            <span className="generation-stepper__label">{TEXT_TO_SQL_STAGE_LABEL[stage]}</span>
+            <span className="generation-stepper__state">{stageVisualLabel(visual)}</span>
+          </li>
+        ))}
       </ol>
       <p className="assistant-chat__stage-message" role="status" aria-live="polite" aria-atomic="true">
-        {live ? (
+        {progress?.message ? (
           <>
-            {live.message}
-            {live.percent !== null ? (
-              <span className="assistant-chat__percent"> {live.percent}%</span>
+            {progress.message}
+            {progress.percent !== null ? (
+              <span className="assistant-chat__percent"> {progress.percent}%</span>
             ) : null}
           </>
         ) : (
           <span className="sr-only">Waiting for the next update</span>
         )}
       </p>
-      {live?.percent !== null && live ? (
-        <progress className="assistant-chat__meter" max={100} value={live.percent}>
-          {live.percent}%
+      {progress !== null && progress.percent !== null ? (
+        <progress className="assistant-chat__meter" max={100} value={progress.percent}>
+          {progress.percent}%
         </progress>
       ) : null}
     </div>
@@ -256,7 +204,7 @@ function emptyEntry(id: string, question: string): ThreadEntry {
     id,
     question,
     status: "pending",
-    stages: {},
+    progress: null,
     answer: "",
     reconnecting: false,
   };
@@ -312,14 +260,7 @@ export function AssistantPage() {
         onProgress: (progress) => {
           patchEntry(id, (entry) => ({
             ...entry,
-            stages: {
-              ...entry.stages,
-              [progress.stage]: {
-                status: progress.status,
-                message: progress.message,
-                percent: progress.percent,
-              },
-            },
+            progress,
           }));
         },
         onAnswerReset: () => {
@@ -327,7 +268,7 @@ export function AssistantPage() {
             ...entry,
             answer: "",
             table: undefined,
-            stages: {},
+            progress: null,
           }));
         },
         onAnswerDelta: (delta) => {
@@ -391,7 +332,7 @@ export function AssistantPage() {
             answer: fallback.natural_answer,
             confidence: fallback.confidence,
             provenance: fallback.provenance,
-            stages: {},
+            progress: null,
             reconnecting: false,
           }));
           triggerHaptic("success");
@@ -470,7 +411,7 @@ export function AssistantPage() {
             {entry.status === "pending" && (
               <div className="assistant-chat__live" aria-label="Assistant">
                 <ProgressReconnectStatus active={entry.reconnecting} />
-                <AskStageStepper stages={entry.stages} />
+                <AskStageStepper progress={entry.progress} />
                 {entry.answer ? (
                   <p className="assistant-chat__body" aria-live="polite">
                     {entry.answer}
@@ -489,7 +430,7 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {Object.keys(entry.stages).length > 0 ? <AskStageStepper stages={entry.stages} /> : null}
+                {entry.progress !== null ? <AskStageStepper progress={entry.progress} /> : null}
                 {entry.table ? <ResultTable table={entry.table} /> : null}
                 <div aria-live="polite">
                   <MarkdownContent className="assistant-chat__body markdown">
@@ -507,7 +448,7 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {Object.keys(entry.stages).length > 0 ? <AskStageStepper stages={entry.stages} /> : null}
+                {entry.progress !== null ? <AskStageStepper progress={entry.progress} /> : null}
                 <p className="assistant-chat__body" role="status">
                   {entry.refusal}
                 </p>

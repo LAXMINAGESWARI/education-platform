@@ -328,7 +328,7 @@ describe("AssistantPage", () => {
       await ask(user);
 
       expect(screen.getByRole("list", { name: "Answer progress" })).toBeInTheDocument();
-      expect(screen.getByText("Checking")).toBeInTheDocument();
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("Done");
       expect(screen.getByText("Understanding")).toHaveTextContent("Understanding");
       const current = screen.getByText("Understanding").closest("li");
       expect(current).toHaveAttribute("aria-current", "step");
@@ -513,10 +513,8 @@ describe("AssistantPage", () => {
       expect(signal?.aborted).toBe(true);
     });
 
-    it("marks a later stage's predecessors as not used when the SQL stages are skipped", async () => {
+    it("marks every earlier stage done when the stream skips to running", async () => {
       vi.mocked(textToSqlApi.askQuestionStream).mockImplementation(async (_question, handlers) => {
-        handlers?.onProgress?.(progress("checking", "done", null));
-        handlers?.onProgress?.(progress("understanding", "done", null));
         handlers?.onProgress?.(progress("running", "running", "Looking up the data"));
         return {
           kind: "final",
@@ -529,8 +527,13 @@ describe("AssistantPage", () => {
       await ask(user, "Show me the struggling students.");
 
       const writing = await screen.findByText("Writing the query");
-      expect(writing.closest("li")).toHaveTextContent("Not used");
-      expect(screen.getByText("Validating").closest("li")).toHaveTextContent("Not used");
+      expect(writing.closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Validating").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Running").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Running").closest("li")).toHaveAttribute("aria-current", "step");
+      expect(screen.getByText("Summarising").closest("li")).toHaveTextContent("Pending");
     });
   });
 });

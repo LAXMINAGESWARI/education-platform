@@ -5,6 +5,7 @@ import {
   type ProgressReconnectNotice,
   type SseFrame,
 } from "./sseReconnect";
+import { noteProgressSeq, resetProgressCursor, TEXT_TO_SQL_STAGE_ORDER } from "./stageOrder";
 
 export type Confidence = "high" | "medium" | "low";
 
@@ -29,16 +30,9 @@ export function askQuestion(question: string): Promise<AskResponse> {
   });
 }
 
-export const TEXT_TO_SQL_STAGES = [
-  "checking",
-  "understanding",
-  "writing_query",
-  "validating",
-  "running",
-  "summarising",
-] as const;
+export const TEXT_TO_SQL_STAGES = TEXT_TO_SQL_STAGE_ORDER;
 
-export type TextToSqlStage = (typeof TEXT_TO_SQL_STAGES)[number];
+export type TextToSqlStage = (typeof TEXT_TO_SQL_STAGE_ORDER)[number];
 
 export type TextToSqlStageStatus = "running" | "done" | "failed";
 
@@ -223,7 +217,8 @@ function newRequestId(): string {
 /**
  * Stream one teacher question. A dropped connection re-POSTs the same
  * `request_id`. Nothing is replayed: the server starts the ask again, so
- * `onAnswerReset` fires before that next POST and the UI drops partial text.
+ * the seq cursor resets and `onAnswerReset` fires before that next POST.
+ * A progress seq lower than the last accepted one is ignored. Gaps are kept.
  * `final`, `refusal`, and `error` end the subscription.
  */
 export async function askQuestionStream(
@@ -232,6 +227,7 @@ export async function askQuestionStream(
 ): Promise<TextToSqlStreamResult> {
   const requestId = handlers.requestId ?? newRequestId();
   let outcome: TextToSqlStreamResult | undefined;
+  let cursor = resetProgressCursor();
 
   await subscribeSse({
     signal: handlers.signal,
@@ -243,6 +239,7 @@ export async function askQuestionStream(
       }),
     onReconnected: handlers.onReconnected,
     onReconnecting: (notice) => {
+      cursor = resetProgressCursor();
       handlers.onAnswerReset?.();
       handlers.onReconnecting?.(notice);
     },
@@ -252,9 +249,13 @@ export async function askQuestionStream(
         case "heartbeat":
         case "ignore":
           return;
-        case "progress":
+        case "progress": {
+          const noted = noteProgressSeq(cursor, parsed.progress.seq);
+          cursor = noted.cursor;
+          if (!noted.accept) return;
           handlers.onProgress?.(parsed.progress);
           return;
+        }
         case "answer_delta":
           handlers.onAnswerDelta?.(parsed.text);
           return;
