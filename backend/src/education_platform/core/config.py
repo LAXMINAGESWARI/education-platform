@@ -67,7 +67,9 @@ class Settings(BaseSettings):
     jev_model: str = "typesafe/jev-1.14"
     jev_timeout_seconds: float = 30.0
     jev_max_retries: int = 2
-    # JEV_JUDGE_MODE wins. Unset falls back to the older JEV_MODE name, then enforce.
+    # JEV_JUDGE_MODE wins when it is set. Unset, unknown, and legacy values resolve
+    # to shadow. enforce is an explicit JEV_JUDGE_MODE=enforce opt-in. JEV_MODE is
+    # the previous name and applies only for off or shadow when JEV_JUDGE_MODE is unset.
     jev_judge_mode: str | None = None
     jev_mode: str | None = None
     jev_noul_accept: float = 0.80

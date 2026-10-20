@@ -50,6 +50,10 @@ class ItemJudgeTracker:
         self._target_for = target_for
         self._enforce = enforce
 
+    def begin_item(self) -> None:
+        """Drop the previous item's evaluation before the next one is judged."""
+        self.evaluation = None
+
     def __call__(self, item: GeneratedItem) -> JudgeAttempt | None:
         try:
             evaluation = evaluate_item(self._target_for(item), self._judge)

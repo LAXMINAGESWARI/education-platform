@@ -395,7 +395,17 @@ def test_jev_hold_blocks_publish_until_qa_accept(
             mode="enforce",
             decision="needs_review",
             reasons=["A section stayed ungrounded after one rewrite."],
-            checks=[],
+            checks=[
+                {
+                    "check_id": "hold",
+                    "kind": "marker",
+                    "decision": "needs_review",
+                    "summary": "hold",
+                    "reasons": [],
+                    "probabilities": {},
+                    "drives_gate": False,
+                }
+            ],
         )
     )
     seeded_db.commit()
@@ -601,6 +611,12 @@ def test_worker_enforce_lesson_hold_blocks_publish(
         )
         assert blocked.status_code == 409, blocked.text
         _accept_current(client, admin_headers, run_id)
+        cleared = client.get(
+            f"/api/v1/admin/generation-runs/{run_id}/steps/lesson",
+            headers=admin_headers,
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["lesson"]["needs_review"] is False
         published = client.post(
             f"/api/v1/teaching/generation-runs/{run_id}/publish",
             headers=admin_headers,
@@ -645,7 +661,17 @@ def test_new_hold_after_accept_blocks_again(
                 mode="enforce",
                 decision="needs_review",
                 reasons=["A later source check failed."],
-                checks=[],
+                checks=[
+                    {
+                        "check_id": "hold",
+                        "kind": "marker",
+                        "decision": "needs_review",
+                        "summary": "hold",
+                        "reasons": [],
+                        "probabilities": {},
+                        "drives_gate": False,
+                    }
+                ],
                 created_at=datetime.now(UTC) + timedelta(minutes=5),
             )
         )
@@ -690,6 +716,12 @@ def test_shadow_needs_review_does_not_block_publish(
         assert row is not None
         assert row.mode == "shadow"
         assert row.decision == "needs_review"
+        step = client.get(
+            f"/api/v1/admin/generation-runs/{run_id}/steps/lesson",
+            headers=admin_headers,
+        )
+        assert step.status_code == 200, step.text
+        assert step.json()["lesson"]["needs_review"] is False
         published = client.post(
             f"/api/v1/teaching/generation-runs/{run_id}/publish",
             headers=admin_headers,

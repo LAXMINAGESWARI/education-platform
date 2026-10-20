@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from education_platform.core.config import Settings
+from education_platform.modules.judge import policy as judge_policy
 from education_platform.modules.judge.checks import (
     ItemTarget,
     LessonTarget,
@@ -164,7 +167,7 @@ def test_coverage_and_difficulty_rules() -> None:
 def test_legacy_jev_mode_env_is_not_silently_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JEV_JUDGE_MODE", raising=False)
     monkeypatch.delenv("JEV_MODE", raising=False)
-    assert judge_mode(Settings(_env_file=None)) == "enforce"
+    assert judge_mode(Settings(_env_file=None)) == "shadow"
 
     monkeypatch.setenv("JEV_MODE", "shadow")
     legacy = Settings(_env_file=None)
@@ -173,3 +176,67 @@ def test_legacy_jev_mode_env_is_not_silently_ignored(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setenv("JEV_JUDGE_MODE", "enforce")
     assert judge_mode(Settings(_env_file=None)) == "enforce"
+
+
+@pytest.mark.regression
+def test_unset_garbage_and_augment_resolve_to_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.delenv("JEV_JUDGE_MODE", raising=False)
+    assert judge_mode(Settings(_env_file=None)) == "shadow"
+
+    monkeypatch.setenv("JEV_MODE", "enforce")
+    assert judge_mode(Settings(_env_file=None)) == "shadow"
+
+    for raw in ("garbage", "augment", "replace"):
+        monkeypatch.setenv("JEV_JUDGE_MODE", raw)
+        assert judge_mode(Settings(_env_file=None)) == "shadow"
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.message for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+@pytest.mark.regression
+def test_invalid_and_legacy_judge_mode_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    logger_name = "education_platform.modules.judge.policy"
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.delenv("JEV_JUDGE_MODE", raising=False)
+    monkeypatch.setattr(judge_policy, "_judge_mode_warned", False)
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+    assert _warnings(caplog) == []
+
+    for raw in ("off", "shadow", "enforce"):
+        caplog.clear()
+        monkeypatch.setattr(judge_policy, "_judge_mode_warned", False)
+        monkeypatch.delenv("JEV_MODE", raising=False)
+        monkeypatch.setenv("JEV_JUDGE_MODE", raw)
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+        assert _warnings(caplog) == []
+
+    for raw in ("garbage", "augment"):
+        caplog.clear()
+        monkeypatch.setattr(judge_policy, "_judge_mode_warned", False)
+        monkeypatch.delenv("JEV_MODE", raising=False)
+        monkeypatch.setenv("JEV_JUDGE_MODE", raw)
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+            judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+        messages = _warnings(caplog)
+        assert len(messages) == 1
+        assert "shadow" in messages[0]
+
+    caplog.clear()
+    monkeypatch.setattr(judge_policy, "_judge_mode_warned", False)
+    monkeypatch.delenv("JEV_JUDGE_MODE", raising=False)
+    monkeypatch.setenv("JEV_MODE", "enforce")
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+        judge_policy.warn_judge_mode_at_startup(Settings(_env_file=None))
+    messages = _warnings(caplog)
+    assert len(messages) == 1
+    assert "legacy" in messages[0].lower()
+    assert "shadow" in messages[0]
