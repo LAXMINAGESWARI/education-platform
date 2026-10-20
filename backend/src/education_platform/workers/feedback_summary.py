@@ -17,6 +17,7 @@ from education_platform.modules.assessments.models import (
     FeedbackSummaryOrigin,
 )
 from education_platform.workers.lease import (
+    close_session,
     commit_owned,
     exceeded_max_attempts_message,
     prepare_leased_writes,
@@ -52,7 +53,7 @@ def process_feedback_summary_job_sync(job_id: UUID) -> None:
         session.rollback()
         _release_for_retry(job_id)
     finally:
-        session.close()
+        close_session(session)
 
 
 def fail_exhausted_feedback_summary_job(session: Session, job_id: UUID) -> None:
@@ -87,4 +88,4 @@ def _release_for_retry(job_id: UUID) -> None:
         logger.exception("Could not release feedback summary job %s", job_id)
         session.rollback()
     finally:
-        session.close()
+        close_session(session)

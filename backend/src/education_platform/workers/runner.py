@@ -42,6 +42,7 @@ from education_platform.workers.lease import (
     OwnedLease,
     bind_lease,
     claim,
+    close_session,
     heartbeat,
 )
 from education_platform.workers.shutdown import WorkerShutdown
@@ -203,7 +204,7 @@ def poll_once(
         return curriculum
     finally:
         if owns_session:
-            db.close()
+            close_session(db)
 
 
 def run_forever(
@@ -229,10 +230,25 @@ def run_forever(
     )
     try:
         while not state.stop.is_set():
-            claimed = poll() if poll is not None else poll_once(shutdown=state)
-            if state.stop.is_set():
-                break
-            if claimed is None and state.stop.wait(poll_interval_seconds):
-                break
+            try:
+                claimed = poll() if poll is not None else poll_once(shutdown=state)
+                if state.stop.is_set():
+                    break
+                if claimed is None and state.stop.wait(poll_interval_seconds):
+                    break
+            except KeyboardInterrupt:
+                _log_shutdown(state)
+                return
     except KeyboardInterrupt:
+        _log_shutdown(state)
+
+
+def _log_shutdown(state: WorkerShutdown) -> None:
+    """Say whether the release matched. A miss must not be logged as a requeue."""
+    if state.release_matched is True:
         logger.info("Worker shutdown cancelled the in-flight job after releasing its lease")
+        return
+    if state.release_matched is False:
+        logger.info("Worker shutdown cancelled the in-flight job; its lease release did not match")
+        return
+    logger.info("Worker shutdown cancelled the in-flight job")

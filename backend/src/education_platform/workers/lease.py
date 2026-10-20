@@ -95,6 +95,19 @@ def bind_lease(lease: OwnedLease) -> Iterator[OwnedLease]:
         _bound_lease.reset(token)
 
 
+def close_session(session: Session) -> None:
+    """Close ``session``. A shutdown interrupt during close still propagates.
+
+    ``run_forever`` catches that ``KeyboardInterrupt`` so the process exits
+    cleanly instead of tracebacking out of ``session.close()``.
+    """
+    try:
+        session.close()
+    except KeyboardInterrupt:
+        logger.info("Worker shutdown interrupted session close")
+        raise
+
+
 def prepare_leased_writes(session: Session) -> None:
     """Turn autoflush off while a lease is bound.
 

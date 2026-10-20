@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import threading
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -16,10 +18,23 @@ from pydantic import ValidationError
 from education_platform.core.config import Settings, get_settings
 from education_platform.modules.generation.models import GenerationJob
 from education_platform.modules.generation.types import GenerationJobStatus
-from education_platform.workers.lease import OwnedLease, release_lease
+from education_platform.workers.lease import OwnedLease, close_session, release_lease
 from education_platform.workers.runner import _run_claimed, poll_once, run_forever
-from education_platform.workers.shutdown import WorkerShutdown, _interrupt_job
+from education_platform.workers.shutdown import (
+    WorkerShutdown,
+    _interrupt_job,
+    clear_interrupt_request,
+    interrupt_after_release_requested,
+    request_interrupt_after_release,
+)
 from test_worker_lease import JobRow, ReleaseSession
+
+
+@pytest.fixture(autouse=True)
+def _reset_interrupt_request() -> Iterator[None]:
+    clear_interrupt_request()
+    yield
+    clear_interrupt_request()
 
 
 class FakeClock:
@@ -237,9 +252,14 @@ def test_grace_expiry_releases_before_interrupting_and_does_not_os_exit(
 ) -> None:
     order: list[object] = []
     monkeypatch.setattr(os, "_exit", lambda code: order.append(("os_exit", code)))
+
+    def _wake() -> None:
+        order.append("interrupt")
+        assert interrupt_after_release_requested() is True
+
     monkeypatch.setattr(
         "education_platform.workers.shutdown.wake_worker_main",
-        lambda: order.append("interrupt"),
+        _wake,
     )
     job_id = uuid4()
     locked_until = datetime(2026, 10, 20, 4, tzinfo=UTC)
@@ -295,6 +315,63 @@ def test_run_forever_returns_after_keyboard_interrupt() -> None:
         raise KeyboardInterrupt
 
     run_forever(poll_interval_seconds=60, shutdown=state, poll=_poll)
+
+
+def test_close_session_propagates_keyboard_interrupt() -> None:
+    class _Session:
+        def close(self) -> None:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        close_session(_Session())  # type: ignore[arg-type]
+
+
+def test_stray_sigusr1_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="education_platform.workers.shutdown")
+    clear_interrupt_request()
+    _interrupt_job(signal.SIGUSR1, None)
+    assert interrupt_after_release_requested() is False
+    assert "Ignored SIGUSR1" in caplog.text
+
+
+def test_sigusr1_raises_only_after_the_release_flag() -> None:
+    request_interrupt_after_release()
+    with pytest.raises(KeyboardInterrupt):
+        _interrupt_job(signal.SIGUSR1, None)
+    assert interrupt_after_release_requested() is False
+    _interrupt_job(signal.SIGUSR1, None)
+
+
+def test_keyboard_interrupt_during_close_returns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="education_platform.workers.runner")
+    state = WorkerShutdown(grace_seconds=25, clock=FakeClock(), release=lambda _lease: False)
+    state.release_matched = False
+    closed: list[str] = []
+
+    def _poll() -> None:
+        try:
+            closed.append("body")
+        finally:
+            raise KeyboardInterrupt
+
+    run_forever(poll_interval_seconds=60, shutdown=state, poll=_poll)
+    assert closed == ["body"]
+    assert "its lease release did not match" in caplog.text
+    assert "after releasing its lease" not in caplog.text
+
+
+def test_shutdown_log_reports_a_matched_release(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="education_platform.workers.runner")
+    state = WorkerShutdown(grace_seconds=25, clock=FakeClock(), release=lambda _lease: True)
+    state.release_matched = True
+
+    def _poll() -> None:
+        raise KeyboardInterrupt
+
+    run_forever(poll_interval_seconds=60, shutdown=state, poll=_poll)
+    assert "after releasing its lease" in caplog.text
 
 
 def test_signal_handlers_are_registered_on_the_child_process(

@@ -59,6 +59,7 @@ from education_platform.modules.rag.models import (
 )
 from education_platform.modules.rag.vector_store import VectorRow, delete_by_version, upsert_rows
 from education_platform.workers.lease import (
+    close_session,
     commit_owned,
     exceeded_max_attempts_message,
     prepare_leased_writes,
@@ -634,7 +635,7 @@ def process_ingest_job_sync(
             _wake_ingest(session, job)
             commit_owned(session)
     finally:
-        session.close()
+        close_session(session)
 
 
 def _process_source_material(session: Session, job: IngestJob, parse: ParsePdfFn) -> None:

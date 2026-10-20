@@ -5,10 +5,12 @@ and the worker does not need to be PID 1. A second signal does not move the
 deadline or release twice.
 
 After the grace period the lease is released and committed first. The watch
-thread then delivers SIGUSR1 to the main thread. That handler raises
-KeyboardInterrupt, including when the job is blocked in sleep, so ``finally``
-blocks run. SIGINT cannot do this: it is already handled by ``note_signal``,
-and a second SIGINT does not raise.
+thread then sets a flag and delivers SIGUSR1 to the main thread. That handler
+raises KeyboardInterrupt only when the flag is set, including when the job is
+blocked in sleep, so ``finally`` blocks run. A SIGUSR1 from anywhere else is
+logged and ignored, so it cannot abort a job whose lease was not released.
+SIGINT cannot do this: it is already handled by ``note_signal``, and a second
+SIGINT does not raise.
 
 ``os._exit`` is not used: it would skip those blocks and drop a job that was
 about to commit.
@@ -16,6 +18,7 @@ about to commit.
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 import time
@@ -24,6 +27,8 @@ from types import FrameType
 
 from education_platform.core.config import get_settings
 from education_platform.workers.lease import OwnedLease, release_lease
+
+logger = logging.getLogger(__name__)
 
 Clock = Callable[[], float]
 WaitFn = Callable[[threading.Event, float], bool]
@@ -35,8 +40,34 @@ def _wait_for_event(event: threading.Event, timeout: float) -> bool:
     return event.wait(timeout)
 
 
+_interrupt_after_release = threading.Event()
+
+
+def interrupt_after_release_requested() -> bool:
+    """True after the watcher has released the lease and asked the main thread to stop."""
+    return _interrupt_after_release.is_set()
+
+
+def clear_interrupt_request() -> None:
+    """Drop a pending interrupt. Tests use this so one case cannot leak into the next."""
+    _interrupt_after_release.clear()
+
+
+def request_interrupt_after_release() -> None:
+    """Allow the next SIGUSR1 to raise. The watcher calls this after the release."""
+    _interrupt_after_release.set()
+
+
 def _interrupt_job(_signum: int, _frame: FrameType | None) -> None:
-    """Stop the in-flight job once its lease release has committed."""
+    """Stop the in-flight job once its lease release has committed.
+
+    A SIGUSR1 that arrives before that flag is set is not a shutdown. Raising
+    here would abandon the job without releasing its lease.
+    """
+    if not _interrupt_after_release.is_set():
+        logger.warning("Ignored SIGUSR1; shutdown has not released the in-flight lease")
+        return
+    _interrupt_after_release.clear()
     raise KeyboardInterrupt
 
 
@@ -76,6 +107,7 @@ class WorkerShutdown:
         self._handled = False
         self._deadline_at: float | None = None
         self._thread: threading.Thread | None = None
+        self.release_matched: bool | None = None
 
     def install_signals(self) -> None:
         """Register SIGTERM and SIGINT, then watch for them on a daemon thread.
@@ -150,8 +182,11 @@ class WorkerShutdown:
                 return
             lease = self._current
             self._current = None
-        self._release(lease)
+        matched = self._release(lease)
+        if isinstance(matched, bool):
+            self.release_matched = matched
         if threading.current_thread() is not threading.main_thread():
+            request_interrupt_after_release()
             wake_worker_main()
         if self._exit is not None:
             self._exit(0)

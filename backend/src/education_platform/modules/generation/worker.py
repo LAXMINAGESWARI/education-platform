@@ -150,6 +150,7 @@ from education_platform.workers.lease import (
     Claimed,
     Exhausted,
     claim,
+    close_session,
     commit_owned,
     exceeded_max_attempts_message,
     prepare_leased_writes,
@@ -292,7 +293,7 @@ def process_generation_job_sync(
         session.rollback()
         _fail_job_and_run(session, job_id, str(exc)[:2000])
     finally:
-        session.close()
+        close_session(session)
 
 
 def _complete_job(session: Session, job_id: UUID, *, ok_phases: frozenset[RunPhase]) -> None:

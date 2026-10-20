@@ -26,6 +26,7 @@ from education_platform.workers.lease import (
     Claimed,
     Exhausted,
     claim,
+    close_session,
     commit_owned,
     exceeded_max_attempts_message,
     prepare_leased_writes,
@@ -114,4 +115,4 @@ def process_curriculum_job_sync(
             fail_curriculum_job(job, str(exc)[:2000])
             commit_owned(session)
     finally:
-        session.close()
+        close_session(session)
