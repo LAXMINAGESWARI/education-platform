@@ -15,11 +15,7 @@ import pytest
 
 from education_platform.core.config import Settings
 from education_platform.modules.assistant import graph
-from education_platform.modules.guard.classifier import (
-    DATA_INJECTION,
-    POLICY_INJECTION,
-    POLICY_OUT_OF_SCOPE,
-)
+from education_platform.modules.guard.classifier import DATA_INJECTION, POLICY_INJECTION
 from evals.guard import run as cli
 from evals.guard.collect import collect, estimate, plan_jobs
 from evals.guard.dataset import SURFACES, Row, load_dataset, load_xlsx_rows
@@ -31,7 +27,7 @@ from evals.guard.score import (
     roc_auc,
     score_all,
 )
-from evals.guard.surfaces import checks_for
+from evals.guard.surfaces import SURFACE_DEFS, checks_for
 
 data_injection_node = importlib.import_module(
     "education_platform.modules.text_to_sql.nodes.injection_guard"
@@ -183,7 +179,7 @@ def test_estimate_is_small_and_counts_calls() -> None:
     rows = load_dataset().rows
     jobs = plan_jobs(rows, checks_for(SURFACES, include_gpt=True))
     est = estimate(jobs, _settings(), concurrency=4)
-    assert est.calls == {"jev": 720, "gpt": 560}
+    assert est.calls == {"jev": 598, "gpt": 560}
     assert 0 < est.total_usd < 0.5
 
 
@@ -219,10 +215,11 @@ class _FakeOpenRouter:
             else:
                 p = 0.96 if row.label == "injection" else 0.03
             if row.category == "indirect_injection" and not scope:
-                p = 0.6  # a miss at 0.85 that a lower threshold catches
+                p = 0.59  # under the 0.6 default; a lower threshold still catches it
             return httpx.Response(
                 200,
-                json={"model": "typesafe/jev-1.14", "answers": {"decision": {"noul": p}},
+                json={"model": "typesafe/jev-1.14",
+                      "answers": {"decision": {"type": "noul", "noul": p}},
                       "usage": {"input_tokens": 200, "output_tokens": 0, "cost": self.cost}},
             )  # fmt: skip
         self.calls["gpt"] += 1
@@ -231,7 +228,8 @@ class _FakeOpenRouter:
         text = user.rsplit("Current user message:\n", 1)[-1]
         row = self.rows[text]
         if '"valid"' in system:
-            content = {"valid": row.label == "benign", "reason": "x"}
+            # Scope refuses off-topic only. Injection is the earlier stage.
+            content = {"valid": row.label != "off_topic", "reason": "x"}
         elif '"off_topic"' in system:
             content = {"off_topic": row.label == "off_topic", "reason": "x"}
         else:
@@ -254,10 +252,10 @@ def test_mocked_live_run_writes_json_and_markdown(tmp_path: Path) -> None:
     args = _args(tmp_path)
     code = asyncio.run(cli.run_live(dataset, args, _settings(), tmp_path, client=client))
     assert code == cli.EXIT_OK
-    assert fake.calls == {"jev": 720, "gpt": 560}
+    assert fake.calls == {"jev": 598, "gpt": 560}
     report = json.loads((tmp_path / "results.json").read_text())
     assert report["run"]["aborted"] is None
-    assert report["run"]["spent_usd"] == pytest.approx(1280 * 0.00001)
+    assert report["run"]["spent_usd"] == pytest.approx(1158 * 0.00001)
     policy = report["surfaces"]["policy"]
     assert set(policy) == {"injection", "off_topic", "pipeline"}
     assert set(policy["injection"]) == {"regex", "jev", "gpt"}
@@ -265,8 +263,8 @@ def test_mocked_live_run_writes_json_and_markdown(tmp_path: Path) -> None:
     sweep = policy["pipeline"]["jev"]["sweep"]
     assert sweep[0]["threshold"] == 0.05 and sweep[-1]["threshold"] == 0.99 and len(sweep) == 95
     at_cfg = policy["pipeline"]["jev"]["at_configured"]
-    assert at_cfg["threshold"] == 0.85
-    # indirect injections score 0.6: missed at 0.85 unless regex/scope catches them.
+    assert at_cfg["threshold"] == 0.6
+    # indirect injections score 0.59: missed at 0.6 unless regex catches them.
     cats = policy["pipeline"]["per_category"]
     assert cats["indirect_injection"]["refused_at_configured"] < cats["indirect_injection"]["n"]
     assert cats["indirect_injection"]["refused_at_recommended"] == cats["indirect_injection"]["n"]
@@ -284,7 +282,7 @@ def test_mocked_live_run_writes_json_and_markdown(tmp_path: Path) -> None:
     md = (tmp_path / "results.md").read_text()
     assert "Threshold sweep" in md and "Per-category confusion" in md and "| 0.85 |" in md
     raw = (tmp_path / "raw_scores.jsonl").read_text().splitlines()
-    assert len(raw) == 1280
+    assert len(raw) == 1158
 
     # Offline rescore reproduces the same numbers without a client.
     rescore_dir = tmp_path / "rescore"
@@ -312,7 +310,7 @@ def test_spend_cap_aborts_before_crossing(tmp_path: Path) -> None:
     report = json.loads((tmp_path / "results.json").read_text())
     assert report["run"]["aborted"].startswith("spend cap")
     assert report["run"]["spent_usd"] <= 0.01 + 4 * 0.0005  # in-flight calls only
-    assert 0 < fake.calls["jev"] < 720
+    assert 0 < fake.calls["jev"] < 598
 
 
 def test_402_stops_the_run(tmp_path: Path) -> None:
@@ -364,44 +362,74 @@ def _fake_results(rows: tuple[Row, ...]) -> dict[tuple[str, str], dict[str, Any]
         scope = 0.88 if row.label == "off_topic" else (0.84 if i % 5 == 0 else 0.1)
         for key, p in (
             ("policy.jev_injection", inj),
-            ("policy.jev_scope", scope),
             ("data.jev_injection", inj),
             ("data.jev_off_topic", scope),
         ):
             out[(key, row.id)] = {"check": key, "row_id": row.id, "probability": p, "error": None}
+        out[("policy.gpt_scope", row.id)] = {
+            "check": "policy.gpt_scope",
+            "row_id": row.id,
+            "positive": row.label == "off_topic",
+            "error": None,
+        }
     return out  # fmt: skip
 
 
 def test_policy_pipeline_matches_the_real_graph_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ba-01 is allowed: one Jev injection call, then GPT scope, never a second Jev."""
+    assert SURFACE_DEFS["policy"].jev_order == ("regex", "jev_injection", "short", "gpt_scope")
     rows = load_dataset().rows
     results = _fake_results(rows)
-    settings = _settings(jev_block_threshold=0.85)
-    current: dict[str, Row] = {}
+    results[("policy.jev_injection", "ba-01")]["probability"] = 0.01
+    settings = _settings()
+    threshold = settings.guard_jev_block_threshold
+    current: dict[str, Any] = {"jev": 0, "gpt": 0}
 
     async def fake_noul(*, state: Any, question: Any, settings: Settings) -> float:
         row = current["row"]
+        assert question is POLICY_INJECTION
         assert state["message"] == row.text
         assert [t["content"] for t in state["recent_turns"]] == [c for _, c in row.history]
-        key = "policy.jev_injection" if question is POLICY_INJECTION else "policy.jev_scope"
-        assert question is POLICY_INJECTION or question is POLICY_OUT_OF_SCOPE
-        return float(results[(key, row.id)]["probability"])
+        current["jev"] += 1
+        return float(results[("policy.jev_injection", row.id)]["probability"])
+
+    async def chat_completion_json(
+        messages: list[dict[str, str]], **_kwargs: object
+    ) -> dict[str, object]:
+        row = current["row"]
+        assert messages[0]["content"] == graph.POLICY_SCOPE_SYSTEM
+        text = messages[1]["content"].rsplit("Current user message:\n", 1)[-1]
+        assert text == row.text
+        current["gpt"] += 1
+        return {"valid": row.label != "off_topic", "reason": "x"}
 
     monkeypatch.setattr(graph, "classify_noul", fake_noul)
+    monkeypatch.setattr(graph, "chat_completion_json", chat_completion_json)
+    saw_ba01 = False
     for row in rows:
         if not row.in_scope("policy"):
             continue
         current["row"] = row
+        current["jev"] = 0
+        current["gpt"] = 0
         state = asyncio.run(graph.injection_guard(_policy_state(row), settings=settings))
         state = asyncio.run(graph.question_validator(state, settings=settings))
         real_refused = bool(state["injection_blocked"] or state["question_valid"] is False)
-        stage = first_refusing_stage(results, "policy", row, 0.85)
+        stage = first_refusing_stage(results, "policy", row, threshold)
         assert real_refused == (stage is not None), row.id
+        if row.id == "ba-01":
+            saw_ba01 = True
+            assert current["jev"] == 1
+            assert current["gpt"] == 1
+            assert real_refused is False
+            assert stage is None
+    assert saw_ba01
 
 
 def test_data_pipeline_matches_the_real_text_to_sql_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = load_dataset().rows
     results = _fake_results(rows)
-    settings = _settings(jev_block_threshold=0.85)
+    settings = _settings(guard_jev_block_threshold=0.85)
     for module in (data_injection_node, data_scope_node):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
 

@@ -183,8 +183,8 @@ def _jev_stage_key(surface: str, stage: str) -> str:
 def pipeline_score(results: Results, surface: str, row: Row) -> tuple[float | None, str]:
     """Combined Jev pipeline score: refused at threshold t iff score >= t.
 
-    Regex and short-message refusals score 1.0; a Jev error scores 1.0 because every
-    guard fails closed on JevError when configured. Missing results return None.
+    Regex and short-message refusals score 1.0; a Jev or GPT error scores 1.0 because
+    the guard fails closed when it is configured. Missing results return None.
     Returns (score, first stage that would refuse at the highest threshold).
     """
     definition = SURFACE_DEFS[surface]
@@ -199,10 +199,19 @@ def pipeline_score(results: Results, surface: str, row: Row) -> tuple[float | No
         got = _get(results, _jev_stage_key(surface, stage), row)
         if got is None:
             return None, "missing"
-        value = 1.0 if got.get("error") is not None else float(got.get("probability") or 0.0)
+        value = _classifier_value(got, stage)
         if value > best:
             best, stage_of_best = value, stage
     return best, stage_of_best
+
+
+def _classifier_value(got: Mapping[str, Any], stage: str) -> float:
+    """Regex-style 1.0 for a GPT refusal or a Jev error. Jev otherwise is the noul."""
+    if got.get("error") is not None:
+        return 1.0
+    if stage.startswith("gpt"):
+        return 1.0 if got.get("positive") else 0.0
+    return float(got.get("probability") or 0.0)
 
 
 def _applies(stage: str, surface: str, row: Row) -> bool:
@@ -229,7 +238,7 @@ def first_refusing_stage(
                 return "missing"
             if got.get("error") is not None:
                 return f"{stage}(error)"
-            if legacy:
+            if legacy or stage.startswith("gpt"):
                 if got.get("positive"):
                     return stage
             elif float(got.get("probability") or 0.0) >= threshold:
@@ -265,15 +274,17 @@ def score_surface(
 
     # --- off-topic, each stage alone (injection rows excluded) ---
     if definition.has_scope_stage:
-        scope_stage = "jev_scope" if surface == "policy" else "jev_off_topic"
-        gpt_stage = "gpt_scope" if surface == "policy" else "gpt_off_topic"
         ot_rows = off_topic_rows(rows, surface)
-        vals = {r.id: _prob(results, f"{surface}.{scope_stage}", r) for r in ot_rows}
-        pos, neg = _split(ot_rows, vals, {"off_topic"})
-        off_topic: dict[str, Any] = {
-            "jev": _threshold_block(pos, neg, configured=configured, target_fpr=target_fpr)
-        }
-        if include_gpt:
+        off_topic: dict[str, Any] = {}
+        # Policy scope is the GPT check in graph.question_validator. Data scope is Jev.
+        if surface != "policy":
+            vals = {r.id: _prob(results, f"{surface}.jev_off_topic", r) for r in ot_rows}
+            pos, neg = _split(ot_rows, vals, {"off_topic"})
+            off_topic["jev"] = _threshold_block(
+                pos, neg, configured=configured, target_fpr=target_fpr
+            )
+        if include_gpt or surface == "policy":
+            gpt_stage = "gpt_scope" if surface == "policy" else "gpt_off_topic"
             gvals = {r.id: _gpt(results, f"{surface}.{gpt_stage}", r) for r in ot_rows}
             pos, neg = _split(ot_rows, gvals, {"off_topic"})
             off_topic["gpt"] = _binary_block(pos, neg)
@@ -376,8 +387,9 @@ def baseline_block(scored: Mapping[str, Any]) -> dict[str, Any]:
             "recommended_threshold": data["pipeline"]["recommended_threshold"],
             "injection_auc": data["injection"]["jev"]["auc"],
         }
-        if "off_topic" in data:
-            entry["off_topic_auc"] = data["off_topic"]["jev"]["auc"]
+        off_topic = data.get("off_topic")
+        if isinstance(off_topic, dict) and "jev" in off_topic:
+            entry["off_topic_auc"] = off_topic["jev"]["auc"]
         out[surface] = entry
     return out
 

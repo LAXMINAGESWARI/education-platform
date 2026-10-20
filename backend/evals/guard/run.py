@@ -49,7 +49,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-gpt", action="store_true", help="Jev only, skip legacy GPT")
     parser.add_argument("--max-usd", type=float, default=2.00)
     parser.add_argument("--concurrency", type=int, default=4)
-    parser.add_argument("--threshold", type=float, help="default: JEV_BLOCK_THRESHOLD (0.85)")
+    parser.add_argument("--threshold", type=float, help="default: GUARD_JEV_BLOCK_THRESHOLD (0.6)")
     parser.add_argument("--target-fpr", type=float, default=0.01)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--baseline", type=Path, help="results.json or baseline json to compare")
@@ -101,7 +101,7 @@ def print_plan(dataset: Dataset, args: argparse.Namespace, settings: Settings) -
     per_check = Counter(job.check.key for job in jobs)
     print(f"surfaces {args.surfaces}; calls per check: {dict(per_check)}")
     print(
-        f"models: jev={settings.jev_model} gpt={settings.openrouter_model}"
+        f"models: jev={settings.resolved_guard_jev_model} gpt={settings.openrouter_model}"
         + ("" if args.no_gpt else ("" if est.gpt_price_known else " (unknown GPT price: "
                                    "pessimistic $5/$15 per M assumed)"))
     )  # fmt: skip
@@ -124,7 +124,7 @@ def write_report(
     run_info: dict[str, Any],
     out_dir: Path,
 ) -> int:
-    threshold = args.threshold if args.threshold is not None else settings.jev_block_threshold
+    threshold = args.threshold if args.threshold is not None else settings.guard_jev_block_threshold
     scored = score_all(
         dataset.rows,
         raw,
@@ -140,7 +140,7 @@ def write_report(
         "git_sha": _git_sha(),
         "dataset": _dataset_summary(dataset),
         "models": {
-            "jev": settings.jev_model,
+            "jev": settings.resolved_guard_jev_model,
             "gpt": None if args.no_gpt else settings.openrouter_model,
         },
         "configured_threshold": threshold,

@@ -1,6 +1,6 @@
 """Chat-guard eval.
 
-The paid data-guard comparison is ``python -m evals.guard.live``. Policy chat
-off-topic is ``pipeline.run_policy_pipeline``: regex, Jev injection, a short
-message check, then GPT scope (``gpt_scope``).
+``python -m evals.guard.run`` (or ``scripts/eval_chat_guard.py``) scores the
+versioned dataset. Policy chat off-topic is GPT scope (``gpt_scope``), after
+regex, one Jev injection call, and the short-message check.
 """

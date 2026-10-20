@@ -1,9 +1,10 @@
 """The three guarded chat surfaces, their stages, and the legacy GPT prompts.
 
-Stage order mirrors the code on the PR #187 branch:
+Stage order mirrors the guards:
 
 - policy (``assistant/graph.py``): regex -> Jev POLICY_INJECTION -> short message
-  (< 3 chars) -> Jev POLICY_OUT_OF_SCOPE. Both Jev calls see the last 8 turns.
+  (< 3 chars) -> GPT scope (``gpt_scope``). Injection and scope both see the last 8 turns.
+  Policy off-topic is not a Jev noul.
 - review (``assistant/generation_strategy.py`` ``GenerationReviewStrategy.respond``):
   regex -> short message -> ``screen_review_message`` (Jev REVIEW_INJECTION, with history).
   There was no GPT classifier on this surface before #187, so its legacy is regex only.
@@ -30,7 +31,6 @@ from education_platform.modules.guard.classifier import (
     DATA_INJECTION,
     DATA_OFF_TOPIC,
     POLICY_INJECTION,
-    POLICY_OUT_OF_SCOPE,
     REVIEW_INJECTION,
 )
 from education_platform.modules.text_to_sql.nodes.injection_guard import (
@@ -124,8 +124,6 @@ class Surface:
 CHECKS: tuple[Check, ...] = (
     Check("policy.jev_injection", "policy", "jev_injection", "jev", "injection",
           jev_question=POLICY_INJECTION, uses_history=True),
-    Check("policy.jev_scope", "policy", "jev_scope", "jev", "off_topic",
-          jev_question=POLICY_OUT_OF_SCOPE, uses_history=True),
     Check("review.jev_injection", "review", "jev_injection", "jev", "injection",
           jev_question=REVIEW_INJECTION, uses_history=True),
     Check("data.jev_injection", "data", "jev_injection", "jev", "injection",
@@ -146,7 +144,7 @@ CHECKS: tuple[Check, ...] = (
 SURFACE_DEFS: dict[str, Surface] = {
     "policy": Surface(
         "policy", policy_regex, True, True,
-        jev_order=("regex", "jev_injection", "short", "jev_scope"),
+        jev_order=("regex", "jev_injection", "short", "gpt_scope"),
         legacy_order=("regex", "gpt_injection", "short", "gpt_scope"),
     ),
     "review": Surface(

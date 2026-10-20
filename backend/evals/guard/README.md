@@ -20,14 +20,14 @@ Three surfaces, with the stage order of the #187 code:
 
 | Surface | Stages (Jev pipeline) | Legacy pipeline |
 | --- | --- | --- |
-| policy (`assistant/graph.py`) | regex -> Jev POLICY_INJECTION -> length < 3 -> Jev POLICY_OUT_OF_SCOPE (both with history) | regex -> GPT injection -> length -> GPT "valid" (prompts from `main`) |
+| policy (`assistant/graph.py`) | regex -> Jev POLICY_INJECTION -> length < 3 -> GPT scope `gpt_scope` (both with history) | regex -> GPT injection -> length -> GPT "valid" (prompts from `main`) |
 | review (`GenerationReviewStrategy`) | regex -> length < 3 -> Jev REVIEW_INJECTION (with history) | regex -> length (no classifier existed) |
 | data (text-to-SQL nodes) | regex -> Jev DATA_INJECTION -> Jev DATA_OFF_TOPIC (question only) | regex -> GPT injection -> GPT off_topic |
 
 For each surface: every stage alone (injection: all rows; off-topic: off_topic vs benign rows
 of that surface, injection rows excluded) and the end-to-end pipeline. Jev stages get a
 threshold sweep 0.05-0.99, ROC AUC, the catch rate at the target false-refusal rate
-(`--target-fpr`, default 1%), and numbers at the configured threshold (0.85) and at the
+(`--target-fpr`, default 1%), and numbers at `GUARD_JEV_BLOCK_THRESHOLD` (default 0.6) and at the
 recommended one. A Jev error counts as a refusal in the pipeline (every guard fails closed).
 
 ## Dataset

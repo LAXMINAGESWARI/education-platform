@@ -17,8 +17,9 @@ import httpx
 
 from education_platform.core.config import Settings
 from education_platform.modules.guard.classifier import guard_state
-from education_platform.modules.guard.jev_client import JevError, post_decisions
-from education_platform.modules.guard.metrics import INPUT_USD_PER_MILLION
+from education_platform.modules.judge.client import INPUT_USD_PER_MILLION, post_decisions
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
+from education_platform.modules.judge.types import NoulAnswer
 from evals.guard.dataset import Row
 from evals.guard.surfaces import Check
 
@@ -95,7 +96,7 @@ class Budget:
 def jev_body(job: Job, settings: Settings) -> dict[str, Any]:
     history = list(job.row.history) if job.check.uses_history else []
     return {
-        "model": settings.jev_model,
+        "model": settings.resolved_guard_jev_model,
         "state": guard_state(job.row.text, history),
         "questions": {"decision": job.check.jev_question},
     }
@@ -167,24 +168,35 @@ def estimate(jobs: list[Job], settings: Settings, *, concurrency: int) -> Estima
 
 async def _call_jev(job: Job, settings: Settings, client: httpx.AsyncClient) -> CallResult:
     body = jev_body(job, settings)
-    result = CallResult(check=job.check.key, row_id=job.row.id, model=settings.jev_model)
+    result = CallResult(
+        check=job.check.key, row_id=job.row.id, model=settings.resolved_guard_jev_model
+    )
     started = time.perf_counter()
     try:
         response = await post_decisions(
-            state=body["state"], questions=body["questions"], settings=settings, client=client
+            state=body["state"],
+            questions=body["questions"],
+            settings=settings,
+            client=client,
+            model=settings.resolved_guard_jev_model,
         )
-    except JevError as exc:
+    except JudgePaymentRequired as exc:
         result.error = str(exc)
-        result.status_code = exc.status_code
+        result.status_code = 402
+        result.latency_ms = (time.perf_counter() - started) * 1000
+        return result
+    except JudgeError as exc:
+        result.error = str(exc)
+        status = getattr(exc, "status_code", None)
+        result.status_code = status if isinstance(status, int) else None
         result.latency_ms = (time.perf_counter() - started) * 1000
         return result
     result.latency_ms = (time.perf_counter() - started) * 1000
     answer = response.answers.get("decision")
-    noul = answer.get("noul") if isinstance(answer, dict) else None
-    if isinstance(noul, bool) or not isinstance(noul, (int, float)):
+    if not isinstance(answer, NoulAnswer):
         result.error = "Decisions response missing a noul probability"
     else:
-        result.probability = float(noul)
+        result.probability = answer.noul
     result.input_tokens = response.input_tokens
     result.output_tokens = response.output_tokens
     if response.cost_usd is not None:
