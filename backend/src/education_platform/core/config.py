@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from education_platform.db.url import with_credentials
@@ -35,6 +36,12 @@ class Settings(BaseSettings):
     cors_origin_regex: str = ""
     materials_dir: Path = _DEFAULT_MATERIALS_DIR
     database_url: str = _DEFAULT_DATABASE_URL
+    # Application-role QueuePool. Worst case per pool is size + max_overflow.
+    # Timeout and recycle also apply to the text-to-SQL reader pool.
+    db_pool_size: int = Field(default=5, ge=1)
+    db_max_overflow: int = Field(default=5, ge=0)
+    db_pool_timeout_seconds: float = 30.0
+    db_pool_recycle_seconds: int = 1800
     # Budget for the readiness SELECT 1. Compose's /health check allows 5s
     # (deploy/docker-compose.prod.yml); keep this shorter so the probe returns
     # an HTTP status before that client timeout.
@@ -113,6 +120,9 @@ class Settings(BaseSettings):
     # never used once the env var is set.
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
+    # Reader-role pool. Timeout and recycle follow the DB_POOL_* settings above.
+    text_to_sql_db_pool_size: int = Field(default=5, ge=1)
+    text_to_sql_db_max_overflow: int = Field(default=5, ge=0)
 
     # LLM gateway. Defaults keep every caller on its existing client. Set a
     # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.

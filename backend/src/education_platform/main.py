@@ -5,13 +5,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
 from education_platform.core.health import readiness_response
 from education_platform.db import models as _models
+from education_platform.db.session import create_general_sync_engine, reset_engine
 from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.router import router as academics_router
 from education_platform.modules.assessments.router import router as assessments_router
@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 
 def _seed_if_empty() -> None:
     settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
+    engine = create_general_sync_engine(
+        to_sync_url(settings.database_url),
+        pool_pre_ping=True,
+    )
     try:
         with Session(engine) as session:
             seed_approved_materials(session, replace=False)
@@ -54,6 +57,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.exception("Startup seeding failed; continuing")
     yield
+    reset_engine()
 
 
 def cors_origin_regex(origin_regex: str) -> str | None:

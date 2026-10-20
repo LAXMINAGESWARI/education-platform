@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.ext.asyncio import (
@@ -23,8 +24,46 @@ _text_to_sql_session_factory: async_sessionmaker[AsyncSession] | None = None
 _text_to_sql_bound_url: str | None = None
 
 
+def _pool_options(*, pool_size: int, max_overflow: int) -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "pool_size": pool_size,
+        "max_overflow": max_overflow,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+        "pool_recycle": settings.db_pool_recycle_seconds,
+    }
+
+
+def _general_pool_options() -> dict[str, Any]:
+    settings = get_settings()
+    return _pool_options(pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow)
+
+
+def _text_to_sql_pool_options() -> dict[str, Any]:
+    settings = get_settings()
+    return _pool_options(
+        pool_size=settings.text_to_sql_db_pool_size,
+        max_overflow=settings.text_to_sql_db_max_overflow,
+    )
+
+
+def create_general_sync_engine(database_url: str, *, pool_pre_ping: bool = False) -> Engine:
+    """Sync engine using the application-role pool settings.
+
+    ``pool_pre_ping`` stays off unless the caller already enabled it.
+    """
+    options = _general_pool_options()
+    if pool_pre_ping:
+        options["pool_pre_ping"] = True
+    return create_engine(database_url, **options)
+
+
 def reset_engine() -> None:
-    """Dispose cached engines so the next call picks up current settings."""
+    """Dispose cached engines so the next call picks up current settings.
+
+    Tests and process shutdown use this for the main, sync, and text-to-SQL
+    engines. Retrieval uses the sync engine, so this is its reset hook too.
+    """
     global _engine, _session_factory, _bound_url, _sync_engine, _sync_bound_url
     global _text_to_sql_engine, _text_to_sql_session_factory, _text_to_sql_bound_url
     if _engine is not None:
@@ -52,7 +91,7 @@ def get_engine() -> AsyncEngine:
         if _engine is not None:
             _engine.sync_engine.dispose()
         _bound_url = database_url
-        _engine = create_async_engine(database_url, pool_pre_ping=True)
+        _engine = create_async_engine(database_url, pool_pre_ping=True, **_general_pool_options())
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
     return _engine
 
@@ -66,7 +105,7 @@ def get_sync_engine() -> Engine:
         if _sync_engine is not None:
             _sync_engine.dispose()
         _sync_bound_url = database_url
-        _sync_engine = create_engine(database_url, pool_pre_ping=True)
+        _sync_engine = create_general_sync_engine(database_url, pool_pre_ping=True)
     return _sync_engine
 
 
@@ -110,7 +149,9 @@ def get_text_to_sql_engine() -> AsyncEngine:
         if _text_to_sql_engine is not None:
             _text_to_sql_engine.sync_engine.dispose()
         _text_to_sql_bound_url = database_url
-        _text_to_sql_engine = create_async_engine(database_url, pool_pre_ping=True)
+        _text_to_sql_engine = create_async_engine(
+            database_url, pool_pre_ping=True, **_text_to_sql_pool_options()
+        )
         _text_to_sql_session_factory = async_sessionmaker(
             _text_to_sql_engine, expire_on_commit=False, class_=AsyncSession
         )

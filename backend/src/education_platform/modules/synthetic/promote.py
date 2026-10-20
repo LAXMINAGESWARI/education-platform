@@ -16,11 +16,12 @@ import logging
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import create_engine, delete, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Select
 
 from education_platform.core.config import get_settings
+from education_platform.db.session import create_general_sync_engine
 from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.models import (
     GradeSubjectOffering,
@@ -503,7 +504,10 @@ def _skip_log(message: str) -> None:
 
 def main() -> None:
     settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
+    engine = create_general_sync_engine(
+        to_sync_url(settings.database_url),
+        pool_pre_ping=True,
+    )
     with Session(engine) as session:
         result = promote_core_topics(session)
         session.commit()
