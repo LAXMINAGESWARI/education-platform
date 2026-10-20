@@ -176,6 +176,7 @@ class QaItemOut(BaseModel):
     check_verdict: str | None = None
     difficulty: str | None = None
     subtopic_title: str | None = None
+    judge_needs_review: bool = False
 
     @classmethod
     def from_domain(cls, item: QaItem) -> QaItemOut:
@@ -198,6 +199,7 @@ class QaItemOut(BaseModel):
             check_verdict=item.check_verdict,
             difficulty=item.difficulty,
             subtopic_title=item.subtopic_title,
+            judge_needs_review=item.judge_needs_review,
         )
 
 

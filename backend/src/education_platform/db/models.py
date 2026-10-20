@@ -1,5 +1,6 @@
 """Import all ORM modules so Alembic and metadata consumers see every table."""
 
+from education_platform.ai_platform.gateway import models as gateway_models
 from education_platform.modules.academics import models as academics_models
 from education_platform.modules.assessments import models as assessments_models
 from education_platform.modules.assistant import models as assistant_models
@@ -16,6 +17,7 @@ from education_platform.modules.self_evaluation import models as self_evaluation
 
 __all__ = [
     "academics_models",
+    "gateway_models",
     "assessments_models",
     "assistant_models",
     "at_risk_models",
