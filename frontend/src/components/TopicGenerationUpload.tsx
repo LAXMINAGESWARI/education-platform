@@ -15,6 +15,7 @@ import {
   submitTopicGenerationRun,
   subscribeGenerationRun,
 } from "../api/generation";
+import { ProgressReconnectError } from "../api/progress";
 import {
   ApiError,
   type DraftChangeRequest,
@@ -244,7 +245,8 @@ function formatRunWhen(iso: string): string {
 }
 
 function errorMessage(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? err.message : fallback;
+  if (err instanceof ProgressReconnectError || err instanceof ApiError) return err.message;
+  return fallback;
 }
 
 function phaseStatusCopy(run: GenerationRun): string {
@@ -326,6 +328,7 @@ export function TopicGenerationUpload({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [runs, setRuns] = useState<GenerationRun[]>([]);
   const [run, setRun] = useState<GenerationRun | null>(null);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
@@ -382,6 +385,7 @@ export function TopicGenerationUpload({
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
+        if (!abort.signal.aborted) setReconnecting(false);
         setError(errorMessage(err, "Could not load the generation run."));
       } finally {
         if (!abort.signal.aborted) setBusy(false);
@@ -427,24 +431,35 @@ export function TopicGenerationUpload({
   }, []);
 
   async function followRun(runId: string, abort: AbortController) {
-    await subscribeGenerationRun(runId, {
-      signal: abort.signal,
-      onSnapshot: (next) => {
-        trackRun(next);
-        if (next.phase === "generating") {
-          setBusy(false);
-        }
-        if (
-          (next.phase === "outline_review" || next.phase === "qa_review") &&
-          next.jobs.length === 0
-        ) {
-          setBusy(false);
-          void getGenerationReview(next.id).then((review) => {
-            if (!abort.signal.aborted) setWorkspace(review);
-          });
-        }
-      },
-    });
+    if (!abort.signal.aborted) setReconnecting(false);
+    try {
+      await subscribeGenerationRun(runId, {
+        signal: abort.signal,
+        onReconnecting: () => {
+          if (!abort.signal.aborted) setReconnecting(true);
+        },
+        onReconnected: () => {
+          if (!abort.signal.aborted) setReconnecting(false);
+        },
+        onSnapshot: (next) => {
+          trackRun(next);
+          if (next.phase === "generating") {
+            setBusy(false);
+          }
+          if (
+            (next.phase === "outline_review" || next.phase === "qa_review") &&
+            next.jobs.length === 0
+          ) {
+            setBusy(false);
+            void getGenerationReview(next.id).then((review) => {
+              if (!abort.signal.aborted) setWorkspace(review);
+            });
+          }
+        },
+      });
+    } finally {
+      if (!abort.signal.aborted) setReconnecting(false);
+    }
   }
 
   async function onSubmit(event: FormEvent) {
@@ -915,6 +930,11 @@ export function TopicGenerationUpload({
       {error ? (
         <p className="form__error" role="alert">
           {error}
+        </p>
+      ) : null}
+      {reconnecting ? (
+        <p className="admin-upload__status" role="status">
+          Reconnecting…
         </p>
       ) : null}
       {allowUpload ? (

@@ -10,7 +10,10 @@ import { apiStream } from "./client";
 import {
   PROGRESS_RECONNECT_FACTOR,
   PROGRESS_RECONNECT_INITIAL_MS,
+  PROGRESS_RECONNECT_MAX_ATTEMPTS,
+  PROGRESS_RECONNECT_MAX_ELAPSED_MS,
   PROGRESS_RECONNECT_MAX_MS,
+  ProgressReconnectError,
   progressReconnectDelayMs,
   runSubject,
   subscribeProgress,
@@ -255,34 +258,37 @@ describe("progress SSE client", () => {
     });
   });
 
-  it("waits out growing delays and then stays at the cap", async () => {
+  it("waits out a growing reconnect delay", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
+    const notices: number[] = [];
     vi.mocked(apiStream).mockRejectedValue(new TypeError("connection reset"));
     const abort = new AbortController();
     const pending = settle(
-      subscribeProgress(runSubject("run-1"), { signal: abort.signal, onSnapshot: vi.fn() }),
+      subscribeProgress(runSubject("run-1"), {
+        signal: abort.signal,
+        onSnapshot: vi.fn(),
+        onReconnecting: ({ delayMs }) => {
+          notices.push(delayMs);
+        },
+      }),
     );
 
     await vi.advanceTimersByTimeAsync(0);
     expect(apiStream).toHaveBeenCalledTimes(1);
 
-    const observed: number[] = [];
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       const delay = progressReconnectDelayMs(attempt, 0);
-      observed.push(delay);
       await vi.advanceTimersByTimeAsync(delay - 1);
       expect(apiStream).toHaveBeenCalledTimes(attempt + 1);
       await vi.advanceTimersByTimeAsync(1);
       expect(apiStream).toHaveBeenCalledTimes(attempt + 2);
     }
 
-    expect(observed[0]).toBe(Math.floor(PROGRESS_RECONNECT_INITIAL_MS * 0.5));
-    expect(observed[1]).toBe(observed[0] * 2);
-    expect(observed[2]).toBe(observed[1] * 2);
-    const capped = Math.floor(PROGRESS_RECONNECT_MAX_MS * 0.5);
-    expect(observed.at(-1)).toBe(capped);
-    expect(observed.at(-2)).toBe(capped);
+    expect(notices[0]).toBe(Math.floor(PROGRESS_RECONNECT_INITIAL_MS * 0.5));
+    expect(notices[1]).toBe(notices[0] * 2);
+    expect(notices[2]).toBe(notices[1] * 2);
+    expect(notices[2]).toBeLessThan(Math.floor(PROGRESS_RECONNECT_MAX_MS * 0.5));
 
     abort.abort();
     const result = await pending;
@@ -291,7 +297,7 @@ describe("progress SSE client", () => {
       expect(result.error).toMatchObject({ name: "AbortError" });
     }
     const callsAtAbort = vi.mocked(apiStream).mock.calls.length;
-    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_MS * 2);
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
     expect(apiStream).toHaveBeenCalledTimes(callsAtAbort);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -321,23 +327,29 @@ describe("progress SSE client", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("resets backoff after a snapshot and after a heartbeat", async () => {
+  it("resets backoff after a snapshot and keeps growing after a heartbeat", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     const base = progressReconnectDelayMs(0, 0);
     const grown = progressReconnectDelayMs(1, 0);
     expect(grown).toBeGreaterThan(base);
+    const notices: Array<{ attempt: number; delayMs: number }> = [];
 
     vi.mocked(apiStream)
       .mockRejectedValueOnce(new TypeError("connection reset"))
-      .mockResolvedValueOnce(streamThenError([snapshotFrame("indexing", "run-1:abc")]))
-      .mockRejectedValueOnce(new TypeError("connection reset"))
       .mockResolvedValueOnce(streamResponse([": heartbeat\n\n"]))
+      .mockResolvedValueOnce(streamThenError([snapshotFrame("indexing", "run-1:abc")]))
       .mockRejectedValue(new TypeError("connection reset"));
 
     const abort = new AbortController();
     const pending = settle(
-      subscribeProgress(runSubject("run-1"), { signal: abort.signal, onSnapshot: vi.fn() }),
+      subscribeProgress(runSubject("run-1"), {
+        signal: abort.signal,
+        onSnapshot: vi.fn(),
+        onReconnecting: (notice) => {
+          notices.push(notice);
+        },
+      }),
     );
 
     await vi.advanceTimersByTimeAsync(0);
@@ -348,24 +360,151 @@ describe("progress SSE client", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(apiStream).toHaveBeenCalledTimes(2);
 
-    await vi.advanceTimersByTimeAsync(base - 1);
+    await vi.advanceTimersByTimeAsync(grown - 1);
     expect(apiStream).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(apiStream).toHaveBeenCalledTimes(3);
 
-    await vi.advanceTimersByTimeAsync(grown - 1);
-    expect(apiStream).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(apiStream).toHaveBeenCalledTimes(4);
-
     await vi.advanceTimersByTimeAsync(base - 1);
-    expect(apiStream).toHaveBeenCalledTimes(4);
+    expect(apiStream).toHaveBeenCalledTimes(3);
+    expect(notices.map((notice) => notice.delayMs)).toEqual([base, grown, base]);
+    expect(notices.map((notice) => notice.attempt)).toEqual([1, 2, 1]);
     await vi.advanceTimersByTimeAsync(1);
-    expect(apiStream).toHaveBeenCalledTimes(5);
+    expect(apiStream).toHaveBeenCalledTimes(4);
 
     abort.abort();
     await pending;
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  function attemptsUntilGiveUp(random: number): number {
+    let attempt = 0;
+    let failures = 0;
+    let elapsed = 0;
+    let calls = 0;
+    while (calls < PROGRESS_RECONNECT_MAX_ATTEMPTS + 2) {
+      calls += 1;
+      failures += 1;
+      const waitMs = progressReconnectDelayMs(attempt, random);
+      if (
+        failures >= PROGRESS_RECONNECT_MAX_ATTEMPTS ||
+        elapsed + waitMs > PROGRESS_RECONNECT_MAX_ELAPSED_MS
+      ) {
+        return calls;
+      }
+      elapsed += waitMs;
+      attempt += 1;
+    }
+    throw new Error("reconnect budget did not exhaust");
+  }
+
+  it("rejects with ProgressReconnectError when the attempt budget is spent", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    const cause = new TypeError("connection reset");
+    vi.mocked(apiStream).mockRejectedValue(cause);
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+        onReconnected,
+      }),
+    );
+
+    const calls = attemptsUntilGiveUp(0);
+    expect(calls).toBe(PROGRESS_RECONNECT_MAX_ATTEMPTS);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    const result = await pending;
+
+    expect(apiStream).toHaveBeenCalledTimes(calls);
+    expect(onReconnecting).toHaveBeenCalledTimes(calls - 1);
+    expect(onReconnecting).toHaveBeenNthCalledWith(1, {
+      attempt: 1,
+      delayMs: progressReconnectDelayMs(0, 0),
+    });
+    const capped = Math.floor(PROGRESS_RECONNECT_MAX_MS * 0.5);
+    const delays = onReconnecting.mock.calls.map((call) => call[0]?.delayMs);
+    expect(delays.at(-1)).toBe(capped);
+    expect(onReconnected).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(ProgressReconnectError);
+      expect(result.error).toMatchObject({
+        name: "ProgressReconnectError",
+        message: "Lost the connection to progress updates. Try again.",
+        attempts: calls,
+        cause,
+      });
+    }
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    expect(apiStream).toHaveBeenCalledTimes(calls);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects when the next wait would exceed the outage budget", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    vi.mocked(apiStream).mockRejectedValue(new ApiError("unavailable", 503, null));
+    const onReconnecting = vi.fn();
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), { onSnapshot: vi.fn(), onReconnecting }),
+    );
+
+    const calls = attemptsUntilGiveUp(1);
+    expect(calls).toBeLessThan(PROGRESS_RECONNECT_MAX_ATTEMPTS);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    const result = await pending;
+
+    expect(apiStream).toHaveBeenCalledTimes(calls);
+    expect(onReconnecting).toHaveBeenCalledTimes(calls - 1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(ProgressReconnectError);
+      const failure = result.error as ProgressReconnectError;
+      expect(failure.elapsedMs).toBeLessThanOrEqual(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+      expect(failure.cause).toBeInstanceOf(ApiError);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the reconnecting notice when the next socket opens", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const events: string[] = [];
+    vi.mocked(apiStream)
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("indexing", "run-1:abc"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: () => {
+          events.push("snapshot");
+        },
+        onReconnecting: ({ attempt, delayMs }) => {
+          events.push(`wait:${attempt}:${delayMs}`);
+        },
+        onReconnected: () => {
+          events.push("back");
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([
+      `wait:1:${progressReconnectDelayMs(0, 0)}`,
+      "back",
+      "snapshot",
+    ]);
   });
 
   it.each(["published", "failed", "discarded"] as const)(

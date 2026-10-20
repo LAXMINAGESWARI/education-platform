@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ProgressReconnectError } from "../../api/progress";
 import { AdminDocumentsPage } from "./AdminDocumentsPage";
 
 const authState = vi.hoisted(() => ({
@@ -110,7 +111,10 @@ describe("AdminDocumentsPage", () => {
     expect(payload.docType).toBe("handbook");
     expect(payload.file).toBeInstanceOf(File);
     expect(payload.requiredRoles).toEqual(["administrator", "teacher"]);
-    expect(watchKnowledgeDocumentVersionStatus).toHaveBeenCalledWith("ver-2");
+    expect(watchKnowledgeDocumentVersionStatus).toHaveBeenCalledWith(
+      "ver-2",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(listKnowledgeDocuments).toHaveBeenCalledTimes(2);
   });
 
@@ -188,5 +192,112 @@ describe("AdminDocumentsPage", () => {
 
     expect(screen.getByText("fee_policy.pdf")).toBeInTheDocument();
     expect(screen.getByLabelText(/^title$/i)).toHaveValue("fee policy");
+  });
+
+  async function startUpload() {
+    const user = userEvent.setup();
+    await waitFor(() => {
+      expect(screen.getByText("Attendance policy")).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/^title$/i), "Handbook");
+    const file = new File(["%PDF-1.4"], "handbook.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText(/drop a pdf here/i), { target: { files: [file] } });
+    await user.click(screen.getByRole("button", { name: /upload pdf/i }));
+  }
+
+  it("aborts the knowledge-document stream when the page unmounts", async () => {
+    let signal: AbortSignal | undefined;
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockImplementation((_versionId, options) => {
+      signal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    });
+
+    const view = render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await startUpload();
+    await waitFor(() => {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    });
+    expect(signal?.aborted).toBe(false);
+
+    view.unmount();
+
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("shows Reconnecting while a document ingest retries", async () => {
+    let reconnected: (() => void) | undefined;
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockImplementation((_versionId, options) => {
+      options?.onReconnecting?.({ attempt: 2, delayMs: 2_000 });
+      reconnected = options?.onReconnected;
+      return new Promise(() => undefined);
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await startUpload();
+
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    act(() => {
+      reconnected?.();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows the reconnect give-up on a document upload", async () => {
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockRejectedValue(
+      new ProgressReconnectError(8, 45_000, new TypeError("connection reset")),
+    );
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await startUpload();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
 });

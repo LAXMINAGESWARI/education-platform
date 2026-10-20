@@ -22,6 +22,18 @@ export const PROGRESS_RECONNECT_MAX_MS = 30_000;
 
 export const PROGRESS_RECONNECT_FACTOR = 2;
 
+/** Failed tries with no snapshot before the subscription rejects. */
+export const PROGRESS_RECONNECT_MAX_ATTEMPTS = 8;
+
+/** Reject when the next wait would push this outage past one minute. */
+export const PROGRESS_RECONNECT_MAX_ELAPSED_MS = 60_000;
+
+export type ProgressReconnectNotice = {
+  /** 1-based count of failures in the current outage. */
+  attempt: number;
+  delayMs: number;
+};
+
 const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 const TERMINAL_RUN_PHASES = new Set<RunPhase>(["published", "failed", "discarded"]);
@@ -75,7 +87,20 @@ type SseEvent = {
 class ProgressEventError extends ApiError {
   constructor(message: string, status: number, body: unknown) {
     super(message, status, body);
+    // Keep the public error name stable for callers that read `error.name`.
     this.name = "ApiError";
+  }
+}
+
+export class ProgressReconnectError extends Error {
+  readonly attempts: number;
+  readonly elapsedMs: number;
+
+  constructor(attempts: number, elapsedMs: number, cause: unknown) {
+    super("Lost the connection to progress updates. Try again.", { cause });
+    this.name = "ProgressReconnectError";
+    this.attempts = attempts;
+    this.elapsedMs = elapsedMs;
   }
 }
 
@@ -237,18 +262,31 @@ function parseSnapshot(data: string): ProgressSnapshot {
   return parsed as ProgressSnapshot;
 }
 
+function notifyReconnected(onReconnected: (() => void) | undefined): void {
+  try {
+    onReconnected?.();
+  } catch (error) {
+    throw new ProgressHandlerError(error);
+  }
+}
+
 export async function subscribeProgress(
   subject: ProgressSubject,
   options: {
     signal?: AbortSignal;
     lastEventId?: string;
     onSnapshot: (snapshot: ProgressSnapshot) => void;
+    onReconnecting?: (notice: ProgressReconnectNotice) => void;
+    onReconnected?: () => void;
   },
 ): Promise<void> {
   let lastEventId = options.lastEventId;
   let attempt = 0;
+  let failures = 0;
+  let outageStartedAt: number | null = null;
 
   while (!options.signal?.aborted) {
+    let disconnected: unknown;
     try {
       const res = await apiStream(progressPath(subject), {
         signal: options.signal,
@@ -257,9 +295,8 @@ export async function subscribeProgress(
       if (res.body === null) {
         throw new ApiError("Progress stream had no body", 502, null);
       }
+      notifyReconnected(options.onReconnected);
       for await (const item of readSse(res.body, options.signal)) {
-        // A delivered frame marks this socket healthy, so the next drop starts at the base delay.
-        attempt = 0;
         switch (item.event) {
           case "heartbeat":
             break;
@@ -273,6 +310,9 @@ export async function subscribeProgress(
             } catch (error) {
               throw new ProgressHandlerError(error);
             }
+            attempt = 0;
+            failures = 0;
+            outageStartedAt = null;
             if (isTerminalSnapshot(snapshot)) {
               return;
             }
@@ -286,6 +326,7 @@ export async function subscribeProgress(
             break;
         }
       }
+      disconnected = new TypeError("Progress stream ended");
     } catch (error) {
       if (error instanceof ProgressHandlerError) {
         throw error.causeError;
@@ -296,13 +337,26 @@ export async function subscribeProgress(
       if (!isRetryableStreamError(error)) {
         throw error;
       }
+      disconnected = error;
     }
 
     if (options.signal?.aborted) {
       throw abortError();
     }
 
+    failures += 1;
+    if (outageStartedAt === null) {
+      outageStartedAt = Date.now();
+    }
+    const elapsedMs = Date.now() - outageStartedAt;
     const waitMs = progressReconnectDelayMs(attempt, Math.random());
+    if (
+      failures >= PROGRESS_RECONNECT_MAX_ATTEMPTS ||
+      elapsedMs + waitMs > PROGRESS_RECONNECT_MAX_ELAPSED_MS
+    ) {
+      throw new ProgressReconnectError(failures, elapsedMs, disconnected);
+    }
+    options.onReconnecting?.({ attempt: failures, delayMs: waitMs });
     attempt += 1;
     await sleep(waitMs, options.signal);
   }
@@ -315,11 +369,15 @@ export async function watchProgress(
   options: {
     signal?: AbortSignal;
     onSnapshot?: (snapshot: ProgressSnapshot) => void;
+    onReconnecting?: (notice: ProgressReconnectNotice) => void;
+    onReconnected?: () => void;
   } = {},
 ): Promise<ProgressSnapshot> {
   let last: ProgressSnapshot | undefined;
   await subscribeProgress(subject, {
     signal: options.signal,
+    onReconnecting: options.onReconnecting,
+    onReconnected: options.onReconnected,
     onSnapshot: (snapshot) => {
       last = snapshot;
       options.onSnapshot?.(snapshot);

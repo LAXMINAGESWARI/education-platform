@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ProgressReconnectError } from "../api/progress";
 import type {
   GenerationOutlineNode,
   GenerationQaItem,
@@ -818,5 +819,43 @@ describe("TopicGenerationUpload", () => {
     expect(screen.getByRole("button", { name: /Indexing PDF/ })).toHaveAttribute("aria-pressed", "true");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("region", { name: "Indexing PDF" })).not.toBeInTheDocument();
+  });
+
+  it("shows Reconnecting while the run stream retries and clears it when the socket returns", async () => {
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    let reconnected: (() => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
+      reconnected = options?.onReconnected;
+      return new Promise(() => undefined);
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    act(() => {
+      reconnected?.();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows the reconnect give-up error", async () => {
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(subscribeGenerationRun).mockRejectedValue(
+      new ProgressReconnectError(8, 45_000, new TypeError("connection reset")),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
 });

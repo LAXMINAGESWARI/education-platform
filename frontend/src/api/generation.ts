@@ -1,5 +1,5 @@
 import { apiRequest } from "./client";
-import { runSubject, watchProgress } from "./progress";
+import { runSubject, watchProgress, type ProgressReconnectNotice } from "./progress";
 import type {
   AcceptedGenerationRun,
   CloseRoundCommand,
@@ -212,10 +212,17 @@ export async function publishGenerationRun(runId: string): Promise<PublishedTopi
 
 export async function subscribeGenerationRun(
   runId: string,
-  options: { signal?: AbortSignal; onSnapshot?: (run: GenerationRun) => void } = {},
+  options: {
+    signal?: AbortSignal;
+    onSnapshot?: (run: GenerationRun) => void;
+    onReconnecting?: (notice: ProgressReconnectNotice) => void;
+    onReconnected?: () => void;
+  } = {},
 ): Promise<GenerationRun> {
   const snapshot = await watchProgress(runSubject(runId), {
     signal: options.signal,
+    onReconnecting: options.onReconnecting,
+    onReconnected: options.onReconnected,
     onSnapshot: (next) => {
       options.onSnapshot?.(next as GenerationRun);
     },
