@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -31,6 +32,8 @@ from education_platform.modules.text_to_sql.router import router as text_to_sql_
 
 _ = _models
 
+logger = logging.getLogger(__name__)
+
 
 def _seed_if_empty() -> None:
     settings = get_settings()
@@ -44,7 +47,10 @@ def _seed_if_empty() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    _seed_if_empty()
+    try:
+        _seed_if_empty()
+    except Exception:
+        logger.exception("Startup seeding failed; continuing")
     yield
 
 
