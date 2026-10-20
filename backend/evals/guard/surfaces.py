@@ -9,7 +9,9 @@ Stage order mirrors the guards:
   regex -> short message -> ``screen_review_message`` (Jev REVIEW_INJECTION, with history).
   There was no GPT classifier on this surface before #187, so its legacy is regex only.
 - data (``text_to_sql/nodes/injection_guard.py`` + ``question_validator.py``): regex ->
-  Jev DATA_INJECTION -> Jev DATA_OFF_TOPIC, question text only.
+  Jev DATA_INJECTION OR the legacy GPT injection check -> Jev DATA_OFF_TOPIC,
+  question text only. A Jev error still fails closed before GPT. HTTP 402 is the
+  GPT-only fallback and is not a second Jev score.
 
 The legacy GPT prompts are copied verbatim from ``main`` (ca90bf7), where they were
 removed by #187: policy from ``assistant/graph.py`` ``injection_guard`` /
@@ -154,7 +156,7 @@ SURFACE_DEFS: dict[str, Surface] = {
     ),
     "data": Surface(
         "data", data_regex, False, True,
-        jev_order=("regex", "jev_injection", "jev_off_topic"),
+        jev_order=("regex", "jev_injection", "gpt_injection", "jev_off_topic"),
         legacy_order=("regex", "gpt_injection", "gpt_off_topic"),
     ),
 }  # fmt: skip
