@@ -1,0 +1,38 @@
+{{- if .Values.curriculumSeed.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "curioed.seedName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seed
+  annotations:
+    helm.sh/hook: {{ .Values.curriculumSeed.hooks | quote }}
+    helm.sh/hook-weight: {{ .Values.curriculumSeed.weight | quote }}
+    helm.sh/hook-delete-policy: {{ .Values.curriculumSeed.deletePolicy | quote }}
+spec:
+  backoffLimit: {{ .Values.curriculumSeed.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.curriculumSeed.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: seed
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      containers:
+        - name: seed
+          image: {{ include "curioed.imageRef" .Values.api.image }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command: ["python", "-m", "education_platform.modules.materials.seed"]
+          env:
+            {{- include "curioed.appEnv" . | nindent 12 }}
+{{- end }}
