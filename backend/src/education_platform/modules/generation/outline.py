@@ -203,6 +203,20 @@ def is_outline_noise_heading(heading: str) -> bool:
     return is_activity_noise_heading(key)
 
 
+def nearest_concept_position(index: int, concept_positions: Sequence[int]) -> int | None:
+    """Concept a noise heading folds into: the previous one, else the next.
+
+    ``None`` when the outline has no concept to fold into.
+    """
+    earlier = [position for position in concept_positions if position < index]
+    if earlier:
+        return earlier[-1]
+    later = [position for position in concept_positions if position > index]
+    if later:
+        return later[0]
+    return None
+
+
 def normalize_outline_title(heading: str) -> str:
     """Student-facing concept name. Does not invent words that are not in the heading.
 

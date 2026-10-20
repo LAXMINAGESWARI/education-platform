@@ -29,6 +29,12 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
+from education_platform.modules.assessments.feedback_hierarchy import (
+    UnitFact,
+    subject_summary_prompt,
+    unit_template,
+    units_from_topic_concepts,
+)
 from education_platform.modules.assessments.feedback_summary import facts_hash, resolve_summary
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
@@ -52,6 +58,7 @@ from education_platform.modules.assessments.schemas import (
     TrajectoryOut,
 )
 from education_platform.modules.authorization.scope import Scope
+from education_platform.modules.generation.outline import is_outline_noise_heading
 from education_platform.modules.materials.models import (
     SourceMaterial,
     SourceMaterialVersion,
@@ -168,6 +175,8 @@ def _percent_for(rows: list[AnswerOutcomeRow]) -> Decimal | None:
 def aggregate_by_subtopic(rows: list[AnswerOutcomeRow]) -> dict[UUID, SubtopicPerformance]:
     grouped: dict[UUID, list[AnswerOutcomeRow]] = defaultdict(list)
     for row in rows:
+        if is_outline_noise_heading(row.subtopic_name):
+            continue
         grouped[row.subtopic_id].append(row)
 
     result: dict[UUID, SubtopicPerformance] = {}
@@ -600,89 +609,39 @@ async def _attempt_ids_for_subject(
     )
 
 
-def _template_summary(strong: SubtopicPerformance | None, weak: list[SubtopicPerformance]) -> str:
-    parts: list[str] = []
-    if strong is not None:
-        parts.append(f"You're doing well in {strong.subtopic_name}.")
-    if weak:
-        names = ", ".join(w.subtopic_name for w in weak[:3])
-        parts.append(f"Focus your next study session on: {names}.")
-    else:
-        parts.append("No specific weak areas stand out yet — keep practicing consistently.")
-    return " ".join(parts)
+def aggregate_by_unit(rows: list[AnswerOutcomeRow]) -> list[UnitFact]:
+    """One score per chapter. Noise headings and individual concepts stay out.
 
-
-def _prompt_for(
-    subject_name: str,
-    strong: SubtopicPerformance | None,
-    weak: list[SubtopicPerformance],
-    overall_percent: Decimal | None,
-    trend: dict[UUID, tuple[Decimal | None, Decimal | None]],
-    distractor_labels: dict[UUID, str],
-    regressions: dict[UUID, int],
-) -> str:
-    lines = [f"Subject: {subject_name}"]
-    if overall_percent is not None:
-        lines.append(f"Overall percent across scored attempts: {overall_percent}%")
-    if strong is not None:
-        lines.append(f"Strongest subtopic: {strong.subtopic_name} ({strong.percent}%)")
-        _prior, strong_delta = trend.get(strong.subtopic_id, (None, None))
-        if strong_delta is not None:
-            sign = "+" if strong_delta >= 0 else ""
-            lines.append(f"  - Trend since last attempt: {sign}{strong_delta}%")
-    if weak:
-        weak_desc = ", ".join(f"{w.subtopic_name} ({w.percent}%)" for w in weak)
-        lines.append(f"Weak subtopics: {weak_desc}")
-        for w in weak:
-            _prior, w_delta = trend.get(w.subtopic_id, (None, None))
-            if w_delta is not None:
-                sign = "+" if w_delta >= 0 else ""
-                lines.append(f"  - {w.subtopic_name}: trend since last attempt {sign}{w_delta}%")
-            tiers = [
-                ("easy", w.percent_easy),
-                ("medium", w.percent_medium),
-                ("hard", w.percent_hard),
-            ]
-            known = [(label, pct) for label, pct in tiers if pct is not None]
-            if w.percent_easy is not None and w.percent_easy < Decimal("50"):
-                lines.append(
-                    f"  - {w.subtopic_name}: struggling on foundational (easy) questions "
-                    f"({w.percent_easy}%) — this looks like a basics gap, not just a "
-                    "hard-question gap."
-                )
-            elif w.percent_hard is not None and (
-                w.percent_easy is not None or w.percent_medium is not None
-            ):
-                easier_desc = ", ".join(
-                    f"{label} {pct}%" for label, pct in known if label != "hard"
-                )
-                lines.append(
-                    f"  - {w.subtopic_name}: solid on easier questions ({easier_desc}) but "
-                    f"weaker on hard ones ({w.percent_hard}%) — a stretch/extension gap, not "
-                    "a basics gap."
-                )
-            distractor_label = distractor_labels.get(w.subtopic_id)
-            if distractor_label:
-                lines.append(
-                    f"  - {w.subtopic_name}: repeatedly picked option {distractor_label} when "
-                    "incorrect — may point to a specific mix-up, but this is a pattern, not a "
-                    'confirmed diagnosis; phrase it as a hedge ("you may be mixing up...").'
-                )
-            regressed_count = regressions.get(w.subtopic_id)
-            if regressed_count:
-                lines.append(
-                    f"  - {w.subtopic_name}: {regressed_count} question(s) answered correctly "
-                    "before are now wrong on the latest attempt — likely a review/carelessness "
-                    "slip, not a new knowledge gap."
-                )
-    else:
-        lines.append("No subtopic is flagged as weak.")
-    lines.append(
-        "Write 2-3 encouraging sentences: lead with the strength, then name what to focus on. "
-        "If a trend since last attempt is given, mention direction (improving/declining) for "
-        "at most one subtopic — don't list every number."
-    )
-    return "\n".join(lines)
+    The unit percent is the unweighted mean of each remaining concept's mark
+    percent. Attempt count is how many attempts touched that unit's real concepts.
+    """
+    by_topic: dict[UUID, list[AnswerOutcomeRow]] = defaultdict(list)
+    order: list[UUID] = []
+    for row in rows:
+        if row.topic_id not in by_topic:
+            order.append(row.topic_id)
+        by_topic[row.topic_id].append(row)
+    topics: list[tuple[str, int, list[tuple[str, int, int]]]] = []
+    for topic_id in order:
+        topic_rows = by_topic[topic_id]
+        per_concept: dict[UUID, list[int]] = {}
+        names: dict[UUID, str] = {}
+        attempts: set[UUID] = set()
+        for row in topic_rows:
+            if is_outline_noise_heading(row.subtopic_name) or row.is_correct is None:
+                continue
+            bucket = per_concept.setdefault(row.subtopic_id, [0, 0])
+            bucket[1] += 1
+            if row.is_correct:
+                bucket[0] += 1
+            names[row.subtopic_id] = row.subtopic_name
+            attempts.add(row.attempt_id)
+        concepts = [
+            (names[subtopic_id], correct, answered)
+            for subtopic_id, (correct, answered) in per_concept.items()
+        ]
+        topics.append((topic_rows[0].topic_name, len(attempts), concepts))
+    return units_from_topic_concepts(topics)
 
 
 async def get_subject_feedback(
@@ -802,21 +761,9 @@ async def get_subject_feedback(
     weak_list.sort(key=lambda p: p.percent)
     subtopic_feedback.sort(key=lambda s: s.percent)
 
-    pass_mark = Decimal(str(settings.mastery_pass_percent))
-    passing_strength = (
-        strongest if strongest is not None and strongest.percent >= pass_mark else None
-    )
-
-    prompt = _prompt_for(
-        subject.name,
-        passing_strength,
-        weak_list,
-        overall_percent,
-        trend,
-        distractor_labels,
-        regressions_by_subtopic,
-    )
-    template = _template_summary(passing_strength, weak_list)
+    units = aggregate_by_unit(rows)
+    prompt = subject_summary_prompt(subject.name, units)
+    template = unit_template(subject.name, units)
     if attempt_ids:
         resolved = await resolve_summary(
             session,

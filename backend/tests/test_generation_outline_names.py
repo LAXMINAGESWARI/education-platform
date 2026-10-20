@@ -12,6 +12,7 @@ from education_platform.modules.generation.outline import (
     is_activity_noise_heading,
     is_outline_noise_heading,
     match_existing_subtopics,
+    nearest_concept_position,
     normalize_outline_title,
     outline_clusters,
     outline_from_headings,
@@ -92,6 +93,17 @@ def test_noise_headings_are_not_concepts() -> None:
     assert is_activity_noise_heading("Tadang's method:")
     assert is_activity_noise_heading("Ridhima's method:")
     assert is_activity_noise_heading("Method 1")
+    for heading in (
+        "WHAT HAVE WE DISCUSSED?",
+        "EXERCISE 9.2",
+        "exercise 9.2",
+        "Exercise 9.2.",
+        "TRY THESE",
+        "Summary",
+        "Think, Discuss and Write",
+        "Do This",
+    ):
+        assert is_outline_noise_heading(heading), heading
 
 
 def test_normalize_outline_title_cleans_mensuration_names() -> None:
@@ -436,3 +448,9 @@ def test_teacher_title_edit_keeps_chunk_keys() -> None:
     assert node.title != normalize_outline_title(raw_title)
     assert node.source_headings == keys
     assert node.slug == "9-1-introduction"
+
+
+def test_noise_heading_folds_into_the_previous_concept() -> None:
+    assert nearest_concept_position(1, [0, 2]) == 0
+    assert nearest_concept_position(0, [1]) == 1
+    assert nearest_concept_position(0, []) is None
