@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.db.url import to_async_url
+from education_platform.modules.academics.models import Topic
 from education_platform.modules.assistant.generation_strategy import (
     GUARD_UNAVAILABLE_REPLY,
     INJECTION_BLOCKED_REPLY,
@@ -27,6 +28,13 @@ from education_platform.modules.assistant.strategy import GenerationAssistantCon
 from education_platform.modules.audit.models import AuditEvent
 from education_platform.modules.auth.models import User
 from education_platform.modules.authorization.principal import Principal
+from education_platform.modules.generation.models import ContentGenerationRun, GenerationRevision
+from education_platform.modules.generation.types import (
+    GenerationError,
+    ReviewStage,
+    RevisionOrigin,
+    RunPhase,
+)
 from education_platform.modules.guard.classifier import (
     DATA_INJECTION,
     classify_noul,
@@ -219,6 +227,48 @@ async def test_review_classifier_fails_open_when_unconfigured() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_generation_run_does_not_call_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    async def _screen(*_args: object, **_kwargs: object) -> None:
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(
+        "education_platform.modules.assistant.generation_strategy.screen_review_message",
+        _screen,
+    )
+
+    class _Missing:
+        async def get(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    with pytest.raises(GenerationError, match="does not exist") as caught:
+        await GenerationReviewStrategy().run_turn(
+            session=_Missing(),  # type: ignore[arg-type]
+            principal=Principal(
+                user_id=uuid4(),
+                institution_id=uuid4(),
+                email="teacher@example.com",
+                roles=frozenset({"teacher"}),
+                student_profile_id=None,
+                status="active",
+            ),
+            context=GenerationAssistantContext(
+                kind="generation_review",
+                run_id=uuid4(),
+                revision_id=uuid4(),
+                target=None,
+            ),
+            history=(),
+            message="Explain this quiz item",
+        )
+    assert called is False
+    assert caught.value.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_review_refusal_records_audit(
     clean_db: str,
     seeded_db: Session,
@@ -250,10 +300,47 @@ async def test_review_refusal_records_audit(
         "education_platform.modules.judge.client.httpx.AsyncClient",
         factory,
     )
+    topic_id = seeded_db.scalar(select(Topic.id))
+    assert topic_id is not None
     engine = create_async_engine(to_async_url(clean_db), pool_pre_ping=True)
     factory_session = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory_session() as session:
+            run = ContentGenerationRun(
+                topic_id=topic_id,
+                submitted_by_user_id=user.id,
+                title="Review guard",
+                phase=RunPhase.PUBLISHED,
+                target_item_count=60,
+            )
+            session.add(run)
+            await session.flush()
+            revision = GenerationRevision(
+                run_id=run.id,
+                stage=ReviewStage.OUTLINE,
+                number=1,
+                origin=RevisionOrigin.INITIAL_GENERATION,
+                created_by_user_id=user.id,
+                snapshot_hash="ab" * 32,
+                snapshot={
+                    "target_item_count": 60,
+                    "nodes": [
+                        {
+                            "node_key": "00000000-0000-0000-0000-000000000001",
+                            "slug": "review-guard",
+                            "title": "Review guard",
+                            "token_mass": 100,
+                            "prerequisite_score": "0",
+                            "centrality": "1",
+                            "weight": "1",
+                            "sequence": 1,
+                        }
+                    ],
+                },
+            )
+            session.add(revision)
+            await session.flush()
+            await session.refresh(revision)
             reply = await GenerationReviewStrategy().run_turn(
                 session=session,
                 principal=Principal(
@@ -266,8 +353,8 @@ async def test_review_refusal_records_audit(
                 ),
                 context=GenerationAssistantContext(
                     kind="generation_review",
-                    run_id=uuid4(),
-                    revision_id=uuid4(),
+                    run_id=run.id,
+                    revision_id=revision.id,
                     target=None,
                 ),
                 history=(),
@@ -383,6 +470,101 @@ async def test_nan_noul_is_rejected() -> None:
                 settings=settings,
                 client=client,
             )
+
+
+@pytest.mark.asyncio
+async def test_guard_rejects_infinite_and_out_of_range_noul() -> None:
+    settings = Settings(openrouter_api_key="test-key")
+    for raw in ("Infinity", "-Infinity", "1.5", "-0.1"):
+
+        def handler(_request: httpx.Request, raw: str = raw) -> httpx.Response:
+            body = '{"answers": {"decision": {"type": "noul", "noul": ' + raw + "}}}"
+            return httpx.Response(
+                200, content=body.encode(), headers={"content-type": "application/json"}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(JudgeResponseError, match="infinite|outside 0-1"):
+                await post_decisions(
+                    state="hello",
+                    questions={"decision": DATA_INJECTION},
+                    settings=settings,
+                    client=client,
+                )
+
+
+@pytest.mark.asyncio
+async def test_guard_backoff_sleeps_only_on_the_429_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    slept: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("education_platform.modules.judge.client.asyncio.sleep", _sleep)
+    settings = Settings(
+        openrouter_api_key="test-key",
+        jev_decisions_url="https://decisions.example/api/alpha/decisions",
+    )
+    calls = {"n": 0}
+    seen: dict[str, str] = {}
+
+    def down(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        seen["url"] = str(request.url)
+        return httpx.Response(503, text="unavailable")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(down)) as client:
+        with pytest.raises(JudgeError, match="503"):
+            await post_decisions(
+                state="hello",
+                questions={"decision": DATA_INJECTION},
+                settings=settings,
+                client=client,
+            )
+    assert calls["n"] == 2
+    assert slept == []
+    assert seen["url"] == decisions_endpoint(settings)
+
+    calls["n"] = 0
+
+    def limited(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json={"error": {"message": "slow down"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(limited)) as client:
+        with pytest.raises(JudgeError, match="429"):
+            await post_decisions(
+                state="hello",
+                questions={"decision": DATA_INJECTION},
+                settings=settings,
+                client=client,
+            )
+    assert calls["n"] == 2
+    assert slept == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_guard_model_does_not_follow_the_lesson_judge_model() -> None:
+    settings = Settings(openrouter_api_key="test-key", jev_model="typesafe/jev-other")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert isinstance(body, dict)
+        seen.append(str(body["model"]))
+        return httpx.Response(
+            200,
+            json={"answers": {"decision": {"type": "noul", "noul": 0.1}}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await post_decisions(
+            state="hello",
+            questions={"decision": DATA_INJECTION},
+            settings=settings,
+            client=client,
+        )
+    assert seen == ["typesafe/jev-1.14"]
 
 
 @pytest.mark.asyncio

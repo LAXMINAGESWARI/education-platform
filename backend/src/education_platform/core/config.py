@@ -72,13 +72,15 @@ class Settings(BaseSettings):
     # Chat-guard Decisions API. The timeout keeps the name from 858747d /
     # 565e0a3 (jev_guard_timeout_seconds) so it stays distinct from the lesson
     # judge's 30s jev_timeout_seconds. The block threshold is its own setting
-    # (GUARD_JEV_BLOCK_THRESHOLD). guard_jev_model is blank unless
-    # GUARD_JEV_MODEL is set; the guard then posts jev_model.
+    # (GUARD_JEV_BLOCK_THRESHOLD). GUARD_JEV_MODEL defaults to the same model
+    # string the guard already posts, and does not follow JEV_MODEL.
+    # JEV_DECISIONS_URL overrides the Decisions route for both the lesson judge
+    # and the chat guard. Blank derives it from OPENROUTER_BASE_URL.
     jev_decisions_url: str = ""
     jev_guard_timeout_seconds: float = 5.0
     # Noul probability that replaces the old classifier's boolean ``true``.
     guard_jev_block_threshold: float = 0.6
-    guard_jev_model: str = ""
+    guard_jev_model: str = "typesafe/jev-1.14"
     # Refusal audits omit message text until an owner turns this on.
     guard_audit_store_preview: bool = False
     adk_model: str = "openrouter/openai/gpt-4o-mini"
@@ -164,9 +166,9 @@ class Settings(BaseSettings):
 
     @property
     def resolved_guard_jev_model(self) -> str:
-        """Decisions model the chat guard posts. Blank follows ``jev_model``."""
+        """Decisions model the chat guard posts. Independent of ``jev_model``."""
         chosen = self.guard_jev_model.strip()
-        return chosen or self.jev_model
+        return chosen or "typesafe/jev-1.14"
 
     @property
     def text_to_sql_database_url(self) -> str:

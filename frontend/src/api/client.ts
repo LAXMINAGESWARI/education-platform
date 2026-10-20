@@ -42,7 +42,12 @@ function isFormDataBody(body: unknown): body is FormData {
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function refreshAccessToken(): Promise<boolean> {
+function abortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
+/** Shared refresh. No caller signal: a rotated pair must be saved even if a waiter gives up. */
+async function performRefresh(): Promise<boolean> {
   const refresh = getRefreshToken();
   if (!refresh) {
     return false;
@@ -64,6 +69,44 @@ async function refreshAccessToken(): Promise<boolean> {
     clearTokens();
     return false;
   }
+}
+
+function waitForRefresh(pending: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (signal === undefined) {
+    return pending;
+  }
+  if (signal.aborted) {
+    void pending.catch(() => undefined);
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function refreshAccessToken(signal?: AbortSignal): Promise<boolean> {
+  if (refreshPromise === null) {
+    if (signal?.aborted) {
+      return Promise.reject(abortError());
+    }
+    refreshPromise = performRefresh().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return waitForRefresh(refreshPromise, signal);
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -89,12 +132,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   });
 
   if (res.status === 401 && auth && !skipRefresh) {
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
-    }
-    const ok = await refreshPromise;
+    const ok = await refreshAccessToken(signal);
     if (ok) {
       return apiRequest<T>(path, { ...options, skipRefresh: true });
     }
@@ -146,12 +184,7 @@ export async function apiStream(
     signal: options.signal,
   });
   if (res.status === 401 && !options.skipRefresh) {
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
-    }
-    const ok = await refreshPromise;
+    const ok = await refreshAccessToken(options.signal);
     if (ok) {
       return apiStream(path, { ...options, skipRefresh: true });
     }

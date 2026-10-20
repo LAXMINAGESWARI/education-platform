@@ -1,0 +1,123 @@
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: {{ include "curioed.apiName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  forwardingTimeouts:
+    dialTimeout: {{ .Values.ingress.dialTimeout }}
+    responseHeaderTimeout: {{ .Values.ingress.responseHeaderTimeout }}
+    idleConnTimeout: {{ .Values.ingress.idleTimeout }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ printf "%s-body" (include "curioed.apiName" .) | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  buffering:
+    maxRequestBodyBytes: {{ .Values.ingress.maxRequestBodyBytes | int64 }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ printf "%s-sw" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  headers:
+    customResponseHeaders:
+      Cache-Control: "no-cache, max-age=0, must-revalidate"
+      Content-Type: "application/javascript"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ printf "%s-manifest" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  headers:
+    customResponseHeaders:
+      Cache-Control: "no-cache, max-age=0, must-revalidate"
+      Content-Type: "application/manifest+json"
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "curioed.fullname" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - {{ .Values.ingress.entryPoint }}
+  routes:
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api/v1/progress`)
+      kind: Rule
+      priority: 120
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+          serversTransport: {{ include "curioed.apiName" . }}
+          responseForwarding:
+            flushInterval: {{ .Values.ingress.flushInterval }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: {{ printf "%s-body" (include "curioed.apiName" .) | trunc 63 | trimSuffix "-" }}
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+          serversTransport: {{ include "curioed.apiName" . }}
+          responseForwarding:
+            flushInterval: {{ .Values.ingress.flushInterval }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/health`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/docs`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+          serversTransport: {{ include "curioed.apiName" . }}
+    - match: Host(`{{ .Values.domain }}`) && Path(`/openapi.json`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/redoc`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: {{ include "curioed.apiName" . }}
+          port: {{ .Values.api.service.port }}
+    - match: Host(`{{ .Values.domain }}`) && Path(`/sw.js`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: {{ printf "%s-sw" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+      services:
+        - name: {{ include "curioed.webName" . }}
+          port: {{ .Values.web.service.port }}
+    - match: Host(`{{ .Values.domain }}`) && Path(`/manifest.webmanifest`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: {{ printf "%s-manifest" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+      services:
+        - name: {{ include "curioed.webName" . }}
+          port: {{ .Values.web.service.port }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/`)
+      kind: Rule
+      priority: 10
+      services:
+        - name: {{ include "curioed.webName" . }}
+          port: {{ .Values.web.service.port }}
