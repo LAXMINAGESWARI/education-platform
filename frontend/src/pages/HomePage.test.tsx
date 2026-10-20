@@ -12,6 +12,10 @@ vi.mock("../api/materials", () => ({
   fetchLearningDirectory: vi.fn(),
 }));
 
+vi.mock("../api/feedback", () => ({
+  getFeedbackHighlights: vi.fn().mockResolvedValue({ due_reviews: [], trajectories: [] }),
+}));
+
 import { fetchLearningDirectory } from "../api/materials";
 
 const mockDirectory = {
@@ -272,6 +276,11 @@ describe("HomePage", () => {
 
     expect(await screen.findByText("Continue")).toBeInTheDocument();
     expect(screen.getByText("In progress · slide 3")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1/lesson?slide=3",
+    );
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveClass("pill-btn");
     expect(screen.getByRole("link", { name: /Quiz/ })).toHaveAttribute(
       "href",
       "/quizzes/overall-1",

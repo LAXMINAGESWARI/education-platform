@@ -176,11 +176,14 @@ export function SubjectFeedbackPage() {
         <p className="feedback-summary__kicker">Subject</p>
         <p className="feedback-card__score">{formatScore(detail.score_percent)}</p>
         {trend && <p className="feedback-card__trend">{trend}</p>}
-        {detail.topics_needing_attention.length > 0 && (
-          <p className="progress-label">
-            Needs attention: {detail.topics_needing_attention.join(", ")}
-          </p>
-        )}
+        <p
+          id="needs-attention"
+          className={detail.topics_needing_attention.length > 0 ? "progress-label" : "sr-only"}
+        >
+          {detail.topics_needing_attention.length > 0
+            ? `Needs attention: ${detail.topics_needing_attention.join(", ")}`
+            : "No topics need attention right now."}
+        </p>
         <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
         <SubjectEngagement rates={engagement} />
         <FocusLine focus={detail.focus} />

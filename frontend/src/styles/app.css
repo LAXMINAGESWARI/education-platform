@@ -2050,9 +2050,95 @@ a.list-item__title:hover {
   padding: 0 1rem 1rem;
 }
 
-.page-head + .topic-entries {
+.page-head + .topic-actions {
   padding: 0;
   width: min(100%, 48rem);
+}
+
+.topic-actions,
+.subject-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.topic-actions {
+  padding: 0 1rem 0.85rem;
+}
+
+.subject-shortcuts {
+  margin-top: 0.35rem;
+}
+
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  max-width: 100%;
+  padding: 0 0.1rem;
+  border-radius: var(--radius-pill);
+  color: inherit;
+  text-decoration: none;
+  background: transparent;
+}
+
+.pill-btn__face {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.18rem 0.7rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.pill-btn:hover .pill-btn__face {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.pill-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.pill-btn.is-locked {
+  cursor: default;
+}
+
+.pill-btn.is-locked .pill-btn__face {
+  color: var(--ink-muted);
+}
+
+.pill-btn__kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  font-weight: 650;
+}
+
+.pill-btn__detail {
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.topic-card__pills {
+  margin: 0.45rem 0 0;
+  padding: 0;
+}
+
+.subtopic-card > .topic-card__pills {
+  padding: 0 1rem 0.15rem;
 }
 
 .topic-entry {

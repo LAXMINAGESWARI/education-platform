@@ -10,6 +10,8 @@ import {
   topicLessonEntry,
   topicHistoryPath,
   topicLessonPath,
+  topicLessonResumePath,
+  subjectResumeTarget,
   topicPagePath,
   topicQuizEntry,
 } from "./subjectMaterial";
@@ -163,9 +165,75 @@ describe("subjectMaterial topic lesson helpers", () => {
     expect(topicLessonPath("subj-1", "topic-1")).toBe(
       "/subjects/subj-1/topics/topic-1/lesson",
     );
+    expect(
+      topicLessonResumePath("subj-1", "topic-1", {
+        status: "opened",
+        opened_at: "2026-08-09T21:00:00Z",
+        last_opened_at: "2026-08-09T22:00:00Z",
+        completed_at: null,
+        last_unit_ordinal: 3,
+        source_material_version_id: "ver-1",
+      }),
+    ).toBe("/subjects/subj-1/topics/topic-1/lesson?slide=3");
+    expect(topicLessonResumePath("subj-1", "topic-1", null)).toBe(
+      "/subjects/subj-1/topics/topic-1/lesson",
+    );
     expect(topicHistoryPath("subj-1", "topic-1")).toBe(
       "/subjects/subj-1/topics/topic-1/history",
     );
+  });
+
+  it("resumes the topic lesson that was opened most recently", () => {
+    const progress = (ordinal: number, opened: string) => ({
+      status: "opened" as const,
+      opened_at: opened,
+      last_opened_at: opened,
+      completed_at: null,
+      last_unit_ordinal: ordinal,
+      source_material_version_id: "ver-1",
+    });
+    const resume = subjectResumeTarget({
+      id: "math-1",
+      code: "MATH",
+      name: "Mathematics",
+      grade_name: "Grade 6",
+      academic_period_name: "Term 1",
+      progress_percent: 40,
+      topics: [
+        {
+          ...baseTopic,
+          id: "older",
+          title: "Older",
+          has_topic_lesson: true,
+          topic_lesson_progress: progress(2, "2026-08-01T00:00:00Z"),
+        },
+        {
+          ...baseTopic,
+          id: "newer",
+          title: "Newer",
+          has_topic_lesson: true,
+          topic_lesson_progress: progress(4, "2026-08-09T00:00:00Z"),
+        },
+      ],
+    });
+
+    expect(resume).toEqual({
+      topicId: "newer",
+      topicTitle: "Newer",
+      href: "/subjects/math-1/topics/newer/lesson?slide=4",
+      slide: 4,
+    });
+    expect(
+      subjectResumeTarget({
+        id: "math-1",
+        code: "MATH",
+        name: "Mathematics",
+        grade_name: "Grade 6",
+        academic_period_name: "Term 1",
+        progress_percent: 0,
+        topics: [{ ...baseTopic, has_topic_lesson: true }],
+      }),
+    ).toBeNull();
   });
 
   it("labels a topic lesson Start, Continue, or Review from saved progress", () => {

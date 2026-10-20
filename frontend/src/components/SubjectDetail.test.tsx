@@ -1,10 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SubjectNode, TopicNode } from "../api/types";
 import { SchoolMaterialPanel } from "./SchoolMaterialPanel";
 import { SubjectDetail, SubjectRouteStatus } from "./SubjectDetail";
+
+vi.mock("../api/feedback", () => ({
+  getFeedbackHighlights: vi.fn(),
+}));
+
+import { getFeedbackHighlights } from "../api/feedback";
 
 function topic(overrides: Partial<TopicNode> = {}): TopicNode {
   return {
@@ -82,6 +88,10 @@ function renderDetail(node: SubjectNode = subject()) {
 }
 
 describe("SubjectDetail", () => {
+  beforeEach(() => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
+  });
+
   it("shows the subject heading, progress, and topic actions", () => {
     renderDetail();
 
@@ -125,6 +135,78 @@ describe("SubjectDetail", () => {
     expect(screen.queryByRole("heading", { name: "Topics" })).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Lesson/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Resume where you stopped/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Subject feedback" })).not.toBeInTheDocument();
+  });
+
+  it("links resume, feedback, and a due pill from saved progress", async () => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({
+      due_reviews: [
+        {
+          subtopic_id: "st-due",
+          subtopic_name: "Practice",
+          topic_name: "Fractions",
+          days_since_last_attempt: 12,
+          due_interval_days: 7,
+          remediation: null,
+        },
+      ],
+      trajectories: [],
+    });
+
+    renderDetail(
+      subject({
+        topics: [
+          topic({
+            topic_lesson_progress: {
+              status: "opened",
+              opened_at: "2026-08-09T21:00:00Z",
+              last_opened_at: "2026-08-09T21:00:00Z",
+              completed_at: null,
+              last_unit_ordinal: 3,
+              source_material_version_id: "ver-1",
+            },
+            subtopics: [
+              {
+                id: "st-due",
+                title: "Practice",
+                slug: "practice",
+                sequence: 1,
+                has_lesson: false,
+                lesson_completed: false,
+                progress_percent: 0,
+                quiz: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    expect(await screen.findByRole("link", { name: /Resume where you stopped/ })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1/lesson?slide=3",
+    );
+    expect(screen.getByRole("link", { name: /Resume where you stopped/ })).toHaveClass("pill-btn");
+    expect(screen.getByRole("link", { name: "Subject feedback" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback",
+    );
+    expect(screen.getByRole("link", { name: "Due reviews" })).toHaveAttribute(
+      "href",
+      "/feedback?subject=math-1&section=due#feedback-due",
+    );
+    expect(screen.getByRole("link", { name: "Weak topics" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback#needs-attention",
+    );
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveClass("pill-btn");
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1/lesson?slide=3",
+    );
+    expect(await screen.findByText("Due")).toHaveClass("badge", "badge--warn");
+    expect(screen.getByText("Slide 3")).toBeInTheDocument();
   });
 });
 
