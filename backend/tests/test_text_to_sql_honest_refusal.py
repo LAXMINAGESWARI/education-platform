@@ -73,7 +73,11 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake(**_kwargs: object) -> float:
         return 0.0
 
+    async def _gpt_clear(**_kwargs: object) -> bool:
+        return False
+
     monkeypatch.setattr(_INJECTION_GUARD_MODULE, "classify_noul", _fake)
+    monkeypatch.setattr(_INJECTION_GUARD_MODULE, "legacy_gpt_flag", _gpt_clear)
 
 
 class _QuestionValidatorModule(Protocol):
@@ -99,7 +103,11 @@ def _pass_question_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_ot(**_kwargs: object) -> float:
         return 0.0
 
+    async def _gpt_on_topic(**_kwargs: object) -> bool:
+        return False
+
     monkeypatch.setattr(_QUESTION_VALIDATOR_MODULE, "classify_noul", _fake_ot)
+    monkeypatch.setattr(_QUESTION_VALIDATOR_MODULE, "legacy_gpt_flag", _gpt_on_topic)
 
 
 # Distinctive markers that must never survive into natural_answer, standing in for the

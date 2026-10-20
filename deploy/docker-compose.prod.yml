@@ -90,6 +90,10 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # GET /health runs SELECT 1 (HEALTH_READY_TIMEOUT_SECONDS, default 2s).
+    # This 5s budget is longer, so Compose sees 200 or 503 instead of a client
+    # timeout. A database blip marks api unhealthy; restart: unless-stopped
+    # does not recreate a running container, so the check stays on /health.
     healthcheck:
       test:
         [

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
+from education_platform.core.health import readiness_response
 from education_platform.db import models as _models
 from education_platform.db.url import to_sync_url
 from education_platform.modules.academics.router import router as academics_router
@@ -31,6 +33,8 @@ from education_platform.modules.text_to_sql.router import router as text_to_sql_
 
 _ = _models
 
+logger = logging.getLogger(__name__)
+
 
 def _seed_if_empty() -> None:
     settings = get_settings()
@@ -45,7 +49,10 @@ def _seed_if_empty() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     warn_judge_mode_at_startup()
-    _seed_if_empty()
+    try:
+        _seed_if_empty()
+    except Exception:
+        logger.exception("Startup seeding failed; continuing")
     yield
 
 
@@ -91,6 +98,19 @@ async def domain_error_handler(_request: Request, exc: DomainError) -> JSONRespo
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-@app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
+@app.get("/health/live", tags=["system"])
+async def health_live() -> dict[str, str]:
+    """Process is up. No database call, so a DB blip does not fail liveness."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["system"])
+async def health_ready() -> JSONResponse:
+    """Postgres answers SELECT 1 within the configured timeout."""
+    return await readiness_response()
+
+
+@app.get("/health", tags=["system"])
+async def health() -> JSONResponse:
+    """Same check as /health/ready. Compose and autodeploy call this path."""
+    return await readiness_response()

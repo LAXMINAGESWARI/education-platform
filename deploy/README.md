@@ -329,8 +329,9 @@ curl --fail --silent https://DOMAIN/health
 curl --fail --silent --output /dev/null --write-out '%{http_code}\n' https://DOMAIN/
 ```
 
-`/health` returns `{"status":"ok"}`. `/` returns `200` and the SPA. Sign in at
-`https://DOMAIN/login` with the accounts above.
+`/health` checks Postgres and returns `{"status":"ok","db":"ok"}`, or HTTP 503
+with `{"status":"degraded","db":"error"}` when that check fails. `/` returns
+`200` and the SPA. Sign in at `https://DOMAIN/login` with the accounts above.
 
 ## Update and redeploy
 
