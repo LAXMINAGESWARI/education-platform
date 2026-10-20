@@ -31,6 +31,7 @@ from education_platform.modules.academics.models import (
 )
 from education_platform.modules.assessments.feedback_hierarchy import (
     UnitFact,
+    card_summary_inputs,
     subject_summary_prompt,
     unit_template,
     units_from_topic_concepts,
@@ -644,6 +645,25 @@ def aggregate_by_unit(rows: list[AnswerOutcomeRow]) -> list[UnitFact]:
     return units_from_topic_concepts(topics)
 
 
+async def subject_prompt_and_template(
+    session: AsyncSession, scope: Scope, subject_id: UUID
+) -> tuple[str, str, bool]:
+    """Prompt, fallback text, and whether any unit has a scored attempt.
+
+    The detail view and the dashboard both call this, so they store one cache
+    key. Unit lines are the card's topic-quiz concept averages when a topic
+    quiz has been scored. A subject that only has subtopic-quiz answers uses
+    those rows instead. The subject score is the card score in either case.
+    """
+    name, units, score = await card_summary_inputs(session, scope, subject_id)
+    if not units and scope.self_student_id is not None:
+        attempt_ids = await _attempt_ids_for_subject(session, scope.self_student_id, subject_id)
+        rows = await answer_rows_for_attempts(session, attempt_ids)
+        units = aggregate_by_unit(rows)
+    prompt = subject_summary_prompt(name, units, subject_score=score)
+    return prompt, unit_template(name, units), bool(units)
+
+
 async def get_subject_feedback(
     session: AsyncSession, scope: Scope, subject_id: UUID
 ) -> SubjectFeedbackDashboard:
@@ -761,10 +781,8 @@ async def get_subject_feedback(
     weak_list.sort(key=lambda p: p.percent)
     subtopic_feedback.sort(key=lambda s: s.percent)
 
-    units = aggregate_by_unit(rows)
-    prompt = subject_summary_prompt(subject.name, units)
-    template = unit_template(subject.name, units)
-    if attempt_ids:
+    prompt, template, has_units = await subject_prompt_and_template(session, scope, subject_id)
+    if has_units:
         resolved = await resolve_summary(
             session,
             student_id,

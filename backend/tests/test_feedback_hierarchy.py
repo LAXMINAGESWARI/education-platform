@@ -4,11 +4,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from education_platform.modules.academics.models import Subtopic, Topic
+from education_platform.modules.academics.models import (
+    EnrollmentStatus,
+    GradeSubjectOffering,
+    StudentGradeEnrollment,
+    StudentSubjectEnrollment,
+    Subject,
+    Subtopic,
+    Topic,
+)
 from education_platform.modules.assessments.feedback_hierarchy import (
     ScoredAttempt,
     achievement_tier,
@@ -28,13 +37,16 @@ from education_platform.modules.assessments.feedback_hierarchy import (
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
     CommonMasteryQuiz,
+    FeedbackSummaryJob,
     Question,
+    QuestionType,
     QuestionVersion,
     QuizAttempt,
     QuizAttemptStatus,
     QuizItem,
     QuizScope,
     QuizVersion,
+    SubjectFeedbackSummary,
 )
 from education_platform.modules.assessments.schemas import FeedbackSubtopicStrength
 from education_platform.modules.auth.models import StudentProfile, User
@@ -444,3 +456,259 @@ def _subject_topics(
     topics = response.json()["topics"]
     assert isinstance(topics, list)
     return topics
+
+
+def _version(session: Session, question: Question, prompt: str) -> QuestionVersion:
+    row = QuestionVersion(
+        question_id=question.id,
+        version_number=1,
+        prompt=prompt,
+        question_type=QuestionType.MULTIPLE_CHOICE,
+        marks=Decimal("1.00"),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+@pytest.mark.regression
+def test_detail_and_dashboard_share_the_prompt_and_keep_pending(
+    client: TestClient,
+    enrolled_student_headers: dict[str, str],
+    seeded_db: Session,
+) -> None:
+    """Headings stay out of both summaries, and both views hash the card score."""
+    profile = _student(seeded_db)
+    grade_enrollment = seeded_db.scalar(
+        select(StudentGradeEnrollment).where(
+            StudentGradeEnrollment.student_id == profile.id,
+            StudentGradeEnrollment.status == EnrollmentStatus.ACTIVE,
+        )
+    )
+    assert grade_enrollment is not None
+    current = seeded_db.get(GradeSubjectOffering, _offering_id(seeded_db, profile.id))
+    assert current is not None
+    math = seeded_db.get(Subject, current.subject_id)
+    assert math is not None
+    subject = Subject(
+        institution_id=math.institution_id,
+        name="Isolated Mathematics",
+        code="ISO-PROMPT",
+    )
+    seeded_db.add(subject)
+    seeded_db.flush()
+    offering = GradeSubjectOffering(
+        period_grade_id=current.period_grade_id,
+        subject_id=subject.id,
+    )
+    seeded_db.add(offering)
+    seeded_db.flush()
+    seeded_db.add(
+        StudentSubjectEnrollment(
+            student_id=profile.id,
+            grade_enrollment_id=grade_enrollment.id,
+            grade_subject_offering_id=offering.id,
+            status=EnrollmentStatus.ACTIVE,
+        )
+    )
+    topic = Topic(
+        grade_subject_offering_id=offering.id,
+        name="Ratios and proportions",
+        slug="ratios-and-proportions-prompt",
+        sequence=1,
+    )
+    seeded_db.add(topic)
+    seeded_db.flush()
+    concept = Subtopic(
+        topic_id=topic.id, name="Area of a trapezium", slug="iso-trapezium", sequence=1
+    )
+    exercise = Subtopic(topic_id=topic.id, name="EXERCISE 9.2", slug="iso-exercise-9-2", sequence=2)
+    discussed = Subtopic(
+        topic_id=topic.id,
+        name="WHAT HAVE WE DISCUSSED?",
+        slug="iso-discussed",
+        sequence=3,
+    )
+    seeded_db.add_all([concept, exercise, discussed])
+    seeded_db.flush()
+    concept_right = Question(subtopic_id=concept.id, code="ISO-RIGHT")
+    concept_wrong = Question(subtopic_id=concept.id, code="ISO-WRONG")
+    exercise_question = Question(subtopic_id=exercise.id, code="ISO-EX")
+    discussed_question = Question(subtopic_id=discussed.id, code="ISO-DIS")
+    seeded_db.add_all([concept_right, concept_wrong, exercise_question, discussed_question])
+    seeded_db.flush()
+    versions = [
+        _version(seeded_db, concept_right, "A trapezium question"),
+        _version(seeded_db, concept_wrong, "Another trapezium question"),
+        _version(seeded_db, exercise_question, "An exercise question"),
+        _version(seeded_db, discussed_question, "A discussion question"),
+    ]
+    quiz = CommonMasteryQuiz(
+        quiz_scope=QuizScope.TOPIC_MASTERY,
+        topic_id=topic.id,
+        title="Ratios and proportions quiz",
+    )
+    seeded_db.add(quiz)
+    seeded_db.flush()
+    quiz_version = QuizVersion(quiz_id=quiz.id, version_number=1)
+    seeded_db.add(quiz_version)
+    seeded_db.flush()
+    for sequence, version in enumerate(versions, start=1):
+        seeded_db.add(
+            QuizItem(
+                quiz_version_id=quiz_version.id,
+                question_version_id=version.id,
+                sequence=sequence,
+            )
+        )
+    attempt = QuizAttempt(
+        student_id=profile.id,
+        quiz_version_id=quiz_version.id,
+        attempt_number=1,
+        status=QuizAttemptStatus.RELEASED,
+        started_at=datetime(2026, 9, 1, tzinfo=UTC),
+        submitted_at=datetime(2026, 9, 1, 1, tzinfo=UTC),
+        score_percent=Decimal("62.00"),
+        pass_threshold_percent=Decimal("70.00"),
+        passed=False,
+    )
+    seeded_db.add(attempt)
+    seeded_db.flush()
+    for version, correct in zip(versions, (True, False, True, True), strict=True):
+        seeded_db.add(
+            AttemptAnswer(
+                attempt_id=attempt.id,
+                question_version_id=version.id,
+                selected_option_label="A" if correct else "B",
+                is_correct=correct,
+                marks_awarded=Decimal("1.00") if correct else Decimal("0.00"),
+            )
+        )
+    seeded_db.commit()
+
+    try:
+        detail = client.get(
+            f"/api/v1/me/feedback/subjects/{subject.id}",
+            headers=enrolled_student_headers,
+        )
+        assert detail.status_code == 200, detail.text
+        detail_body = detail.json()
+        assert Decimal(detail_body["score_percent"]) == Decimal("62.00")
+        assert detail_body["summary_status"] == "pending"
+        assert "EXERCISE" not in detail_body["summary"]
+        assert "WHAT HAVE WE DISCUSSED" not in detail_body["summary"]
+        assert "Ratios and Proportions is at 50.00% over 1 attempt." in detail_body["summary"]
+
+        seeded_db.expire_all()
+        job = seeded_db.scalar(
+            select(FeedbackSummaryJob).where(FeedbackSummaryJob.subject_id == subject.id)
+        )
+        assert job is not None
+        first_hash = job.facts_hash
+        prompt = job.prompt
+        assert "Subject score: 62.00%" in prompt
+        assert "mean of unit scores" not in prompt
+        assert "Do not compute an overall score" in prompt
+        assert "- Ratios and Proportions: 50.00% over 1 attempt" in prompt
+        assert "Strongest unit:" not in prompt
+        assert "Weakest unit:" not in prompt
+        assert "how this unit is going" in prompt
+        assert "EXERCISE" not in prompt
+        assert "WHAT HAVE WE DISCUSSED" not in prompt
+        assert "Area of a trapezium" not in prompt
+        assert "subtopic" not in prompt.lower()
+
+        dashboard = client.get(
+            f"/api/v1/subjects/{subject.id}/feedback",
+            headers=enrolled_student_headers,
+        )
+        assert dashboard.status_code == 200, dashboard.text
+        assert dashboard.json()["summary_status"] == "pending"
+        assert dashboard.json()["summary"] == detail_body["summary"]
+        seeded_db.expire_all()
+        jobs = seeded_db.scalars(
+            select(FeedbackSummaryJob).where(FeedbackSummaryJob.subject_id == subject.id)
+        ).all()
+        assert len(jobs) == 1
+        assert jobs[0].facts_hash == first_hash
+        assert jobs[0].prompt == prompt
+    finally:
+        _delete_isolated_subject(seeded_db, subject.id)
+
+
+def _delete_isolated_subject(session: Session, subject_id: UUID) -> None:
+    """Drop the fixture subject so later tests still see one enrolled subject."""
+    session.execute(delete(FeedbackSummaryJob).where(FeedbackSummaryJob.subject_id == subject_id))
+    session.execute(
+        delete(SubjectFeedbackSummary).where(SubjectFeedbackSummary.subject_id == subject_id)
+    )
+    offering_ids = list(
+        session.scalars(
+            select(GradeSubjectOffering.id).where(GradeSubjectOffering.subject_id == subject_id)
+        )
+    )
+    topic_ids = list(
+        session.scalars(select(Topic.id).where(Topic.grade_subject_offering_id.in_(offering_ids)))
+    )
+    subtopic_ids = list(
+        session.scalars(select(Subtopic.id).where(Subtopic.topic_id.in_(topic_ids)))
+    )
+    question_ids = list(
+        session.scalars(select(Question.id).where(Question.subtopic_id.in_(subtopic_ids)))
+    )
+    version_ids = list(
+        session.scalars(
+            select(QuestionVersion.id).where(QuestionVersion.question_id.in_(question_ids))
+        )
+    )
+    quiz_ids = list(
+        session.scalars(
+            select(CommonMasteryQuiz.id).where(CommonMasteryQuiz.topic_id.in_(topic_ids))
+        )
+    )
+    quiz_version_ids = list(
+        session.scalars(select(QuizVersion.id).where(QuizVersion.quiz_id.in_(quiz_ids)))
+    )
+    attempt_ids = list(
+        session.scalars(
+            select(QuizAttempt.id).where(QuizAttempt.quiz_version_id.in_(quiz_version_ids))
+        )
+    )
+    if attempt_ids:
+        session.execute(delete(AttemptAnswer).where(AttemptAnswer.attempt_id.in_(attempt_ids)))
+        session.execute(delete(QuizAttempt).where(QuizAttempt.id.in_(attempt_ids)))
+    if quiz_version_ids:
+        session.execute(delete(QuizItem).where(QuizItem.quiz_version_id.in_(quiz_version_ids)))
+        session.execute(delete(QuizVersion).where(QuizVersion.id.in_(quiz_version_ids)))
+    if quiz_ids:
+        session.execute(delete(CommonMasteryQuiz).where(CommonMasteryQuiz.id.in_(quiz_ids)))
+    if version_ids:
+        session.execute(delete(QuestionVersion).where(QuestionVersion.id.in_(version_ids)))
+    if question_ids:
+        session.execute(delete(Question).where(Question.id.in_(question_ids)))
+    if subtopic_ids:
+        session.execute(delete(Subtopic).where(Subtopic.id.in_(subtopic_ids)))
+    if topic_ids:
+        session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
+    if offering_ids:
+        session.execute(
+            delete(StudentSubjectEnrollment).where(
+                StudentSubjectEnrollment.grade_subject_offering_id.in_(offering_ids)
+            )
+        )
+        session.execute(
+            delete(GradeSubjectOffering).where(GradeSubjectOffering.id.in_(offering_ids))
+        )
+    session.execute(delete(Subject).where(Subject.id == subject_id))
+    session.commit()
+
+
+def _offering_id(session: Session, student_id: UUID) -> UUID:
+    offering_id = session.scalar(
+        select(StudentSubjectEnrollment.grade_subject_offering_id).where(
+            StudentSubjectEnrollment.student_id == student_id,
+            StudentSubjectEnrollment.status == EnrollmentStatus.ACTIVE,
+        )
+    )
+    assert offering_id is not None
+    return offering_id

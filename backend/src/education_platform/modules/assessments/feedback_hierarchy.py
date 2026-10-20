@@ -127,14 +127,25 @@ class SubjectRollup:
     needing_attention: tuple[str, ...]
 
 
-def display_unit_name(name: str) -> str:
-    """Title-case a stored unit name for the subject card.
+_SMALL_WORDS = frozenset({"and", "of", "the", "in", "for", "to", "a", "an", "on", "by"})
 
-    Each word keeps every letter after the first, so ``mensuration`` becomes
-    ``Mensuration`` and ``Ratios`` stays ``Ratios``. The stored row is unchanged.
+
+def display_unit_name(name: str) -> str:
+    """Title-case a unit name for the subject summary.
+
+    Small words stay lowercase unless they are the first word: and, of, the,
+    in, for, to, a, an, on, by. ``Ratios and proportions`` becomes
+    ``Ratios and Proportions``. The stored row is unchanged, and the subject
+    card still shows that stored name.
     """
     parts = [part for part in name.split(" ") if part]
-    return " ".join(part[:1].upper() + part[1:] for part in parts)
+    titled: list[str] = []
+    for index, part in enumerate(parts):
+        if index > 0 and part.casefold() in _SMALL_WORDS:
+            titled.append(part.casefold())
+        else:
+            titled.append(part[:1].upper() + part[1:].lower())
+    return " ".join(titled)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,8 +186,17 @@ def units_from_topic_concepts(
     return facts
 
 
-def subject_summary_prompt(subject_name: str, units: list[UnitFact]) -> str:
-    """Facts for the subject paragraph. Concepts inside a unit are not listed."""
+def subject_summary_prompt(
+    subject_name: str,
+    units: list[UnitFact],
+    *,
+    subject_score: Decimal | None = None,
+) -> str:
+    """Facts for the subject paragraph. Concepts inside a unit are not listed.
+
+    ``subject_score`` is the card score (mean of attempted topic-quiz bests).
+    The model is told to cite that number and not to average the unit lines.
+    """
     lines = [
         f"Subject: {subject_name}",
         (
@@ -184,31 +204,50 @@ def subject_summary_prompt(subject_name: str, units: list[UnitFact]) -> str:
             "Do not name exercises, textbook section headings, or concepts inside a unit."
         ),
     ]
+    if subject_score is not None:
+        lines.append(f"Subject score: {subject_score}%")
     if not units:
         lines.append("No unit has a scored attempt yet.")
-    else:
-        mean = _mean([unit.percent for unit in units])
-        if mean is not None:
-            lines.append(f"Subject score (mean of unit scores): {mean}%")
-        lines.append("Units:")
-        for unit in units:
-            noun = "attempt" if unit.attempt_count == 1 else "attempts"
-            lines.append(f"- {unit.name}: {unit.percent}% over {unit.attempt_count} {noun}")
+        lines.append(_closing(units, subject_score))
+        return "\n".join(lines)
+    lines.append("Units:")
+    for unit in units:
+        noun = "attempt" if unit.attempt_count == 1 else "attempts"
+        lines.append(f"- {unit.name}: {unit.percent}% over {unit.attempt_count} {noun}")
+    if len(units) >= 2:
         strongest = max(units, key=lambda unit: (unit.percent, unit.name))
+        weakest = min(units, key=lambda unit: (unit.percent, unit.name))
         lines.append(f"Strongest unit: {strongest.name} ({strongest.percent}%)")
-        if len(units) >= 2:
-            weakest = min(units, key=lambda unit: (unit.percent, unit.name))
-            lines.append(f"Weakest unit: {weakest.name} ({weakest.percent}%)")
-        needing = [unit.name for unit in units if unit.percent < PASS_PERCENT]
-        if needing:
-            lines.append("Work on next: " + ", ".join(needing))
-        else:
-            lines.append("Every attempted unit is at or above the pass mark.")
-    lines.append(
-        "Write a short paragraph. Say how each unit is going, name the strongest unit "
-        "and the weakest unit, and say what to work on next. Use only the units listed above."
-    )
+        lines.append(f"Weakest unit: {weakest.name} ({weakest.percent}%)")
+    needing = [unit.name for unit in units if unit.percent < PASS_PERCENT]
+    if needing:
+        lines.append("Work on next: " + ", ".join(needing))
+    else:
+        lines.append("Every attempted unit is at or above the pass mark.")
+    lines.append(_closing(units, subject_score))
     return "\n".join(lines)
+
+
+def _closing(units: list[UnitFact], subject_score: Decimal | None) -> str:
+    if subject_score is None:
+        score_rule = "Do not invent an overall score."
+    else:
+        score_rule = (
+            "Do not compute an overall score. The subject score above is the number to cite."
+        )
+    if len(units) == 1:
+        return (
+            "Write a short paragraph about how this unit is going and what to work on next. "
+            "Do not name a strongest or weakest unit. " + score_rule
+        )
+    if not units:
+        return "Write a short paragraph. " + score_rule
+    return (
+        "Write a short paragraph. Say how each unit is going, name the strongest unit "
+        "and the weakest unit, and say what to work on next. "
+        + score_rule
+        + " Use only the units listed above."
+    )
 
 
 def unit_template(subject_name: str, units: list[UnitFact]) -> str:
@@ -777,6 +816,44 @@ def _subject_topics(offering: _OfferingSubject, topics: list[_TopicRow]) -> list
     return [topic for topic in topics if topic.offering_id == offering.offering_id]
 
 
+async def card_summary_inputs(
+    session: AsyncSession, scope: Scope, subject_id: UUID
+) -> tuple[str, list[UnitFact], Decimal | None]:
+    """Unit lines and the card score shared by the detail view and the dashboard.
+
+    The unit percent is the mean of real concept scores on topic quizzes. The
+    score is ``rollup_subject`` — the same number the card shows. A heading
+    such as ``EXERCISE 9.2`` is left out of the unit lines.
+    """
+    student_id = _require_student(scope)
+    offerings = [row for row in await _offerings(session, scope) if row.subject_id == subject_id]
+    if not offerings:
+        subject = await session.get(Subject, subject_id)
+        return (subject.name if subject is not None else "", [], None)
+    topics = await _topics(session, [row.offering_id for row in offerings])
+    subject_topics: list[_TopicRow] = []
+    for offering in offerings:
+        subject_topics.extend(_subject_topics(offering, topics))
+    subject_topics.sort(key=lambda topic: (topic.sequence, topic.name))
+    topic_ids = [topic.id for topic in subject_topics]
+    attempts = await _scored_attempts(session, student_id, topic_ids)
+    rollups = {topic.id: rollup_topic(attempts.get(topic.id, [])) for topic in subject_topics}
+    card = rollup_subject([(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics])
+    counts = await _concept_counts(session, student_id, topic_ids)
+    concept_rows = [
+        (
+            topic.name,
+            rollups[topic.id].attempt_count,
+            [
+                (name, correct, answered)
+                for name, _sequence, correct, answered, _subtopic_id in counts.get(topic.id, [])
+            ],
+        )
+        for topic in subject_topics
+    ]
+    return offerings[0].subject_name, units_from_topic_concepts(concept_rows), card.score_percent
+
+
 def _card(
     offering: _OfferingSubject,
     topics: list[_TopicRow],
@@ -964,21 +1041,14 @@ async def get_subject(
     regressions = await _topic_regression_counts(session, student_id, topic_ids)
     class_averages = await _classmate_best_averages(session, student_id, topic_ids)
     strengths = _subject_concepts(subject_topics, by_topic)
-    concept_rows = [
-        (
-            topic.name,
-            rollups[topic.id].attempt_count,
-            [
-                (name, correct, answered)
-                for name, _sequence, correct, answered, _subtopic_id in by_counts.get(topic.id, [])
-            ],
-        )
-        for topic in subject_topics
-    ]
-    units = units_from_topic_concepts(concept_rows)
-    template = unit_template(offering.subject_name, units)
-    if units:
-        prompt = subject_summary_prompt(offering.subject_name, units)
+    # feedback_service imports this module, so the shared builder is imported
+    # here rather than at module scope.
+    from education_platform.modules.assessments.feedback_service import (
+        subject_prompt_and_template,
+    )
+
+    prompt, template, has_units = await subject_prompt_and_template(session, scope, subject_id)
+    if has_units:
         resolved = await resolve_summary(
             session,
             student_id,
@@ -988,7 +1058,7 @@ async def get_subject(
             template,
         )
         summary = resolved.text
-        status: Literal["ready", "fallback"] = "ready" if resolved.status == "ready" else "fallback"
+        status: Literal["ready", "pending", "fallback"] = resolved.status
     else:
         summary = template
         status = "fallback"

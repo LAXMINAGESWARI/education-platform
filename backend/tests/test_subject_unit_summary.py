@@ -6,6 +6,7 @@ from uuid import UUID
 
 from education_platform.modules.assessments.feedback_hierarchy import (
     ScoredAttempt,
+    UnitFact,
     display_unit_name,
     rollup_subject,
     rollup_topic,
@@ -214,7 +215,7 @@ def test_textbook_headings_in_the_sample_are_noise() -> None:
 
 def test_subject_prompt_lists_units_and_drops_heading_rows() -> None:
     units = aggregate_by_unit(_grade8_rows())
-    prompt = subject_summary_prompt("Mathematics", units)
+    prompt = subject_summary_prompt("Mathematics", units, subject_score=Decimal("58.86"))
     assert [unit.name for unit in units] == [
         "Mensuration",
         "Ratios",
@@ -236,6 +237,9 @@ def test_subject_prompt_lists_units_and_drops_heading_rows() -> None:
     assert "subtopic" not in prompt.lower()
     assert "Units:" in prompt
     assert "- Mensuration: 42.50% over 1 attempt" in prompt
+    assert "Subject score: 58.86%" in prompt
+    assert "mean of unit scores" not in prompt
+    assert "Do not compute an overall score" in prompt
     assert "Strongest unit: Geometry (90.00%)" in prompt
     assert "Weakest unit: Mensuration (42.50%)" in prompt
     assert "Work on next: Mensuration, Ratios, Percentages, Algebra" in prompt
@@ -282,6 +286,8 @@ def test_card_score_matches_main_when_a_unit_name_is_a_heading() -> None:
     assert display_unit_name("Ratios") == "Ratios"
     assert display_unit_name("Data handling") == "Data Handling"
     assert display_unit_name("  mensuration  ") == "Mensuration"
+    assert display_unit_name("Ratios and proportions") == "Ratios and Proportions"
+    assert display_unit_name("theory of the atom") == "Theory of the Atom"
     subject = rollup_subject(
         [
             (
@@ -309,6 +315,18 @@ def test_card_score_matches_main_when_a_unit_name_is_a_heading() -> None:
         "Algebra",
         "EXERCISE 9.2",
     )
+
+
+def test_one_unit_prompt_skips_strongest_and_weakest() -> None:
+    units = [UnitFact("Mensuration", Decimal("42.50"), 1)]
+    prompt = subject_summary_prompt("Mathematics", units, subject_score=Decimal("62.00"))
+    assert "Subject score: 62.00%" in prompt
+    assert "- Mensuration: 42.50% over 1 attempt" in prompt
+    assert "Strongest unit:" not in prompt
+    assert "Weakest unit:" not in prompt
+    assert "how this unit is going" in prompt
+    assert "Do not compute an overall score" in prompt
+    assert "mean of unit scores" not in prompt
 
 
 def test_topic_page_summary_stays_at_concept_level() -> None:
