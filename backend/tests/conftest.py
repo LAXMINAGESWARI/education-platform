@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import re
+import statistics
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import suppress
@@ -122,8 +123,62 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         _remove_run_ready_dir()
 
 
+def _shard_durations_path() -> Path:
+    return Path(__file__).with_name("shard_durations.txt")
+
+
+def _load_shard_durations(path: Path | None = None) -> dict[str, float]:
+    """Seconds per test file. Empty when the durations file is absent."""
+    path = _shard_durations_path() if path is None else path
+    if not path.is_file():
+        return {}
+    durations: dict[str, float] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            seconds_text, name = line.split(maxsplit=1)
+            durations[name] = float(seconds_text)
+        except ValueError as exc:
+            raise pytest.UsageError(f"Bad shard duration line: {raw!r}") from exc
+    return durations
+
+
+def _assign_file_shards(
+    names: list[str], durations: dict[str, float], count: int
+) -> dict[str, int]:
+    """Pack ``names`` onto ``count`` shards, longest file first.
+
+    A file with no recorded duration weighs the median of the known files, so
+    new tests do not all land on shard 0. With no durations at all, each file
+    keeps the previous sha256 bucket.
+    """
+    if count < 1:
+        raise pytest.UsageError("PYTEST_SHARD_COUNT must be at least 1")
+    if not durations:
+        return {
+            name: int(hashlib.sha256(name.encode()).hexdigest()[:8], 16) % count for name in names
+        }
+    known = [durations[name] for name in names if name in durations]
+    default = statistics.median(known) if known else statistics.median(durations.values())
+    totals = [0.0] * count
+    assignment: dict[str, int] = {}
+    ordered = sorted(names, key=lambda name: (-durations.get(name, default), name))
+    for name in ordered:
+        shard = min(range(count), key=lambda index: (totals[index], index))
+        assignment[name] = shard
+        totals[shard] += durations.get(name, default)
+    return assignment
+
+
 def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Keep one deterministic file-hash shard when CI sets PYTEST_SHARD."""
+    """Keep one duration-balanced shard when CI sets PYTEST_SHARD.
+
+    ``backend/tests/shard_durations.txt`` records per-file seconds for the fast
+    suite. ``make -C backend test-shard-durations`` regenerates it. ml files
+    stay out of these shards; the ml job does not set PYTEST_SHARD.
+    """
     raw_index = os.environ.get("PYTEST_SHARD")
     raw_count = os.environ.get("PYTEST_SHARD_COUNT")
     if raw_index is None and raw_count is None:
@@ -134,14 +189,16 @@ def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
     count = int(raw_count)
     if count < 1 or not 0 <= index < count:
         raise pytest.UsageError(f"PYTEST_SHARD must be in 0..{count - 1}, got {index}")
+    fast_names = sorted({item.path.name for item in items if item.path.name not in _ML_TEST_FILES})
+    assignment = _assign_file_shards(fast_names, _load_shard_durations(), count)
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
-        bucket = int(hashlib.sha256(item.path.name.encode()).hexdigest()[:8], 16) % count
-        if bucket == index:
-            selected.append(item)
-        else:
+        name = item.path.name
+        if name in _ML_TEST_FILES or assignment.get(name) != index:
             deselected.append(item)
+        else:
+            selected.append(item)
     if deselected:
         config.hook.pytest_deselected(items=deselected)
     items[:] = selected
