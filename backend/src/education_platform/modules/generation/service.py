@@ -77,6 +77,7 @@ from education_platform.modules.generation.types import (
     QaItem,
     RunPhase,
 )
+from education_platform.modules.judge.publish_gate import lesson_publish_blocked
 from education_platform.modules.materials.models import (
     SourceChunk,
     SourceMaterial,
@@ -306,14 +307,14 @@ async def jobs_for_runs(
     return grouped
 
 
-def _item_check_fields(raw: object) -> tuple[int | None, str | None]:
+def _item_check_fields(raw: object) -> tuple[int | None, str | None, bool]:
     if not isinstance(raw, dict):
-        return None, None
+        return None, None, False
     attempts = raw.get("attempts")
     verdict = raw.get("verdict")
     count = attempts if isinstance(attempts, int) else None
     label = verdict.strip() if isinstance(verdict, str) and verdict.strip() else None
-    return count, label
+    return count, label, raw.get("needs_review") is True
 
 
 async def item_validation_for_runs(
@@ -1090,7 +1091,7 @@ async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[Qa
         raw_blind = rubric.get("blind_solve") if isinstance(rubric, dict) else None
         blind_solve = cast(dict[str, object], raw_blind) if isinstance(raw_blind, dict) else None
         raw_check = rubric.get("item_check") if isinstance(rubric, dict) else None
-        check_attempts, check_verdict = _item_check_fields(raw_check)
+        check_attempts, check_verdict, judge_needs_review = _item_check_fields(raw_check)
         out.append(
             QaItem(
                 question_id=question.id,
@@ -1107,6 +1108,7 @@ async def qa_items_for_run(session: AsyncSession, run: GenerationRun) -> list[Qa
                 blind_solve=blind_solve,
                 check_attempts=check_attempts,
                 check_verdict=check_verdict,
+                judge_needs_review=judge_needs_review,
                 difficulty=version.difficulty.value if version.difficulty is not None else None,
                 subtopic_title=title_by_subtopic.get(question.subtopic_id),
             )
@@ -1195,6 +1197,11 @@ async def publish(
     if item_count < 1:
         raise GenerationError(
             "Cannot publish until both the draft lesson and item bank exist.",
+            status_code=409,
+        )
+    if await lesson_publish_blocked(session, row.id):
+        raise GenerationError(
+            "This lesson needs review. Accept it in QA review before publishing.",
             status_code=409,
         )
 

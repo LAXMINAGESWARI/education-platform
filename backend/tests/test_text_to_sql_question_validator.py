@@ -1,6 +1,6 @@
 """Unit tests for the text-to-SQL question_validator node.
 
-No database or network needed — chat_completion_json is monkeypatched throughout except
+No database or network needed — classify_noul is monkeypatched throughout except
 for the one test that deliberately exercises the real "OpenRouter not configured" path.
 """
 
@@ -12,7 +12,7 @@ from typing import Protocol, cast
 import pytest
 
 from education_platform.core.config import Settings
-from education_platform.modules.assistant.openrouter import OpenRouterError
+from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
 from education_platform.modules.text_to_sql.nodes.question_validator import question_validator
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
@@ -22,9 +22,9 @@ from education_platform.modules.text_to_sql.state import (
 
 
 class _QuestionValidatorModule(Protocol):
-    async def chat_completion_json(
-        self, messages: list[dict[str, str]], *, settings: Settings, temperature: float = 0.0
-    ) -> dict[str, object]: ...
+    async def classify_noul(
+        self, *, state: object, question: object, settings: Settings
+    ) -> float: ...
 
     def get_settings(self) -> Settings: ...
 
@@ -40,7 +40,7 @@ _MODULE = cast(
 
 @pytest.fixture(autouse=True)
 def _openrouter_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Every test here expects to reach the classifier call (its chat_completion_json mock)
+    # Every test here expects to reach the classifier call (its classify_noul mock)
     # rather than take the "not configured, fail open" branch -- scoped to this module's
     # `get_settings` reference only, not the process-wide `get_settings` lru_cache, so it
     # can't leak into other test files that rely on the opposite (unconfigured) default.
@@ -64,14 +64,12 @@ def _state(question: str, **overrides: object) -> TextToSQLState:
     return state
 
 
-def _fake_classifier(response: dict[str, object]) -> object:
-    calls: list[list[dict[str, str]]] = []
+def _fake_classifier(probability: float) -> object:
+    calls: list[dict[str, object]] = []
 
-    async def _fake(
-        messages: list[dict[str, str]], *, settings: Settings, temperature: float = 0.0
-    ) -> dict[str, object]:
-        calls.append(messages)
-        return response
+    async def _fake(*, state: object, question: object, settings: Settings) -> float:
+        calls.append({"state": state, "question": question, "settings": settings})
+        return probability
 
     return _fake, calls
 
@@ -80,8 +78,8 @@ def _fake_classifier(response: dict[str, object]) -> object:
 
 
 async def test_classifier_flags_an_off_topic_question(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake, _ = _fake_classifier({"off_topic": True, "reason": "asks about the weather"})
-    monkeypatch.setattr(_MODULE, "chat_completion_json", fake)
+    fake, _ = _fake_classifier(0.95)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
 
     result = await question_validator(_state("What's the weather like tomorrow?"))
 
@@ -103,8 +101,8 @@ async def test_classifier_flags_an_off_topic_question(monkeypatch: pytest.Monkey
 async def test_in_domain_question_passes_through_unchanged(
     monkeypatch: pytest.MonkeyPatch, question: str
 ) -> None:
-    fake, calls = _fake_classifier({"off_topic": False, "reason": ""})
-    monkeypatch.setattr(_MODULE, "chat_completion_json", fake)
+    fake, calls = _fake_classifier(0.1)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
 
     state = _state(question)
     result = await question_validator(state)
@@ -118,13 +116,14 @@ async def test_in_domain_question_passes_through_unchanged(
 async def test_classifier_receives_only_the_current_question_no_identity_leaked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake, calls = _fake_classifier({"off_topic": False})
-    monkeypatch.setattr(_MODULE, "chat_completion_json", fake)
+    fake, calls = _fake_classifier(0.1)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
 
     await question_validator(_state("What subjects do I teach?", user_id="secret-uuid-123"))
 
-    sent_text = " ".join(m["content"] for m in calls[0])
-    assert "secret-uuid-123" not in sent_text
+    sent = calls[0]["state"]
+    assert isinstance(sent, dict)
+    assert "secret-uuid-123" not in str(sent)
 
 
 # --- Fail-open when unconfigured, fail-closed when erroring -----------------------------
@@ -133,10 +132,10 @@ async def test_classifier_receives_only_the_current_question_no_identity_leaked(
 async def test_openrouter_not_configured_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_MODULE, "get_settings", lambda: Settings(openrouter_api_key=None))
 
-    async def _fail_if_called(*args: object, **kwargs: object) -> dict[str, object]:
+    async def _fail_if_called(*args: object, **kwargs: object) -> float:
         raise AssertionError("classifier must not be called when OpenRouter isn't configured")
 
-    monkeypatch.setattr(_MODULE, "chat_completion_json", _fail_if_called)
+    monkeypatch.setattr(_MODULE, "classify_noul", _fail_if_called)
 
     result = await question_validator(_state("What's the weather like tomorrow?"))
 
@@ -144,10 +143,10 @@ async def test_openrouter_not_configured_fails_open(monkeypatch: pytest.MonkeyPa
 
 
 async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _raising(*args: object, **kwargs: object) -> dict[str, object]:
-        raise OpenRouterError("network blew up")
+    async def _raising(*args: object, **kwargs: object) -> float:
+        raise JudgeError("network blew up")
 
-    monkeypatch.setattr(_MODULE, "chat_completion_json", _raising)
+    monkeypatch.setattr(_MODULE, "classify_noul", _raising)
 
     result = await question_validator(_state("How many students do I teach in total?"))
 
@@ -155,12 +154,76 @@ async def test_openrouter_error_fails_closed(monkeypatch: pytest.MonkeyPatch) ->
 
 
 async def test_malformed_classifier_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake, _ = _fake_classifier({"not_the_expected_shape": True})
-    monkeypatch.setattr(_MODULE, "chat_completion_json", fake)
+    async def _missing(**kwargs: object) -> float:
+        _ = kwargs
+        raise JudgeError("Decisions response missing a noul probability")
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _missing)
 
     result = await question_validator(_state("How many students do I teach in total?"))
 
-    # Pydantic requires `off_topic: bool` with no default -- a response missing it fails
-    # validation, which this node treats the same as any other classifier failure: fail
-    # closed, not crash and not silently pass through.
     assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+
+
+async def test_off_topic_keeps_the_injection_guard_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake, _ = _fake_classifier(0.1)
+    monkeypatch.setattr(_MODULE, "classify_noul", fake)
+    prior = {"guard_stage": "jev", "injection_probability": 0.2}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert result["error"] is None
+    assert result["audit_entry"]["guard_stage"] == "jev"
+    assert result["audit_entry"]["injection_probability"] == 0.2
+    assert result["audit_entry"]["off_topic_probability"] == 0.1
+
+
+async def test_off_topic_error_keeps_the_injection_guard_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raising(*args: object, **kwargs: object) -> float:
+        raise JudgeError("network blew up")
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _raising)
+    prior = {"guard_stage": "gpt", "injection_probability": None}
+
+    result = await question_validator(
+        _state("How many students do I teach in total?", audit_entry=prior)
+    )
+
+    assert error_category(result["error"]) == OFF_TOPIC_REJECTED
+    assert result["audit_entry"]["guard_stage"] == "gpt"
+
+
+async def test_off_topic_402_uses_gpt_and_keeps_the_injection_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _pay(*args: object, **kwargs: object) -> float:
+        raise JudgePaymentRequired("OpenRouter returned HTTP 402")
+
+    async def _gpt(**kwargs: object) -> bool:
+        assert kwargs["field"] == "off_topic"
+        return False
+
+    monkeypatch.setattr(_MODULE, "classify_noul", _pay)
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _gpt)
+    prior = {"guard_stage": "jev"}
+
+    allowed = await question_validator(_state("What subject do I teach?", audit_entry=prior))
+
+    assert allowed["error"] is None
+    assert allowed["audit_entry"]["guard_stage"] == "jev"
+
+    async def _block(**kwargs: object) -> bool:
+        assert kwargs["field"] == "off_topic"
+        return True
+
+    monkeypatch.setattr(_MODULE, "legacy_gpt_flag", _block)
+    refused = await question_validator(
+        _state("What's the weather like tomorrow?", audit_entry=dict(prior))
+    )
+
+    assert error_category(refused["error"]) == OFF_TOPIC_REJECTED
+    assert refused["audit_entry"]["guard_stage"] == "jev"

@@ -233,6 +233,7 @@ class QaItem:
     check_verdict: str | None = None
     difficulty: str | None = None
     subtopic_title: str | None = None
+    judge_needs_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)

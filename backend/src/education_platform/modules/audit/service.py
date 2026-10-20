@@ -18,6 +18,7 @@ class AuditAction(str, enum.Enum):
     SCOPED_READ = "data.scoped_read"
     ASK_DATA = "data.ask"
     ASK_DOCUMENTS = "documents.ask"
+    ASSISTANT_REFUSED = "assistant.refused"
     VIEW_FLAGS = "risk.view_flags"
     RECORD_INTERVENTION = "risk.record_intervention"
     QUIZ_APPROVED = "assessment.quiz_approved"

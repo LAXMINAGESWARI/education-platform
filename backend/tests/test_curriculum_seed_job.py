@@ -62,7 +62,7 @@ def test_api_startup_does_not_seed(clean_db: str) -> None:
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "db": "ok"}
     assert _counts(clean_db) == _EMPTY
 
 

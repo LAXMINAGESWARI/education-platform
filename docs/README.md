@@ -57,5 +57,6 @@ Status legend: **Built** | **Partial** | **Mock** | **Deferred**
 | Grounded AI assistant (student) | **Deferred** | Policy retrieval is live; student-facing grounded assistant is not |
 | Postgres / pgvector | **Built** | Compose `pgvector/pgvector:pg16`; embeddings in `chunk_embeddings` |
 | Postgres ingest workers | **Built** | `ingest_jobs` + `FOR UPDATE SKIP LOCKED`; local `UPLOAD_DIR` blobs (MinIO still Deferred) |
+| Jev lesson and item judge | **Built** | Default `JEV_JUDGE_MODE=shadow` stores scores and leaves the gate unchanged. `enforce` is an explicit opt-in |
 | MinIO object storage | **Deferred** | Local uploads for POC |
 | React Native client | **Deferred** | Target in [architecture diagrams](./architecture/diagrams.md) |
