@@ -31,6 +31,7 @@ _ = _models
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Curriculum loading is a one-off job, not part of API startup.
     warn_judge_mode_at_startup()
     yield
 
@@ -45,6 +46,8 @@ def cors_origin_regex(origin_regex: str) -> str | None:
 
 settings = get_settings()
 
+# Curriculum loading is a one-off job (`python -m education_platform.modules.materials.seed`).
+# Replicas must not write that catalog on boot.
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
