@@ -12,7 +12,6 @@ import logging
 import random
 import time
 from collections.abc import Mapping, Sequence
-from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,13 +71,13 @@ async def complete(
         text, usage, served = await _execute_async(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
+        parsed = _parse_json(text) if response_format is not None else None
     except Exception as exc:
         await _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
     await _schedule_meter(_ok_record(profile, usage, served, _latency_ms(started)))
-    parsed = _parse_json(text) if response_format is not None else None
     return Completion(text=text, parsed_json=parsed, usage=usage, served_model=served)
 
 
@@ -97,13 +96,13 @@ def complete_sync(
         text, usage, served = _execute_sync(
             profile, messages, cfg, response_format=response_format, stream=stream
         )
+        parsed = _parse_json(text) if response_format is not None else None
     except Exception as exc:
         _safe_meter(_error_record(profile, exc, _latency_ms(started)))
         if isinstance(exc, OpenRouterError):
             raise
         raise OpenRouterError(_failure_message(exc)) from exc
     _safe_meter(_ok_record(profile, usage, served, _latency_ms(started)))
-    parsed = _parse_json(text) if response_format is not None else None
     return Completion(text=text, parsed_json=parsed, usage=usage, served_model=served)
 
 
@@ -532,67 +531,32 @@ def _safe_meter(record: UsageRecord) -> None:
         )
 
 
-_meter_futures: set[Future[None]] = set()
-
-
 async def _schedule_meter(record: UsageRecord) -> None:
-    """Insert usage off the event loop and return without waiting for the database.
+    """Insert usage on a worker thread so the event loop stays free.
 
-    ``asyncio.to_thread`` runs the sync insert. One yield lets that thread start.
-    Database errors stay inside ``write_usage``, which logs the step and the
-    error class. An unexpected failure is logged here. Neither one fails the
-    completion.
+    The coroutine waits for that thread. Two completions therefore overlap
+    instead of running the sync insert one after another on the loop.
+    ``write_usage`` swallows database errors, and an unexpected failure here
+    is logged. Neither one fails the completion.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         _safe_meter(record)
         return
-    box: Future[None] = Future()
-
-    async def _run() -> None:
-        def _write() -> None:
-            try:
-                write_usage(record)
-            except Exception as exc:
-                logger.warning(
-                    "LLM gateway metering failed step=%s error_class=%s",
-                    record.step,
-                    type(exc).__name__,
-                )
-                if not box.done():
-                    box.set_exception(exc)
-                return
-            if not box.done():
-                box.set_result(None)
-
-        await asyncio.to_thread(_write)
-
-    task = asyncio.create_task(_run())
-    _meter_futures.add(box)
-    box.add_done_callback(_meter_futures.discard)
-    task.add_done_callback(_retrieve_task_error)
-    await asyncio.sleep(0)
-
-
-def _retrieve_task_error(done: asyncio.Task[None]) -> None:
     try:
-        done.exception()
-    except asyncio.CancelledError:
-        return
+        await asyncio.to_thread(_safe_meter, record)
+    except Exception as exc:
+        logger.warning(
+            "LLM gateway metering failed step=%s error_class=%s",
+            record.step,
+            type(exc).__name__,
+        )
 
 
 def drain_metering(timeout: float = 2.0) -> None:
-    """Wait for scheduled usage writes. Tests use this; requests do not."""
-    pending = list(_meter_futures)
-    for future in pending:
-        try:
-            future.result(timeout=timeout)
-        except Exception as exc:
-            logger.warning(
-                "LLM gateway metering failed error_class=%s",
-                type(exc).__name__,
-            )
+    """Usage writes finish inside ``complete``. Kept so callers can wait."""
+    del timeout
 
 
 async def _async_sleep(seconds: float) -> None:

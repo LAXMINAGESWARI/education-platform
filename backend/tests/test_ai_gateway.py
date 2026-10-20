@@ -599,13 +599,6 @@ async def test_metering_writes_row_without_prompt_or_response(
         engine.dispose()
 
 
-def _alembic_heads() -> list[str]:
-    backend_root = Path(__file__).resolve().parents[1]
-    cfg = Config(str(backend_root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(backend_root / "alembic"))
-    return list(ScriptDirectory.from_config(cfg).get_heads())
-
-
 def test_migration_creates_usage_table(clean_db: str) -> None:
     engine = create_engine(to_sync_url(clean_db))
     try:
@@ -627,9 +620,12 @@ def test_migration_creates_usage_table(clean_db: str) -> None:
             "error_class",
             "created_at",
         }
+        backend_root = Path(__file__).resolve().parents[1]
+        cfg = Config(str(backend_root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(backend_root / "alembic"))
         with engine.connect() as conn:
             versions = list(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
-        assert versions == list(_alembic_heads())
+        assert versions == [ScriptDirectory.from_config(cfg).get_current_head()]
     finally:
         engine.dispose()
 
@@ -863,57 +859,61 @@ async def test_policy_chat_api_flag_on_meters_three_steps(
 
 
 @pytest.mark.asyncio
-async def test_flag_on_guard_non_json_fails_closed() -> None:
+async def test_flag_on_guard_non_json_fails_closed(
+    clean_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "write_usage", write_usage)
     script = _Script([200], content="this is not json")
     _bind_async(script)
     settings = _settings(ai_gateway_policy_chat=True)
-    result = await injection_guard(
-        _guard_state("What is the late homework policy?"),
-        settings=settings,
-    )
+    message = "What is the late homework policy?"
+    result = await injection_guard(_guard_state(message), settings=settings)
     assert result["injection_blocked"] is True
     assert result["early_reply"] == GUARD_UNAVAILABLE_REPLY
     assert "this is not json" not in (result["early_reply"] or "")
+    drain_metering()
+
+    engine = create_engine(to_sync_url(clean_db))
+    try:
+        with Session(engine) as session:
+            rows = list(session.scalars(select(LlmGatewayCall)))
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.step == "policy_chat.guard"
+        assert row.status == "error"
+        stored = " ".join(str(getattr(row, column.name)) for column in row.__table__.columns)
+        assert message not in stored
+        assert "this is not json" not in stored
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_async_metering_does_not_block_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    entered = threading.Event()
-    release = threading.Event()
-    saw_progress: list[bool] = []
-    progressed = False
-
     def slow(_record: UsageRecord) -> None:
-        entered.set()
-        release.wait(timeout=1.5)
-        saw_progress.append(progressed)
+        time.sleep(0.5)
 
     monkeypatch.setattr(api, "write_usage", slow)
-    script = _Script([200], content="ok")
+    script = _Script([200, 200], content="ok")
     _bind_async(script)
-    call = asyncio.create_task(
-        complete(
+    settings = _settings()
+
+    async def _one() -> str:
+        result = await complete(
             "policy_chat.answer",
             [{"role": "user", "content": "hi"}],
-            ctx=_ctx("policy_chat", _settings()),
+            ctx=_ctx("policy_chat", settings),
         )
-    )
-    deadline = time.monotonic() + 2
-    while not entered.is_set():
-        if time.monotonic() > deadline:
-            release.set()
-            drain_metering()
-            raise AssertionError("metering did not start on a worker thread")
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0)
-    progressed = True
-    release.set()
-    result = await asyncio.wait_for(call, timeout=2)
-    drain_metering()
-    assert result.text == "ok"
-    assert saw_progress == [True]
+        return result.text
+
+    started = time.perf_counter()
+    texts = await asyncio.gather(_one(), _one())
+    elapsed = time.perf_counter() - started
+    assert texts == ["ok", "ok"]
+    # One 0.5s insert, overlapped. A blocked loop would take about a second.
+    assert 0.5 <= elapsed < 0.9
 
 
 def test_flags_parse_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

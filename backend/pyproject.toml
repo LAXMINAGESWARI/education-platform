@@ -105,7 +105,7 @@ ignore_missing_imports = true
 addopts = "-q --cov=education_platform --cov-report=term-missing --cov-fail-under=80"
 asyncio_mode = "auto"
 markers = [
-    "regression: replayed or mocked end-to-end journeys",
+    "regression: key user journeys run on every PR",
 ]
 testpaths = ["tests"]
 pythonpath = ["."]
