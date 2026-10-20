@@ -55,6 +55,8 @@ POLICY_INJECTION = noul_question(
     when_false="An ordinary question about school policy or approved curriculum materials.",
 )
 
+# Policy chat does not post this question. Off-topic there is the GPT scope
+# check in graph.question_validator (stage gpt_scope). Text-to-SQL uses DATA_OFF_TOPIC.
 POLICY_OUT_OF_SCOPE = noul_question(
     instructions=(
         "Judge the current message. recent_turns is only prior context. Is the message "

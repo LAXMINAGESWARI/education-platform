@@ -84,6 +84,16 @@ GUARD_UNAVAILABLE_REPLY = (
 )
 SPECIFIC_QUESTION_REPLY = "Please ask a more specific policy or curriculum question."
 
+# Policy off-topic. The eval pipeline imports this so it cannot drift onto a Jev noul.
+POLICY_SCOPE_SYSTEM = (
+    "Classify whether the CURRENT user message is a valid question about "
+    "school policy, attendance, assessments, enrollment, or curriculum. "
+    'Return JSON {"valid": true|false, "reason": "..."}. '
+    "Greetings alone are invalid; off-topic chat is invalid. "
+    "Prior turns are context: a slow-roll away from school policy is invalid. "
+    "Never copy the user message into reason."
+)
+
 
 class GraphState(TypedDict, total=False):
     """LangGraph wire format; validated to AssistantGraphState at each node boundary."""
@@ -231,17 +241,7 @@ async def question_validator(state: GraphState, *, settings: Settings) -> GraphS
         data = await _policy_json(
             "policy_chat.validator",
             [
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify whether the CURRENT user message is a valid question about "
-                        "school policy, attendance, assessments, enrollment, or curriculum. "
-                        'Return JSON {"valid": true|false, "reason": "..."}. '
-                        "Greetings alone are invalid; off-topic chat is invalid. "
-                        "Prior turns are context: a slow-roll away from school policy is invalid. "
-                        "Never copy the user message into reason."
-                    ),
-                },
+                {"role": "system", "content": POLICY_SCOPE_SYSTEM},
                 {"role": "user", "content": _classifier_transcript(current)},
             ],
             settings=settings,

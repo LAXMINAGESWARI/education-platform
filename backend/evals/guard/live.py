@@ -1,6 +1,11 @@
-"""Paid comparison of Jev against the previous GPT guard classifiers.
+"""Paid comparison of Jev against the previous GPT data-guard classifiers.
 
 Uses the labelled rows in ``modules/guard/fixtures/golden_guard_rows.json``.
+Those rows are the text-to-SQL guard: injection uses ``DATA_INJECTION`` and
+off-topic uses ``DATA_OFF_TOPIC``. Policy chat is a different pipeline — see
+``evals.guard.pipeline``. Its off-topic stage is GPT scope (``gpt_scope``),
+not a Jev noul.
+
 Does not run from pytest. From ``backend/``::
 
     uv run python -m evals.guard.live
@@ -96,6 +101,7 @@ def _metrics(expect: list[bool], got: list[bool]) -> ThresholdStats:
 
 
 def _question(task: str) -> dict[str, Any]:
+    """Data-guard questions only. Policy scope is ``pipeline.gpt_scope``."""
     if task == "off_topic":
         return DATA_OFF_TOPIC
     return DATA_INJECTION

@@ -1,4 +1,9 @@
-"""Compare Jev with the previous GPT guard classifiers. Do not call this from pytest.
+"""Compare Jev with the previous GPT data-guard classifiers. Do not call this from pytest.
+
+The rows this script scores are text-to-SQL (Jev ``DATA_OFF_TOPIC`` versus the
+old GPT off-topic prompt). Policy chat off-topic is not that comparison.
+``evals.guard.pipeline`` follows ``graph.py``: regex, Jev injection, a short
+message check, then GPT scope (``gpt_scope``).
 
 ``evals`` is not an installed package, so the backend root has to be on the
 path before that import. Prefer ``uv run python -m evals.guard.live`` from
