@@ -10,7 +10,11 @@ import pytest
 
 from education_platform.core.config import Settings
 from education_platform.core.llm import _OPENROUTER_HEADERS
-from education_platform.modules.judge.client import OPENROUTER_DECISIONS_URL, HttpJudge
+from education_platform.modules.judge.client import (
+    OPENROUTER_DECISIONS_URL,
+    HttpJudge,
+    decisions_endpoint,
+)
 from education_platform.modules.judge.errors import (
     JudgeError,
     JudgePaymentRequired,
@@ -208,28 +212,57 @@ def _json_response(body: str) -> httpx.Response:
     return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
 
 
-def test_probability_outside_0_1_is_rejected() -> None:
-    def high(_request: httpx.Request) -> httpx.Response:
-        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}')
+def _noul(body: str) -> float:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(body)
 
     judge = HttpJudge(
         _settings(),
-        client=httpx.Client(transport=httpx.MockTransport(high)),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
         sleep=lambda _seconds: None,
     )
-    with pytest.raises(JudgeResponseError, match="outside 0-1"):
+    answer = judge.decide(_request()).answers["is_bug"]
+    assert isinstance(answer, NoulAnswer)
+    return answer.noul
+
+
+def test_judge_clamps_a_probability_outside_0_1() -> None:
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}') == 1.0
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}') == 0.0
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": Infinity}}}') == 1.0
+    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": -Infinity}}}') == 0.0
+
+
+def test_infinite_score_is_rejected() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response('{"answers": {"urgency": {"type": "score", "score": Infinity}}}')
+
+    judge = HttpJudge(
+        _settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(JudgeResponseError, match="infinite"):
         judge.decide(_request())
 
-    def low(_request: httpx.Request) -> httpx.Response:
-        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}')
 
-    low_judge = HttpJudge(
-        _settings(),
-        client=httpx.Client(transport=httpx.MockTransport(low)),
+def test_judge_posts_the_shared_decisions_url() -> None:
+    assert decisions_endpoint(_settings()) == OPENROUTER_DECISIONS_URL
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return _json_response('{"answers": {"is_bug": {"type": "noul", "noul": 0.2}}}')
+
+    settings = _settings(jev_decisions_url="https://decisions.example/api/alpha/decisions")
+    judge = HttpJudge(
+        settings,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
         sleep=lambda _seconds: None,
     )
-    with pytest.raises(JudgeResponseError, match="outside 0-1"):
-        low_judge.decide(_request())
+    judge.decide(_request())
+    assert seen["url"] == "https://decisions.example/api/alpha/decisions"
+    assert decisions_endpoint(settings) == seen["url"]
 
 
 def test_nan_noul_and_score_are_rejected() -> None:
