@@ -892,11 +892,18 @@ async def test_flag_on_guard_non_json_fails_closed(
 async def test_async_metering_does_not_block_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    spans: list[tuple[float, float]] = []
+    span_lock = threading.Lock()
+
     def slow(_record: UsageRecord) -> None:
+        started_at = time.perf_counter()
         time.sleep(0.5)
+        finished_at = time.perf_counter()
+        with span_lock:
+            spans.append((started_at, finished_at))
 
     monkeypatch.setattr(api, "write_usage", slow)
-    script = _Script([200, 200], content="ok")
+    script = _Script([200, 200, 200], content="ok")
     _bind_async(script)
     settings = _settings()
 
@@ -908,12 +915,16 @@ async def test_async_metering_does_not_block_event_loop(
         )
         return result.text
 
+    await _one()
+    spans.clear()
     started = time.perf_counter()
     texts = await asyncio.gather(_one(), _one())
     elapsed = time.perf_counter() - started
     assert texts == ["ok", "ok"]
-    # One 0.5s insert, overlapped. A blocked loop would take about a second.
-    assert 0.5 <= elapsed < 0.9
+    assert len(spans) == 2
+    first, second = spans
+    assert first[0] < second[1] and second[0] < first[1]
+    assert elapsed < 0.9
 
 
 def test_flags_parse_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
