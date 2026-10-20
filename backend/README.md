@@ -27,7 +27,9 @@ uv run python -m education_platform.modules.materials.seed
 uv run uvicorn education_platform.main:app --reload
 ```
 
-The API auto-seeds from `docs/curriculum/` on startup when no topics exist.
+The seed command loads `docs/curriculum/` into Postgres. It is idempotent. The API
+does not seed on startup, so more than one API process can boot against the same
+database.
 
 ### Ingest worker
 

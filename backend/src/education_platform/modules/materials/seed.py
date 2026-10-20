@@ -64,6 +64,7 @@ __all__ = [
     "POC_SUBJECT_CODE",
     "discover_topic_ids",
     "main",
+    "run_curriculum_seed",
     "seed_approved_materials",
     "seed_demo_admin",
     "seed_demo_student",
@@ -326,13 +327,25 @@ def seed_approved_materials(
     return topic_ids
 
 
-def main() -> None:
-    settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url))
+def run_curriculum_seed() -> list[str]:
+    """Load ``docs/curriculum`` into Postgres. Idempotent.
 
-    with Session(engine) as session:
-        seeded = seed_approved_materials(session, replace=False)
-    engine.dispose()
+    This is the work the API lifespan used to run on every boot. ``replace``
+    stays false, so an existing tree is updated in place. Demo accounts are
+    created only when ``ENVIRONMENT`` is development. ``SEED_SYNTHETIC`` does
+    not apply; that switch belongs to the migrate script's demo school.
+    """
+    settings = get_settings()
+    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
+    try:
+        with Session(engine) as session:
+            return seed_approved_materials(session, replace=False)
+    finally:
+        engine.dispose()
+
+
+def main() -> None:
+    seeded = run_curriculum_seed()
     print(f"Seeded topics: {', '.join(seeded) if seeded else '(none)'}")
 
 
