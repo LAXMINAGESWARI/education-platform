@@ -499,7 +499,7 @@ def test_golden_rows_recorded_probabilities_meet_threshold() -> None:
         / "golden_guard_rows.json"
     )
     rows = json.loads(fixture.read_text(encoding="utf-8"))
-    threshold = Settings(_env_file=None).jev_block_threshold
+    threshold = Settings(_env_file=None).guard_jev_block_threshold
     assert rows
     subject = next(row for row in rows if row["text"] == "What subject do I teach?")
     assert subject["recorded_noul"] < threshold

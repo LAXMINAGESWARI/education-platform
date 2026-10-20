@@ -90,7 +90,7 @@ def _metrics(expect: list[bool], got: list[bool]) -> ThresholdStats:
     precision = tp / (tp + fp) if tp + fp else 1.0
     recall = tp / (tp + fn) if tp + fn else 1.0
     return ThresholdStats(
-        threshold=get_settings().jev_block_threshold,
+        threshold=get_settings().guard_jev_block_threshold,
         precision=precision,
         recall=recall,
         tp=tp,
@@ -205,7 +205,7 @@ async def run(*, max_rows: int = 5, max_calls: int = 10) -> int:
         return _not_run("no cases executed.")
     print(
         f"rows={len(rows)} jev={settings.resolved_guard_jev_model} "
-        f"gpt={settings.openrouter_model} threshold={settings.jev_block_threshold} "
+        f"gpt={settings.openrouter_model} threshold={settings.guard_jev_block_threshold} "
         f"decisions={decisions_endpoint(settings)}"
     )
     try:

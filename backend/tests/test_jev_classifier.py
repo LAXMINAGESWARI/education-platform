@@ -54,7 +54,12 @@ _FIXTURE = (
 
 
 def test_block_threshold_maps_noul_to_the_old_boolean() -> None:
-    settings = Settings(jev_block_threshold=0.85)
+    default = Settings(_env_file=None)
+    assert default.guard_jev_block_threshold == 0.6
+    assert is_positive(0.6, default)
+    assert not is_positive(0.59, default)
+    # The comparison stays ``>=`` when an operator sets a different threshold.
+    settings = Settings(_env_file=None, guard_jev_block_threshold=0.85)
     assert is_positive(0.85, settings)
     assert is_positive(0.99, settings)
     assert not is_positive(0.84, settings)
@@ -84,7 +89,7 @@ def test_golden_rows_keep_the_regex_stage_honest() -> None:
 async def test_review_classifier_blocks_flags_and_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = Settings(openrouter_api_key="test-key", jev_block_threshold=0.85)
+    settings = Settings(openrouter_api_key="test-key")
 
     async def high(**kwargs: object) -> float:
         _ = kwargs

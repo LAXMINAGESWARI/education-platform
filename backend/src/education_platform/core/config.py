@@ -55,15 +55,15 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
-    # Chat-guard Decisions API. Timeout and threshold keep the names from
-    # 858747d / 565e0a3 (jev_guard_timeout_seconds, jev_block_threshold) so
-    # they stay distinct from the lesson judge's 30s jev_timeout_seconds.
-    # guard_jev_model is blank unless GUARD_JEV_MODEL is set; the guard then
-    # posts jev_model.
+    # Chat-guard Decisions API. The timeout keeps the name from 858747d /
+    # 565e0a3 (jev_guard_timeout_seconds) so it stays distinct from the lesson
+    # judge's 30s jev_timeout_seconds. The block threshold is its own setting
+    # (GUARD_JEV_BLOCK_THRESHOLD). guard_jev_model is blank unless
+    # GUARD_JEV_MODEL is set; the guard then posts jev_model.
     jev_decisions_url: str = ""
     jev_guard_timeout_seconds: float = 5.0
     # Noul probability that replaces the old classifier's boolean ``true``.
-    jev_block_threshold: float = 0.85
+    guard_jev_block_threshold: float = 0.6
     guard_jev_model: str = ""
     # Refusal audits omit message text until an owner turns this on.
     guard_audit_store_preview: bool = False

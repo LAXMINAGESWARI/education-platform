@@ -2,9 +2,9 @@
 
 The policy graph, the teacher text-to-SQL graph, and the generation-review
 assistant each keep their own regex, refusal copy, and fail-open / fail-closed
-rules. Jev replaces the GPT ``chat_completion_json`` stage: one Decisions API
-call through ``modules.judge.client``, one probability, compared with
-``jev_block_threshold``. HTTP 402 falls back to the GPT prompts below.
+rules. Injection checks go through ``modules.judge.client``: one probability,
+compared with ``guard_jev_block_threshold``. Policy off-topic stays the GPT
+scope check in the policy graph. HTTP 402 falls back to the GPT prompts below.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ REVIEW_INJECTION = noul_question(
 
 
 def is_positive(probability: float, settings: Settings) -> bool:
-    return probability >= settings.jev_block_threshold
+    return probability >= settings.guard_jev_block_threshold
 
 
 DATA_GPT_INJECTION = (

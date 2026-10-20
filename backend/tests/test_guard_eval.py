@@ -40,7 +40,7 @@ def test_threshold_metrics_ignore_abuse_and_count_blocks() -> None:
         ScoredExample("benign", 0.1, 0.0, "school"),
         ScoredExample("abuse", 0.99, 0.0, "abusive"),
     ]
-    stats = threshold_metrics(rows, 0.85)
+    stats = threshold_metrics(rows, 0.6)
     assert stats.tp == 1
     assert stats.tn == 1
     assert stats.fp == 0
