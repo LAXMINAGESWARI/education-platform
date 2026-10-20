@@ -322,7 +322,21 @@ async def test_review_refusal_records_audit(
                 origin=RevisionOrigin.INITIAL_GENERATION,
                 created_by_user_id=user.id,
                 snapshot_hash="ab" * 32,
-                snapshot={"target_item_count": 60, "nodes": []},
+                snapshot={
+                    "target_item_count": 60,
+                    "nodes": [
+                        {
+                            "node_key": "00000000-0000-0000-0000-000000000001",
+                            "slug": "review-guard",
+                            "title": "Review guard",
+                            "token_mass": 100,
+                            "prerequisite_score": "0",
+                            "centrality": "1",
+                            "weight": "1",
+                            "sequence": 1,
+                        }
+                    ],
+                },
             )
             session.add(revision)
             await session.flush()
