@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
+    # Chat-guard Decisions API. The timeout keeps the name from 858747d /
+    # 565e0a3 (jev_guard_timeout_seconds) so it stays distinct from the lesson
+    # judge's 30s jev_timeout_seconds. The block threshold is its own setting
+    # (GUARD_JEV_BLOCK_THRESHOLD). guard_jev_model is blank unless
+    # GUARD_JEV_MODEL is set; the guard then posts jev_model.
+    jev_decisions_url: str = ""
+    jev_guard_timeout_seconds: float = 5.0
+    # Noul probability that replaces the old classifier's boolean ``true``.
+    guard_jev_block_threshold: float = 0.6
+    guard_jev_model: str = ""
+    # Refusal audits omit message text until an owner turns this on.
+    guard_audit_store_preview: bool = False
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300
@@ -102,6 +114,30 @@ class Settings(BaseSettings):
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
 
+    # LLM gateway. Defaults keep every caller on its existing client. Set a
+    # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.
+    ai_gateway_features: str = ""
+    ai_gateway_policy_chat: bool = False
+    ai_gateway_text_to_sql: bool = False
+    ai_gateway_generation: bool = False
+    ai_gateway_feedback: bool = False
+    ai_gateway_review_chat: bool = False
+    ai_gateway_authoring: bool = False
+    ai_gateway_timeout_chat_answer_seconds: float = 30.0
+    ai_gateway_timeout_sql_generate_seconds: float = 20.0
+    ai_gateway_timeout_guard_seconds: float = 8.0
+    ai_gateway_timeout_generation_seconds: float = 120.0
+    ai_gateway_timeout_feedback_seconds: float = 20.0
+    ai_gateway_max_retries: int = 2
+    ai_gateway_retry_base_seconds: float = 0.25
+    ai_gateway_retry_max_seconds: float = 8.0
+    ai_gateway_circuit_failure_threshold: int = 5
+    ai_gateway_circuit_cooldown_seconds: float = 30.0
+    ai_gateway_concurrency_interactive: int = 8
+    ai_gateway_concurrency_guard: int = 16
+    ai_gateway_concurrency_generation: int = 2
+    ai_gateway_concurrency_batch: int = 2
+
     @property
     def is_development(self) -> bool:
         return self.environment.lower() == "development"
@@ -109,6 +145,12 @@ class Settings(BaseSettings):
     @property
     def openrouter_configured(self) -> bool:
         return bool(self.openrouter_api_key and self.openrouter_api_key.strip())
+
+    @property
+    def resolved_guard_jev_model(self) -> str:
+        """Decisions model the chat guard posts. Blank follows ``jev_model``."""
+        chosen = self.guard_jev_model.strip()
+        return chosen or self.jev_model
 
     @property
     def text_to_sql_database_url(self) -> str:

@@ -70,8 +70,8 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         _INJECTION_GUARD_MODULE,
-        "chat_completion_json",
-        AsyncMock(return_value={"injection": False}),
+        "classify_noul",
+        AsyncMock(return_value=0.0),
     )
 
 
@@ -95,8 +95,8 @@ def _pass_question_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         _QUESTION_VALIDATOR_MODULE,
-        "chat_completion_json",
-        AsyncMock(return_value={"off_topic": False}),
+        "classify_noul",
+        AsyncMock(return_value=0.0),
     )
 
 
