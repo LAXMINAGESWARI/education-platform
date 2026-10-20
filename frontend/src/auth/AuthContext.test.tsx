@@ -19,6 +19,7 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/client", () => ({
   getAccessToken: () => getAccessToken(),
+  getRefreshToken: () => null,
   clearTokens: vi.fn(),
 }));
 
