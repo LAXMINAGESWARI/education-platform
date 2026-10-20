@@ -428,9 +428,63 @@ if "llm-mock" in text or "seed_demo.py" in text:
 if "curioed-api:6b7553c" not in text or "curioed-web:6b7553c" not in text:
     raise SystemExit("prod images should default to the imported 6b7553c tags")
 quota = next(doc for doc in docs if kind_of(doc) == "ResourceQuota")
-if "limits.memory: 14Gi" not in quota or "limits.cpu:" not in quota:
+if "limits.memory: 16Gi" not in quota or "requests.memory: 9Gi" not in quota or "limits.cpu:" not in quota:
     raise SystemExit("prod quota is wrong")
-print("prod values rendered")
+if 'JEV_JUDGE_MODE: "off"' in text:
+    raise SystemExit("prod must leave the lesson judge unchanged")
+
+def mem_mi(raw: str) -> float:
+    value = raw.strip().strip("'\"")
+    if value.endswith("Gi"):
+        return float(value[:-2]) * 1024
+    if value.endswith("Mi"):
+        return float(value[:-2])
+    raise SystemExit(f"unsupported memory quantity {raw}")
+
+def resources_of(doc: str) -> list[tuple[float, float]]:
+    rows = []
+    patterns = (
+        r"(?m)^ {8,12}resources:\n((?:^ {10,16}\S.*\n)*)",
+        r"(?m)^  resources:\n((?:^ {4,8}\S.*\n)*)",
+    )
+    for pattern in patterns:
+        for block in re.finditer(pattern, doc):
+            body = block.group(0)
+            request = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            limit = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            if request and limit:
+                rows.append((mem_mi(request.group(1)), mem_mi(limit.group(1))))
+    return rows
+
+requests_cap = mem_mi(re.search(r"requests\.memory: (\S+)", quota).group(1))
+limits_cap = mem_mi(re.search(r"limits\.memory: (\S+)", quota).group(1))
+api_hpa = next(doc for doc in docs if kind_of(doc) == "HorizontalPodAutoscaler" and name_of(doc).endswith("-api"))
+max_replicas = int(re.search(r"maxReplicas: (\d+)", api_hpa).group(1))
+peak_req = 0.0
+peak_lim = 0.0
+for doc in docs:
+    kind = kind_of(doc)
+    if kind not in ("Deployment", "Job", "Cluster"):
+        continue
+    rows = resources_of(doc)
+    if kind == "Job":
+        copies = 1
+    elif kind == "Cluster":
+        copies = int(re.search(r"(?m)^  instances: (\d+)", doc).group(1))
+    else:
+        copies = int(re.search(r"(?m)^  replicas: (\d+)", doc).group(1))
+        if name_of(doc).endswith("-api"):
+            copies = max_replicas + 1
+    peak_req += sum(item[0] for item in rows) * copies
+    peak_lim += sum(item[1] for item in rows) * copies
+if max_replicas != 6:
+    raise SystemExit(f"prod api HPA max must stay 6, got {max_replicas}")
+if peak_req > requests_cap or peak_lim > limits_cap:
+    raise SystemExit(
+        f"prod api max+surge does not fit: requests {peak_req:.0f}Mi/{requests_cap:.0f}Mi "
+        f"limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+    )
+print(f"prod peak fits: requests {peak_req:.0f}Mi limits {peak_lim:.0f}Mi")
 PY
 
 helm template curioed "${chart}" --namespace curioed-loadtest -f "${chart}/values-loadtest.yaml" > "${out}.load"
@@ -461,8 +515,63 @@ if "JEV_DECISIONS_URL" not in text:
 if "curioed-api:6b7553c" not in text or "curioed-web:6b7553c" not in text:
     raise SystemExit("loadtest images should default to the imported 6b7553c tags")
 quota = next(doc for doc in docs if kind_of(doc) == "ResourceQuota")
-if "limits.memory: 10Gi" not in quota or "requests.memory: 6Gi" not in quota:
+if "limits.memory: 12Gi" not in quota or "requests.memory: 6Gi" not in quota:
     raise SystemExit("loadtest quota is wrong")
+if 'JEV_JUDGE_MODE: "off"' not in text:
+    raise SystemExit("loadtest must set JEV_JUDGE_MODE off")
+
+def mem_mi(raw: str) -> float:
+    value = raw.strip().strip("'\"")
+    if value.endswith("Gi"):
+        return float(value[:-2]) * 1024
+    if value.endswith("Mi"):
+        return float(value[:-2])
+    raise SystemExit(f"unsupported memory quantity {raw}")
+
+def resources_of(doc: str) -> list[tuple[float, float]]:
+    rows = []
+    patterns = (
+        r"(?m)^ {8,12}resources:\n((?:^ {10,16}\S.*\n)*)",
+        r"(?m)^  resources:\n((?:^ {4,8}\S.*\n)*)",
+    )
+    for pattern in patterns:
+        for block in re.finditer(pattern, doc):
+            body = block.group(0)
+            request = re.search(r"requests:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            limit = re.search(r"limits:\n(?:.*\n)*?[ \t]*memory: (\S+)", body)
+            if request and limit:
+                rows.append((mem_mi(request.group(1)), mem_mi(limit.group(1))))
+    return rows
+
+requests_cap = mem_mi(re.search(r"requests\.memory: (\S+)", quota).group(1))
+limits_cap = mem_mi(re.search(r"limits\.memory: (\S+)", quota).group(1))
+api_hpa = next(doc for doc in docs if kind_of(doc) == "HorizontalPodAutoscaler" and name_of(doc).endswith("-api"))
+max_replicas = int(re.search(r"maxReplicas: (\d+)", api_hpa).group(1))
+peak_req = 0.0
+peak_lim = 0.0
+for doc in docs:
+    kind = kind_of(doc)
+    if kind not in ("Deployment", "Job", "Cluster"):
+        continue
+    rows = resources_of(doc)
+    if kind == "Job":
+        copies = 1
+    elif kind == "Cluster":
+        copies = int(re.search(r"(?m)^  instances: (\d+)", doc).group(1))
+    else:
+        copies = int(re.search(r"(?m)^  replicas: (\d+)", doc).group(1))
+        if name_of(doc).endswith("-api"):
+            copies = max_replicas + 1
+    peak_req += sum(item[0] for item in rows) * copies
+    peak_lim += sum(item[1] for item in rows) * copies
+if max_replicas != 6:
+    raise SystemExit(f"loadtest api HPA max must stay 6, got {max_replicas}")
+if peak_req > requests_cap or peak_lim > limits_cap:
+    raise SystemExit(
+        f"loadtest api max+surge does not fit: requests {peak_req:.0f}Mi/{requests_cap:.0f}Mi "
+        f"limits {peak_lim:.0f}Mi/{limits_cap:.0f}Mi"
+    )
+print(f"loadtest peak fits: requests {peak_req:.0f}Mi limits {peak_lim:.0f}Mi")
 k6 = next(doc for doc in docs if kind_of(doc) == "Job" and name_of(doc).endswith("-k6"))
 if "runAsNonRoot: true" not in k6 or "runAsUser: 12345" not in k6:
     raise SystemExit("k6 image user is uid 12345")

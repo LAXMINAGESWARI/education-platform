@@ -37,7 +37,7 @@ tests:
       - equal:
           path: spec.strategy.rollingUpdate.maxUnavailable
           value: 0
-  - it: prod quota is 14Gi and 8Gi with 8 cpu
+  - it: prod quota is 16Gi and 9Gi with 8 cpu
     values:
       - ../values-prod.yaml
     template: resourcequota.yaml
@@ -45,8 +45,8 @@ tests:
       - isSubset:
           path: spec.hard
           content:
-            limits.memory: 14Gi
-            requests.memory: 8Gi
+            limits.memory: 16Gi
+            requests.memory: 9Gi
             limits.cpu: "8"
   - it: prod postgres uses the trixie image and both roles
     values:
@@ -82,7 +82,7 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
-  - it: loadtest quota is 10Gi and 6Gi
+  - it: loadtest quota is 12Gi and 6Gi
     values:
       - ../values-loadtest.yaml
     template: resourcequota.yaml
@@ -90,9 +90,17 @@ tests:
       - isSubset:
           path: spec.hard
           content:
-            limits.memory: 10Gi
+            limits.memory: 12Gi
             requests.memory: 6Gi
             limits.cpu: "8"
+  - it: loadtest turns the lesson judge off
+    values:
+      - ../values-loadtest.yaml
+    template: platform-configmap.yaml
+    asserts:
+      - equal:
+          path: data.JEV_JUDGE_MODE
+          value: "off"
   - it: loadtest points the api at the mock
     values:
       - ../values-loadtest.yaml

@@ -109,9 +109,12 @@ keda:
   api:
     enabled: false
 
+# Limits overcommit on purpose. collect.sh aborting below 3Gi MemAvailable
+# is the real guard. Prod and loadtest never run at the same time: loadtest
+# is deleted before prod comes up.
 quota:
-  requestsMemory: 8Gi
-  limitsMemory: 14Gi
+  requestsMemory: 9Gi
+  limitsMemory: 16Gi
   limitsCpu: "8"
 
 caddyAlias:

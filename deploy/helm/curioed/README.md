@@ -227,7 +227,11 @@ docker save curioed-api:demo curioed-web:demo | sudo k3s ctr images import -
 
 ## Quota
 
-`limits.cpu` is omitted unless set. Prod sets 8, with memory requests 8Gi and limits 14Gi. Load-test sets cpu 8, requests 6Gi, limits 10Gi. LimitRange defaults keep a container that forgot resources from being rejected. The steady all-on render fits the default 8Gi/14Gi quota. API at max 4 plus one surge pod does not fit the 14Gi limit. The numbers printed by `render-check.sh` are the ones to trust after a values change.
+`limits.cpu` is omitted unless set. The chart default is memory requests 8Gi and limits 14Gi. Steady state with the API at its minimum fits. The API at max 4 plus one surge pod does not fit that 14Gi limit, and the chart default is not raised to hide it.
+
+Prod sets cpu 8, requests 9Gi, limits 16Gi. Load-test sets cpu 8, requests 6Gi, limits 12Gi. Those limits overcommit on purpose. `collect.sh` aborting below 3Gi `MemAvailable` is the real guard, and prod and load-test never run at the same time because the load-test namespace is deleted before prod comes up. With the API HPA max still 6 and `maxSurge` 1, both profiles fit that peak. LimitRange defaults keep a container that forgot resources from being rejected. The numbers printed by `render-check.sh` are the ones to trust after a values change.
+
+Load-test sets `JEV_JUDGE_MODE=off`. Prod leaves that value unset, which the app treats as shadow. The hardcoded decisions URL in `judge/client.py` is a Coder follow-up.
 
 ## Check
 
