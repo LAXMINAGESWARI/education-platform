@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
@@ -110,23 +110,17 @@ describe("HomePage", () => {
 
     expect(await screen.findByRole("heading", { name: "Your subjects" })).toBeInTheDocument();
     expect(screen.queryByText("Student dashboard · demo data")).not.toBeInTheDocument();
-    const table = await screen.findByRole("table", { name: "Subject progress" });
-    const math = within(table).getByRole("row", { name: /Mathematics/ });
-    expect(within(math).getByRole("link", { name: "Mathematics" })).toHaveAttribute(
-      "href",
-      "/subjects/math-1",
-    );
-    expect(within(math).getByText("In progress")).toHaveClass("badge", "badge--warn");
-    expect(math).toHaveTextContent("Grade 8");
-    expect(math).toHaveTextContent("1 of 1 done");
-    const overview = screen.getByRole("region", { name: "Subject overview" });
-    expect(within(overview).getByText("Quizzes passed")).toBeInTheDocument();
-    expect(overview).toHaveTextContent("0 of 2 available quizzes passed");
-    expect(overview).not.toHaveTextContent("Average topic progress");
+    expect(screen.getByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Mathematics/ })).toHaveAttribute("href", "/subjects/math-1");
+    expect(screen.getByText("Number sense, algebra foundations, and geometry basics.")).toBeInTheDocument();
+    expect(screen.getByText("0/1 topics complete · 0%")).toBeInTheDocument();
+    expect(screen.getByText("School material")).toHaveClass("badge", "badge--info");
     expect(screen.getByRole("heading", { name: "Science" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Coming soon" })).toBeInTheDocument();
+    expect(screen.getAllByText("Coming soon").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Locked").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("table", { name: "Subject progress" })).not.toBeInTheDocument();
     expect(screen.queryByText(/1\.0 Enroll/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Topics" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Topics$/)).not.toBeInTheDocument();
   });
 
   it("shows school material on the subject view", async () => {
@@ -141,7 +135,13 @@ describe("HomePage", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "School material" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByText("School material")).toBeInTheDocument();
+    expect(screen.getByText("Grade 8 · 2026-27")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /Subject completion/ })).toHaveAttribute(
+      "aria-valuenow",
+      "0",
+    );
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       /Subjects\s*\/\s*Mathematics/,
     );
@@ -154,7 +154,7 @@ describe("HomePage", () => {
     expect(screen.queryByText("Properties of Rectangles and Squares")).not.toBeInTheDocument();
     expect(screen.getByText("Approved Materials")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Mathematics quiz" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Subject completion/)).toBeInTheDocument();
+    expect(screen.getByText("0/1 topics complete · 0%")).toBeInTheDocument();
 
     expect(screen.getByRole("link", { name: /Approved Materials/ })).toHaveAttribute(
       "href",

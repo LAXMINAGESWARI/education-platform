@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/types";
@@ -36,13 +36,46 @@ describe("Feedback and Subjects empty states", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Your subjects" })).toBeInTheDocument();
-    expect(
-      await screen.findByText("No enrolled subjects with published curriculum yet."),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Coming soon" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Science" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "English" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Social Studies" })).toBeInTheDocument();
+    expect(screen.getAllByText("Coming soon").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Locked").length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText("No enrolled subjects with published curriculum yet."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Subject progress" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("renders a subject page when that subject has no topics", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      subjects: [
+        {
+          id: "math-1",
+          code: "MATH",
+          name: "Mathematics",
+          grade_name: "Grade 8",
+          academic_period_name: "2026-27",
+          progress_percent: 0,
+          topics: [],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByText("No school material published yet.")).toBeInTheDocument();
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Topics" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("renders the Feedback page with empty enrollment data", async () => {
@@ -87,7 +120,36 @@ describe("Feedback and Subjects empty states", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load subjects.");
-    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Science" })).toBeInTheDocument();
+  });
+
+  it("keeps a subject route on its own loading and error states", async () => {
+    vi.mocked(fetchLearningDirectory).mockReturnValue(new Promise(() => undefined));
+    const { unmount } = render(
+      <MemoryRouter initialEntries={["/subjects/math-1"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading subject…");
     expect(screen.queryByRole("heading", { name: "Science" })).not.toBeInTheDocument();
+    unmount();
+
+    clearLearningDirectoryCache();
+    vi.mocked(fetchLearningDirectory).mockRejectedValue(new ApiError("Could not load subjects.", 500, null));
+    render(
+      <MemoryRouter initialEntries={["/subjects/math-1"]}>
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load subjects.");
+    expect(screen.queryByRole("heading", { name: "Science" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your subjects" })).not.toBeInTheDocument();
   });
 });
