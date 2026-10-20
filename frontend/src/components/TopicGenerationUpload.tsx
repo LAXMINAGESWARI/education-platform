@@ -384,8 +384,8 @@ export function TopicGenerationUpload({
           await followRun(current.id, abort);
         }
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        if (!abort.signal.aborted) setReconnecting(false);
+        if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+        setReconnecting(false);
         setError(errorMessage(err, "Could not load the generation run."));
       } finally {
         if (!abort.signal.aborted) setBusy(false);
@@ -442,6 +442,7 @@ export function TopicGenerationUpload({
           if (!abort.signal.aborted) setReconnecting(false);
         },
         onSnapshot: (next) => {
+          if (abort.signal.aborted) return;
           trackRun(next);
           if (next.phase === "generating") {
             setBusy(false);
@@ -476,6 +477,7 @@ export function TopicGenerationUpload({
 
     try {
       const accepted = await submitTopicGenerationRun(topicId, file, resolvedTitle);
+      if (abort.signal.aborted) return;
       trackRun({
         id: accepted.run_id,
         topic_id: accepted.topic_id,
@@ -491,10 +493,11 @@ export function TopicGenerationUpload({
         created_at: new Date().toISOString(),
       });
       await followRun(accepted.run_id, abort);
+      if (abort.signal.aborted) return;
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(errorMessage(err, "Upload failed. Try again."));
     } finally {
       if (!abort.signal.aborted) setBusy(false);
@@ -648,6 +651,7 @@ export function TopicGenerationUpload({
     pollAbortRef.current = abort;
     try {
       const next = await retryGenerationRun(run.id);
+      if (abort.signal.aborted) return;
       trackRun(next);
       if (isInFlightGenerationPhase(next.phase)) {
         if (streamLeavesUiIdle(next.phase) && !abort.signal.aborted) {
@@ -656,7 +660,7 @@ export function TopicGenerationUpload({
         await followRun(next.id, abort);
       }
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(errorMessage(err, "Could not retry the run."));
     } finally {
       if (!abort.signal.aborted) setBusy(false);
@@ -742,7 +746,7 @@ export function TopicGenerationUpload({
         await followRun(selected.id, abort);
       }
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(errorMessage(err, "Could not load that generation run."));
     } finally {
       if (!abort.signal.aborted) setBusy(false);

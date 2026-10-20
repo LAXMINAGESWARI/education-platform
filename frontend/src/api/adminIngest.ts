@@ -47,6 +47,7 @@ export async function getMaterialVersionStatus(
 export type StreamWatchOptions = {
   signal?: AbortSignal;
   onReconnecting?: (notice: ProgressReconnectNotice) => void;
+  /** Fires when the socket opens, including the first connect, before any frame is read. */
   onReconnected?: () => void;
 };
 
@@ -85,10 +86,12 @@ export async function uploadKnowledgeDocument(
   });
 }
 
-export async function listKnowledgeDocuments(): Promise<KnowledgeDocumentListItem[]> {
+export async function listKnowledgeDocuments(
+  signal?: AbortSignal,
+): Promise<KnowledgeDocumentListItem[]> {
   const data = await apiRequest<
     KnowledgeDocumentListItem[] | { items: KnowledgeDocumentListItem[] }
-  >("/admin/knowledge-documents");
+  >("/admin/knowledge-documents", signal === undefined ? undefined : { signal });
   return Array.isArray(data) ? data : data.items;
 }
 

@@ -8,6 +8,7 @@ vi.mock("./client", () => ({
 
 import { apiStream } from "./client";
 import {
+  PROGRESS_CONNECT_TIMEOUT_MS,
   PROGRESS_RECONNECT_FACTOR,
   PROGRESS_RECONNECT_INITIAL_MS,
   PROGRESS_RECONNECT_MAX_ATTEMPTS,
@@ -97,6 +98,44 @@ function heldStream(signal: AbortSignal | undefined): Response {
   });
 }
 
+function openUntilDropped(): { response: Response; drop: () => void } {
+  let drop = (): void => {};
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(": heartbeat\n\n"));
+      drop = () => {
+        controller.error(new TypeError("connection reset"));
+      };
+    },
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+    drop: () => {
+      drop();
+    },
+  };
+}
+
+function hangUntilAbort(signal: AbortSignal | undefined): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    signal?.addEventListener(
+      "abort",
+      () => {
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
 function snapshotFrame(phase: string, id = `run-1:${phase}`): string {
   return `id: ${id}\nevent: snapshot\ndata: ${JSON.stringify({ id: "run-1", phase })}\n\n`;
 }
@@ -163,7 +202,7 @@ describe("progress SSE client", () => {
     await subscribeProgress(runSubject("run-1"), { onSnapshot });
 
     expect(apiStream).toHaveBeenCalledWith("/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: undefined,
     });
     expect(onSnapshot.mock.calls.map((call) => call[0]?.phase)).toEqual(["indexing", "failed"]);
@@ -209,7 +248,7 @@ describe("progress SSE client", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(apiStream).toHaveBeenCalledTimes(1);
     expect(apiStream).toHaveBeenNthCalledWith(1, "/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: undefined,
     });
 
@@ -220,7 +259,7 @@ describe("progress SSE client", () => {
     const result = await pending;
     expect(result.ok).toBe(true);
     expect(apiStream).toHaveBeenNthCalledWith(2, "/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: "run-1:abc",
     });
     expect(onSnapshot.mock.calls.map((call) => call[0]?.phase)).toEqual(["indexing", "outlining"]);
@@ -253,7 +292,7 @@ describe("progress SSE client", () => {
     }
     expect(onSnapshot.mock.calls.map((call) => call[0]?.phase)).toEqual(["indexing", "generating"]);
     expect(apiStream).toHaveBeenNthCalledWith(2, "/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: "run-1:abc",
     });
   });
@@ -368,13 +407,118 @@ describe("progress SSE client", () => {
     await vi.advanceTimersByTimeAsync(base - 1);
     expect(apiStream).toHaveBeenCalledTimes(3);
     expect(notices.map((notice) => notice.delayMs)).toEqual([base, grown, base]);
-    expect(notices.map((notice) => notice.attempt)).toEqual([1, 2, 1]);
+    // The heartbeat ends the outage, so the failure count restarts. The exponent does not.
+    expect(notices.map((notice) => notice.attempt)).toEqual([1, 1, 1]);
     await vi.advanceTimersByTimeAsync(1);
     expect(apiStream).toHaveBeenCalledTimes(4);
 
     abort.abort();
     await pending;
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries after a long heartbeat-only reconnect instead of giving up", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const held = openUntilDropped();
+    vi.mocked(apiStream)
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(held.response)
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("outline_review", "run-1:still"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const notices: Array<{ attempt: number; delayMs: number }> = [];
+    let settled = false;
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting: (notice) => {
+          notices.push(notice);
+        },
+      }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    expect(apiStream).toHaveBeenCalledTimes(2);
+    expect(notices).toEqual([{ attempt: 1, delayMs: progressReconnectDelayMs(0, 0) }]);
+
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(settled).toBe(false);
+    expect(apiStream).toHaveBeenCalledTimes(2);
+
+    held.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    expect(notices).toEqual([
+      { attempt: 1, delayMs: progressReconnectDelayMs(0, 0) },
+      { attempt: 1, delayMs: progressReconnectDelayMs(1, 0) },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(1, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(apiStream).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not give up across many spaced healthy reconnects", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const cycles = PROGRESS_RECONNECT_MAX_ATTEMPTS + 1;
+    const drops: Array<() => void> = [];
+    vi.mocked(apiStream).mockImplementation(async () => {
+      if (drops.length >= cycles) {
+        return streamResponse([
+          snapshotFrame("qa_review", "run-1:parked"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]);
+      }
+      const held = openUntilDropped();
+      drops.push(held.drop);
+      return held.response;
+    });
+
+    const onReconnecting = vi.fn();
+    let settled = false;
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+      }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    for (let index = 0; index < cycles; index += 1) {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(apiStream).toHaveBeenCalledTimes(index + 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      expect(settled).toBe(false);
+      expect(apiStream).toHaveBeenCalledTimes(index + 1);
+      drops[index]?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      expect(onReconnecting).toHaveBeenLastCalledWith({
+        attempt: 1,
+        delayMs: progressReconnectDelayMs(index, 0),
+      });
+      await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(index, 0));
+    }
+
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(onReconnecting).toHaveBeenCalledTimes(cycles);
+    expect(apiStream).toHaveBeenCalledTimes(cycles + 1);
   });
 
   function attemptsUntilGiveUp(random: number): number {
@@ -555,7 +699,7 @@ describe("progress SSE client", () => {
       await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_MS);
       expect(apiStream).toHaveBeenCalledTimes(1);
       expect(apiStream).toHaveBeenCalledWith("/progress/versions/ver-1", {
-        signal: undefined,
+        signal: expect.any(AbortSignal),
         lastEventId: undefined,
       });
     },
@@ -595,7 +739,7 @@ describe("progress SSE client", () => {
       expect(result.ok).toBe(true);
       expect(apiStream).toHaveBeenCalledTimes(2);
       expect(apiStream).toHaveBeenNthCalledWith(2, "/progress/versions/ver-1", {
-        signal: undefined,
+        signal: expect.any(AbortSignal),
         lastEventId: "version:ver-1:open",
       });
       expect(onSnapshot.mock.calls.map((call) => call[0]?.lifecycle_status)).toEqual([
@@ -627,7 +771,7 @@ describe("progress SSE client", () => {
       "generating",
     ]);
     expect(apiStream).toHaveBeenNthCalledWith(2, "/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: "run-1:hitl",
     });
   });
@@ -733,7 +877,7 @@ describe("progress SSE client", () => {
       onSnapshot: vi.fn(),
     });
     expect(apiStream).toHaveBeenCalledWith("/progress/runs/run-1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       lastEventId: "run-1:prior",
     });
   });
@@ -802,6 +946,86 @@ describe("progress SSE client", () => {
     }
     await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_MS * 2);
     expect(apiStream).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries when a progress connect hangs past the timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const onReconnecting = vi.fn();
+    vi.mocked(apiStream)
+      .mockImplementationOnce((_path, options) => hangUntilAbort(options?.signal))
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("indexing", "run-1:abc"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_CONNECT_TIMEOUT_MS - 1);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    expect(onReconnecting).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onReconnecting).toHaveBeenCalledWith({
+      attempt: 1,
+      delayMs: progressReconnectDelayMs(0, 0),
+    });
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(apiStream).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops a hung progress connect when the caller aborts", async () => {
+    vi.useFakeTimers();
+    vi.mocked(apiStream).mockImplementation((_path, options) => hangUntilAbort(options?.signal));
+    const abort = new AbortController();
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), { signal: abort.signal, onSnapshot: vi.fn() }),
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    abort.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ name: "AbortError" });
+    }
+    await vi.advanceTimersByTimeAsync(PROGRESS_CONNECT_TIMEOUT_MS + PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not time out a progress stream after the socket opens", async () => {
+    vi.useFakeTimers();
+    const abort = new AbortController();
+    vi.mocked(apiStream).mockImplementation(async (_path, options) => heldStream(options?.signal));
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), { signal: abort.signal, onSnapshot: vi.fn() }),
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(PROGRESS_CONNECT_TIMEOUT_MS + 5_000);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ name: "AbortError" });
+    }
     expect(vi.getTimerCount()).toBe(0);
   });
 

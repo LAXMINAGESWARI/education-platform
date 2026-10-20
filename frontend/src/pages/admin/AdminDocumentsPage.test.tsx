@@ -308,4 +308,74 @@ describe("AdminDocumentsPage", () => {
     );
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
+
+  it("does not apply the document list when the page unmounts during refresh", async () => {
+    let resolveRefresh: ((docs: never[]) => void) | undefined;
+    let calls = 0;
+    let refreshSignal: AbortSignal | undefined;
+    vi.mocked(listKnowledgeDocuments).mockImplementation((signal?: AbortSignal) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve([
+          {
+            id: "doc-1",
+            title: "Attendance policy",
+            slug: "attendance-policy",
+            doc_type: "policy",
+            status: "active",
+            required_roles: ["administrator", "teacher"],
+            latest_version: {
+              id: "ver-1",
+              version_number: 1,
+              lifecycle_status: "ready",
+              failure_reason: null,
+              chunk_count: 12,
+            },
+          },
+        ]);
+      }
+      refreshSignal = signal;
+      return new Promise((resolve) => {
+        resolveRefresh = resolve;
+      });
+    });
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockResolvedValue({
+      id: "ver-2",
+      document_id: "doc-2",
+      version_number: 1,
+      lifecycle_status: "ready",
+      failure_reason: null,
+      chunk_count: 3,
+    });
+
+    const view = render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await startUpload();
+    await waitFor(() => {
+      expect(calls).toBe(2);
+    });
+
+    expect(refreshSignal).toBeInstanceOf(AbortSignal);
+    expect(refreshSignal?.aborted).toBe(false);
+
+    view.unmount();
+    expect(refreshSignal?.aborted).toBe(true);
+    await act(async () => {
+      resolveRefresh?.([]);
+    });
+
+    expect(calls).toBe(2);
+  });
 });

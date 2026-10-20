@@ -62,7 +62,8 @@ export function AdminDocumentsPage() {
     };
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     if (isDevMockSession) {
       setDocs(null);
       setListError(MOCK_SESSION_DOCS_ERROR);
@@ -71,21 +72,27 @@ export function AdminDocumentsPage() {
     }
     setLoading(true);
     try {
-      const items = await listKnowledgeDocuments();
+      const items = await listKnowledgeDocuments(signal);
+      if (signal?.aborted) return;
       setDocs(items);
       setListError(null);
     } catch (err) {
+      if (signal?.aborted) return;
       setDocs(null);
       setListError(
         err instanceof ApiError ? err.message : "Could not load knowledge documents.",
       );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [isDevMockSession]);
 
   useEffect(() => {
-    void refresh();
+    const abort = new AbortController();
+    void refresh(abort.signal);
+    return () => {
+      abort.abort();
+    };
   }, [refresh]);
 
   function chooseFile(next: File | null, fromDrop = false) {
@@ -173,7 +180,7 @@ export function AdminDocumentsPage() {
       }
       setFile(null);
       setTitle("");
-      await refresh();
+      await refresh(abort.signal);
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setUploadStatus(null);

@@ -96,4 +96,44 @@ describe("CurriculumMaterialUpload", () => {
     );
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
+
+  it("does not watch a material version after the form unmounts", async () => {
+    const user = userEvent.setup();
+    let resolveUpload: (value: {
+      source_material_id: string;
+      version_id: string;
+      version_number: number;
+      title: string;
+      lifecycle_status: "processing";
+      ingest_job_id: string;
+    }) => void = () => undefined;
+    vi.mocked(uploadSubtopicMaterial).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+
+    const view = render(<CurriculumMaterialUpload subtopicId="st-1" />);
+    const file = new File(["%PDF-1.4"], "lesson.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText(/pdf file/i), { target: { files: [file] } });
+    await user.click(screen.getByRole("button", { name: /upload pdf/i }));
+    await waitFor(() => {
+      expect(uploadSubtopicMaterial).toHaveBeenCalled();
+    });
+
+    view.unmount();
+    await act(async () => {
+      resolveUpload({
+        source_material_id: "mat-1",
+        version_id: "ver-1",
+        version_number: 1,
+        title: "Place value",
+        lifecycle_status: "processing",
+        ingest_job_id: "job-1",
+      });
+    });
+
+    expect(watchMaterialVersionStatus).not.toHaveBeenCalled();
+  });
 });

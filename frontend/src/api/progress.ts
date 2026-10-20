@@ -22,11 +22,19 @@ export const PROGRESS_RECONNECT_MAX_MS = 30_000;
 
 export const PROGRESS_RECONNECT_FACTOR = 2;
 
-/** Failed tries with no snapshot before the subscription rejects. */
+/** Failed tries since the last healthy frame before the subscription rejects. */
 export const PROGRESS_RECONNECT_MAX_ATTEMPTS = 8;
 
 /** Reject when the next wait would push this outage past one minute. */
 export const PROGRESS_RECONNECT_MAX_ELAPSED_MS = 60_000;
+
+/**
+ * How long one progress connect may sit before it counts as a retryable failure.
+ * A Last-Event-ID resume holds the response headers until the first frame, and the
+ * server heartbeat is 15s, so a quiet healthy resume can take that long. 20s clears
+ * that wait without letting one hung socket consume the whole minute-long outage budget.
+ */
+export const PROGRESS_CONNECT_TIMEOUT_MS = 20_000;
 
 export type ProgressReconnectNotice = {
   /** 1-based count of failures in the current outage. */
@@ -270,6 +278,52 @@ function notifyReconnected(onReconnected: (() => void) | undefined): void {
   }
 }
 
+function progressAttempt(parent: AbortSignal | undefined): {
+  signal: AbortSignal;
+  connected: () => void;
+  finish: () => void;
+  timedOut: () => boolean;
+} {
+  const controller = new AbortController();
+  let didTimeout = false;
+  let open = false;
+  let finished = false;
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    if (!open) {
+      controller.abort();
+    }
+  }, PROGRESS_CONNECT_TIMEOUT_MS);
+
+  function onParentAbort(): void {
+    controller.abort();
+  }
+
+  if (parent?.aborted) {
+    controller.abort();
+  } else {
+    parent?.addEventListener("abort", onParentAbort);
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeout && parent?.aborted !== true,
+    connected: () => {
+      open = true;
+      clearTimeout(timer);
+    },
+    finish: () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      open = true;
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
 export async function subscribeProgress(
   subject: ProgressSubject,
   options: {
@@ -277,6 +331,7 @@ export async function subscribeProgress(
     lastEventId?: string;
     onSnapshot: (snapshot: ProgressSnapshot) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
+    /** Fires when the socket opens, including the first connect, before any frame is read. */
     onReconnected?: () => void;
   },
 ): Promise<void> {
@@ -287,16 +342,37 @@ export async function subscribeProgress(
 
   while (!options.signal?.aborted) {
     let disconnected: unknown;
+    const attemptSignal = progressAttempt(options.signal);
     try {
-      const res = await apiStream(progressPath(subject), {
-        signal: options.signal,
-        lastEventId,
-      });
+      let res: Response;
+      try {
+        res = await apiStream(progressPath(subject), {
+          signal: attemptSignal.signal,
+          lastEventId,
+        });
+      } catch (error) {
+        if (options.signal?.aborted) {
+          throw abortError();
+        }
+        if (attemptSignal.timedOut()) {
+          throw new TypeError("Progress connect timed out");
+        }
+        throw error;
+      }
+      attemptSignal.connected();
       if (res.body === null) {
         throw new ApiError("Progress stream had no body", 502, null);
       }
       notifyReconnected(options.onReconnected);
+      let connectionHealthy = false;
       for await (const item of readSse(res.body, options.signal)) {
+        if (!connectionHealthy) {
+          // A 2xx response plus the first frame, heartbeat included, ends the outage.
+          // The backoff exponent stays until a snapshot, so a one-frame proxy cannot spin.
+          connectionHealthy = true;
+          failures = 0;
+          outageStartedAt = null;
+        }
         switch (item.event) {
           case "heartbeat":
             break;
@@ -338,6 +414,8 @@ export async function subscribeProgress(
         throw error;
       }
       disconnected = error;
+    } finally {
+      attemptSignal.finish();
     }
 
     if (options.signal?.aborted) {
@@ -370,6 +448,7 @@ export async function watchProgress(
     signal?: AbortSignal;
     onSnapshot?: (snapshot: ProgressSnapshot) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
+    /** Fires when the socket opens, including the first connect, before any frame is read. */
     onReconnected?: () => void;
   } = {},
 ): Promise<ProgressSnapshot> {

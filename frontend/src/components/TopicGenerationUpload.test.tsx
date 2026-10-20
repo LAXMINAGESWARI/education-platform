@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -49,6 +49,7 @@ import {
   listGenerationSteps,
   listTopicGenerationRuns,
   subscribeGenerationRun,
+  submitTopicGenerationRun,
   publishGenerationRun,
   rejectGenerationItems,
   retryGenerationRun,
@@ -241,6 +242,7 @@ describe("TopicGenerationUpload", () => {
     vi.mocked(discardGenerationRun).mockReset();
     vi.mocked(retryGenerationRun).mockReset();
     vi.mocked(subscribeGenerationRun).mockReset();
+    vi.mocked(submitTopicGenerationRun).mockReset();
     vi.mocked(getGenerationRun).mockReset();
     vi.mocked(getGenerationReview).mockReset();
     vi.mocked(closeReviewRound).mockReset();
@@ -865,5 +867,61 @@ describe("TopicGenerationUpload", () => {
       "Lost the connection to progress updates. Try again.",
     );
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
+
+  it("does not follow a topic upload after the form unmounts", async () => {
+    const user = userEvent.setup();
+    let resolveUpload: (value: { run_id: string; topic_id: string; phase: "indexing" }) => void =
+      () => undefined;
+    vi.mocked(submitTopicGenerationRun).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+
+    const view = renderPanel();
+    await screen.findByRole("button", { name: /upload topic pdf/i });
+    const file = new File(["%PDF-1.4"], "unit.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText(/pdf file/i), { target: { files: [file] } });
+    await user.click(screen.getByRole("button", { name: /upload topic pdf/i }));
+    await waitFor(() => {
+      expect(submitTopicGenerationRun).toHaveBeenCalled();
+    });
+
+    view.unmount();
+    await act(async () => {
+      resolveUpload({ run_id: "run-new", topic_id: "topic-1", phase: "indexing" });
+    });
+
+    expect(subscribeGenerationRun).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a retry after the form unmounts", async () => {
+    const user = userEvent.setup();
+    let resolveRetry: (value: ReturnType<typeof run>) => void = () => undefined;
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "discarded", outline: null, failure_reason: null }),
+    ]);
+    vi.mocked(retryGenerationRun).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRetry = resolve;
+        }),
+    );
+
+    const view = renderPanel();
+    await user.click(await screen.findByRole("button", { name: /Unit source/i }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(retryGenerationRun).toHaveBeenCalledWith("run-1");
+    });
+
+    view.unmount();
+    await act(async () => {
+      resolveRetry(run({ phase: "outlining", outline: null }));
+    });
+
+    expect(subscribeGenerationRun).not.toHaveBeenCalled();
   });
 });
