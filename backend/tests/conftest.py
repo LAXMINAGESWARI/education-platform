@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import errno
 import fcntl
 import hashlib
 import os
 import re
+import shutil
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -111,15 +110,15 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Drop this worker's cloned database and its ready marker.
+    """Drop this worker's cloned database, then let the last finisher remove the run dir.
 
-    Idle workers clone during collection and never run the session fixture, so
-    cleanup lives here. The run directory is removed only after its last marker is gone.
+    Ready markers stay in place for the whole run. Unlinking one as soon as that
+    worker finished made a slower worker time out, so this reverses that cleanup.
     """
     del session, exitstatus
     if os.environ.get("PYTEST_XDIST_WORKER") and _CLONED_WORKER_DB is not None:
         _drop_cloned_database()
-        _remove_run_ready_dir()
+        _finish_run_directory()
 
 
 def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -266,13 +265,27 @@ def _clone_from_template(base_url: str, template: str, worker_db: str) -> None:
         admin.dispose()
 
 
+def _ready_marker_names(ready_dir: Path) -> set[str]:
+    """Names of this run's worker markers. Subdirectories such as ``finished`` are ignored."""
+    if not ready_dir.is_dir():
+        return set()
+    return {path.name for path in ready_dir.glob("gw*") if path.is_file()}
+
+
 def _wait_for_worker_clones(ready_dir: Path, worker_count: int) -> None:
+    """Return once ``worker_count`` markers have been seen.
+
+    A marker stays counted after it is first observed. A later deletion, including
+    removal of the whole directory, does not make this worker wait again.
+    """
+    seen: set[str] = set()
     deadline = time.monotonic() + _CLONE_WAIT_SECONDS
     while time.monotonic() < deadline:
-        if len(list(ready_dir.glob("gw*"))) >= worker_count:
+        seen.update(_ready_marker_names(ready_dir))
+        if len(seen) >= worker_count:
             return
         time.sleep(0.05)
-    ready = sorted(path.name for path in ready_dir.glob("gw*"))
+    ready = sorted(seen)
     pytest.fail(
         f"Timed out waiting for {worker_count} xdist workers to clone databases. "
         f"Ready: {ready or 'none'}."
@@ -326,23 +339,86 @@ def _drop_cloned_database() -> None:
         admin.dispose()
 
 
-def _remove_run_ready_dir() -> None:
-    """Unlink this worker's marker, then remove the run directory if it is empty."""
+def _current_ready_dir() -> Path:
+    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
+    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
+    return Path("/tmp") / f"curioed-xdist-{safe_run}"
+
+
+def _is_stale_worker_database(name: str, template: str) -> bool:
+    """True for ``<template>_gw0`` style clones, never for the template database itself."""
+    return re.fullmatch(rf"{re.escape(template)}_gw\d+", name) is not None
+
+
+def _remove_other_marker_dirs(current: Path, root: Path = Path("/tmp")) -> None:
+    """Delete leftover marker directories. A missing directory is left alone."""
+    if not root.is_dir():
+        return
+    current_resolved = current.resolve()
+    for path in root.glob("curioed-xdist-*"):
+        if not path.is_dir():
+            continue
+        if path.resolve() == current_resolved:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _drop_stale_worker_databases(base_url: str, template: str) -> None:
+    """Drop ``<template>_gwN`` databases left by an interrupted run. None is fine."""
+    admin_url = to_sync_url(
+        make_url(base_url).set(database="postgres").render_as_string(hide_password=False)
+    )
+    admin = create_engine(
+        admin_url,
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+        connect_args=sync_connect_args(),
+    )
+    try:
+        with admin.connect() as conn:
+            names = [
+                row[0]
+                for row in conn.execute(text("SELECT datname FROM pg_database"))
+                if _is_stale_worker_database(row[0], template)
+            ]
+            for name in names:
+                quoted = _quote_db(name)
+                conn.execute(text(f"DROP DATABASE IF EXISTS {quoted} WITH (FORCE)"))
+    finally:
+        admin.dispose()
+
+
+def _sweep_stale_xdist_state(base_url: str, template: str, ready_dir: Path) -> None:
+    """One worker per run clears interrupted clones before anyone creates a new one."""
+    flag = ready_dir / ".cleanup-done"
+    if flag.is_file():
+        return
+    _remove_other_marker_dirs(ready_dir)
+    _drop_stale_worker_databases(base_url, template)
+    ready_dir.mkdir(parents=True, exist_ok=True)
+    flag.write_text("done", encoding="utf-8")
+
+
+def _finish_run_directory() -> None:
+    """Record that this worker is done. The last one removes the whole marker directory.
+
+    Individual ready markers are not unlinked. A slower worker can still see every
+    marker it already counted, and any it has not counted yet.
+    """
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
         return
-    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
-    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
-    ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
-    with suppress(FileNotFoundError):
-        (ready_dir / worker).unlink()
+    ready_dir = _current_ready_dir()
+    finished = ready_dir / "finished"
     try:
-        ready_dir.rmdir()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        if exc.errno != errno.ENOTEMPTY:
-            raise
+        finished.mkdir(parents=True, exist_ok=True)
+        (finished / worker).write_text("done", encoding="utf-8")
+        done = [path for path in finished.glob("gw*") if path.is_file()]
+    except OSError:
+        return
+    worker_count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+    if len(done) >= worker_count:
+        shutil.rmtree(ready_dir, ignore_errors=True)
 
 
 def _clone_worker_database(base_url: str, worker: str) -> str:
@@ -363,9 +439,7 @@ def _clone_worker_database(base_url: str, worker: str) -> str:
     worker_db = f"{template}_{worker}"
     _quote_db(worker_db)
 
-    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
-    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
-    ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
+    ready_dir = _current_ready_dir()
     lock_path = Path("/tmp") / f"curioed-pytest-{template}.lock"
     worker_count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
 
@@ -373,6 +447,7 @@ def _clone_worker_database(base_url: str, worker: str) -> str:
     with lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            _sweep_stale_xdist_state(base_url, template, ready_dir)
             _upgrade_database(base_url)
             _clone_from_template(base_url, template, worker_db)
             _remember_clone(base_url, worker_db)
