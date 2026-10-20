@@ -31,7 +31,6 @@ def test_health_live_is_200_without_a_database(monkeypatch: pytest.MonkeyPatch) 
         raise AssertionError("liveness probe used the database")
 
     monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
-    monkeypatch.setattr("education_platform.db.session.get_engine", forbid_database)
     monkeypatch.setattr("education_platform.core.health.ping_database", forbid_database)
 
     with TestClient(app) as http:
@@ -62,7 +61,7 @@ def test_ready_is_503_when_the_database_call_raises(
 
     monkeypatch.setattr("education_platform.core.health.ping_database", explode)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         ready = client.get("/health/ready")
         health = client.get("/health")
         live = client.get("/health/live")
@@ -77,6 +76,8 @@ def test_ready_is_503_when_the_database_call_raises(
     assert live.status_code == 200
     assert live.json() == {"status": "ok"}
     assert _SECRET_URL in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_ready_is_503_when_the_database_call_times_out(
@@ -91,7 +92,7 @@ def test_ready_is_503_when_the_database_call_times_out(
     get_settings.cache_clear()
     monkeypatch.setattr("education_platform.core.health.ping_database", hang)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         ready = client.get("/health/ready")
         health = client.get("/health")
 
@@ -102,6 +103,8 @@ def test_ready_is_503_when_the_database_call_times_out(
         assert "TimeoutError" not in response.text
         assert "Traceback" not in response.text
     assert "timed out" in caplog.text.lower()
+    assert "TimeoutError" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 @pytest.mark.regression

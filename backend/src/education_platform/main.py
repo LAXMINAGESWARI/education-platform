@@ -91,7 +91,7 @@ async def domain_error_handler(_request: Request, exc: DomainError) -> JSONRespo
 
 
 @app.get("/health/live", tags=["system"])
-def health_live() -> dict[str, str]:
+async def health_live() -> dict[str, str]:
     """Process is up. No database call, so a DB blip does not fail liveness."""
     return {"status": "ok"}
 

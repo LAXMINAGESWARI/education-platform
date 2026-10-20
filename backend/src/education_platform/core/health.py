@@ -32,23 +32,29 @@ async def ping_database() -> None:
 async def readiness_response() -> JSONResponse:
     """Return 200 when Postgres answers, otherwise 503 with a fixed body.
 
-    Failures and timeouts are logged here. The response body is one of the two
-    constants above.
+    Failures and timeouts are logged as warnings with the exception class and
+    message. The response body is one of the two constants above.
     """
     timeout_seconds = get_settings().health_ready_timeout_seconds
     try:
         await asyncio.wait_for(ping_database(), timeout=timeout_seconds)
-    except TimeoutError:
-        logger.exception(
-            "Readiness database check timed out after %s seconds",
+    except TimeoutError as exc:
+        logger.warning(
+            "Readiness database check timed out after %s seconds (%s: %s)",
             timeout_seconds,
+            type(exc).__name__,
+            exc,
         )
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=_READY_DEGRADED,
         )
-    except Exception:
-        logger.exception("Readiness database check failed")
+    except Exception as exc:
+        logger.warning(
+            "Readiness database check failed (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=_READY_DEGRADED,
