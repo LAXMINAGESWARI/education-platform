@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: backend
@@ -38,7 +38,7 @@ jobs:
 
   backend-fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -105,7 +105,7 @@ jobs:
 
   backend-ml:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
@@ -164,7 +164,7 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     needs: [backend-fast, backend-ml]
     defaults:
       run:
