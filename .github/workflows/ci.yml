@@ -10,6 +10,9 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # Green runs finish in about 35-45 minutes. 60 stops a hang well short of
+    # GitHub's 360-minute default without cutting off a healthy suite.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: backend
@@ -29,6 +32,9 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://education:education@localhost:5432/education_test
+      # libpq (psycopg, including `alembic upgrade`) waits forever unless this is set.
+      # asyncpg does not read it; tests cap that driver in tests/postgres_connect.py.
+      PGCONNECT_TIMEOUT: "5"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -38,11 +44,32 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src
+      - name: Wait for Postgres
+        run: |
+          set -euo pipefail
+          if ! command -v pg_isready >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql-client
+          fi
+          attempts=6
+          for attempt in $(seq 1 "$attempts"); do
+            if pg_isready -h localhost -p 5432 -U education -d education_test -t 5; then
+              echo "Postgres is accepting connections on localhost:5432/education_test."
+              exit 0
+            fi
+            echo "Postgres is not ready (attempt ${attempt}/${attempts})."
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 1
+            fi
+          done
+          echo "::error::Postgres did not become ready after ${attempts} attempts (5s connect timeout each). localhost:5432/education_test is unreachable."
+          exit 1
       - run: uv run alembic upgrade head
       - run: uv run pytest
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
