@@ -26,7 +26,6 @@ export function QuizPage() {
   const [starting, setStarting] = useState(true);
   const [lockDialog, setLockDialog] = useState<{ title: string; body: string } | null>(null);
   const submittingRef = useRef(false);
-  const quizLockRef = useRef<HTMLElement>(null);
   const copyNoticeTimer = useRef<number | null>(null);
   const [copyBlocked, setCopyBlocked] = useState(false);
 
@@ -39,6 +38,16 @@ export function QuizPage() {
       copyNoticeTimer.current = null;
     }, 2200);
   }, []);
+
+  const attachQuizLock = useCallback((node: HTMLElement | null) => {
+    if (!node) return;
+    const detach = installQuizCopyGuard(node, showCopyNotice);
+    node.dataset.quizCopyGuard = "on";
+    return () => {
+      delete node.dataset.quizCopyGuard;
+      detach();
+    };
+  }, [showCopyNotice]);
 
   const question = attempt?.questions[index];
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
@@ -85,13 +94,6 @@ export function QuizPage() {
       cancelled = true;
     };
   }, [quizId]);
-
-  const quizLocked = Boolean(attempt && question);
-  useEffect(() => {
-    const root = quizLockRef.current;
-    if (!quizLocked || !root) return;
-    return installQuizCopyGuard(root, showCopyNotice);
-  }, [quizLocked, showCopyNotice]);
 
   useEffect(() => {
     return () => {
@@ -179,7 +181,7 @@ export function QuizPage() {
             mark {passMark}%
           </p>
 
-          <article ref={quizLockRef} className="panel quiz-lock">
+          <article ref={attachQuizLock} className="panel quiz-lock">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
               <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>
