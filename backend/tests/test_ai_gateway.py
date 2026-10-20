@@ -50,7 +50,7 @@ from education_platform.ai_platform.gateway.registry import (
     resolve,
     step_ids,
 )
-from education_platform.ai_platform.gateway.usage import UsageRecord, write_usage
+from education_platform.ai_platform.gateway.usage import TokenUsage, UsageRecord, write_usage
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import _OPENROUTER_HEADERS, OpenRouterError
 from education_platform.db.url import to_sync_url
@@ -935,6 +935,7 @@ async def test_flag_on_guard_non_json_fails_closed(
         assert row.prompt_tokens == 11
         assert row.completion_tokens == 7
         assert row.cached_tokens == 4
+        assert row.served_model == settings.openrouter_model
         stored = " ".join(str(getattr(row, column.name)) for column in row.__table__.columns)
         assert message not in stored
         assert "this is not json" not in stored
@@ -1246,6 +1247,126 @@ async def test_cancelled_half_open_probe_releases_the_breaker(
     )
     assert chosen == [primary]
     assert result.text == "again"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_client_error_releases_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=1,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    seen: list[str] = []
+    statuses = iter((500, 400, 200))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        model = str(body["model"])
+        seen.append(model)
+        status = next(statuses)
+        if status == 200:
+            return httpx.Response(200, json=_completion("back", model=model))
+        return httpx.Response(status, json={"error": {"message": "bad request", "type": "error"}})
+
+    _bind_async(handler)
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "trip"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1030.0
+    with pytest.raises(OpenRouterError):
+        await complete(
+            "policy_chat.answer",
+            [{"role": "user", "content": "probe"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    again = await complete(
+        "policy_chat.answer",
+        [{"role": "user", "content": "next"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert seen == [primary, primary, primary]
+    assert again.text == "back"
+
+
+class _ProbeInterrupted(BaseException):
+    """Stands in for cancellation on the sync path."""
+
+
+def test_sync_half_open_probe_base_exception_releases_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(control, "_now", lambda: clock["t"])
+    settings = _settings(
+        ai_gateway_max_retries=0,
+        ai_gateway_circuit_failure_threshold=1,
+        ai_gateway_circuit_cooldown_seconds=30,
+    )
+    primary = resolve("policy_chat.answer", settings).model
+    _bind_sync(_Script([500]))
+    with pytest.raises(OpenRouterError):
+        complete_sync(
+            "policy_chat.answer",
+            [{"role": "user", "content": "trip"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    clock["t"] = 1030.0
+
+    def _interrupt(*_args: Any, **_kwargs: Any) -> tuple[str, TokenUsage, str]:
+        raise _ProbeInterrupted()
+
+    monkeypatch.setattr(api, "_once_sync", _interrupt)
+    with pytest.raises(_ProbeInterrupted):
+        complete_sync(
+            "policy_chat.answer",
+            [{"role": "user", "content": "probe"}],
+            ctx=_ctx("policy_chat", settings),
+        )
+    chosen: list[str] = []
+
+    def _ok(*_args: Any, **kwargs: Any) -> tuple[str, TokenUsage, str]:
+        selected = str(kwargs["selected"])
+        chosen.append(selected)
+        return ("again", TokenUsage(), selected)
+
+    monkeypatch.setattr(api, "_once_sync", _ok)
+    result = complete_sync(
+        "policy_chat.answer",
+        [{"role": "user", "content": "next"}],
+        ctx=_ctx("policy_chat", settings),
+    )
+    assert chosen == [primary]
+    assert result.text == "again"
+
+
+def test_sync_non_json_records_token_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    records: list[UsageRecord] = []
+    monkeypatch.setattr(api, "write_usage", records.append)
+    script = _Script([200], content="not json", model="openai/gpt-4o-mini")
+    _bind_sync(script)
+    with pytest.raises(OpenRouterError):
+        complete_sync(
+            "policy_chat.validator",
+            [{"role": "user", "content": "hello"}],
+            ctx=_ctx("policy_chat", _settings()),
+            response_format={"type": "json_object"},
+        )
+    assert len(records) == 1
+    record = records[0]
+    assert record.status == "error"
+    assert record.prompt_tokens == 11
+    assert record.completion_tokens == 7
+    assert record.cached_tokens == 4
+    assert record.cost_usd == Decimal("0.00021")
+    assert record.served_model == "openai/gpt-4o-mini"
 
 
 def test_generation_steps_strip_the_litellm_prefix() -> None:

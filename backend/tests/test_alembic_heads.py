@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -20,6 +22,18 @@ def _script() -> ScriptDirectory:
     cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     return ScriptDirectory.from_config(cfg)
+
+
+def _skip_unless_test_database(url: str) -> None:
+    name = urlsplit(url).path.rpartition("/")[2]
+    if "test" not in name:
+        pytest.skip("refusing to downgrade a database whose name does not contain 'test'")
+
+
+def test_downgrade_is_skipped_unless_the_database_name_contains_test() -> None:
+    with pytest.raises(pytest.skip.Exception):
+        _skip_unless_test_database("postgresql+psycopg://localhost/education")
+    _skip_unless_test_database("postgresql+psycopg://localhost/education_test")
 
 
 def test_alembic_script_has_one_head_and_a_linear_tip() -> None:
@@ -67,6 +81,7 @@ def test_gateway_migration_round_trip_on_seeded_db(seeded_db: Session, clean_db:
     """Upgrade, downgrade, and upgrade again while curriculum rows are present."""
     seeded_db.commit()
     sync_url = to_sync_url(clean_db)
+    _skip_unless_test_database(sync_url)
     cfg = _alembic_config(sync_url)
     command.upgrade(cfg, "head")
     before = _table_counts(sync_url, skip=frozenset({"llm_gateway_calls"}))
