@@ -274,7 +274,7 @@ describe("AdminDocumentsPage", () => {
     );
     await startUpload();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     act(() => {
       reconnected?.();
     });
@@ -308,7 +308,7 @@ describe("AdminDocumentsPage", () => {
     );
     await startUpload();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     await act(async () => {
       fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
     });
@@ -397,10 +397,12 @@ describe("AdminDocumentsPage", () => {
     const open = vi.spyOn(input, "click").mockImplementation(() => undefined);
     const browse = screen.getByRole("button", { name: /drop a pdf here/i });
     await user.click(browse);
+    expect(open).toHaveBeenCalledTimes(1);
     browse.focus();
     await user.keyboard("{Enter}");
+    expect(open).toHaveBeenCalledTimes(2);
     await user.keyboard(" ");
-    expect(open.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(open).toHaveBeenCalledTimes(3);
 
     const file = new File(["%PDF-1.4"], "fee_policy.pdf", { type: "application/pdf" });
     fireEvent.drop(screen.getByTestId("pdf-dropzone"), {

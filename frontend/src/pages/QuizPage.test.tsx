@@ -62,6 +62,12 @@ const attempt: StartAttemptResponse = {
   ],
 };
 
+function copyBlocked(node: HTMLElement): boolean {
+  const event = new Event("copy", { bubbles: true, cancelable: true });
+  node.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
 describe("QuizPage", () => {
   beforeEach(() => {
     startAttempt.mockReset();
@@ -186,6 +192,54 @@ describe("QuizPage", () => {
       fireEvent.copy(screen.getByRole("heading", { name: "Properties of Rectangles and Squares Quiz" })),
     ).toBe(true);
     expect(screen.getByText("Copy and paste are disabled during quizzes")).toBeInTheDocument();
+  });
+
+  it("drops the copy guard when the question changes and when the page unmounts", async () => {
+    startAttempt.mockResolvedValue({
+      ...attempt,
+      questions: [
+        attempt.questions[0]!,
+        {
+          number: 2,
+          difficulty: null,
+          prompt: "What is a rectangle?",
+          options: [
+            { label: "A", text: "Four right angles" },
+            { label: "B", text: "A circle" },
+          ],
+        },
+      ],
+    });
+    const view = render(
+      <MemoryRouter
+        initialEntries={["/quizzes/quiz-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/quizzes/:quizId" element={<QuizPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const firstPrompt = await screen.findByText("What is a square?");
+    const firstLock = firstPrompt.closest(".quiz-lock");
+    expect(firstLock).toBeInstanceOf(HTMLElement);
+    if (!(firstLock instanceof HTMLElement)) return;
+    expect(copyBlocked(firstLock)).toBe(true);
+
+    fireEvent.click(screen.getByRole("radio", { name: /A rectangle with equal sides/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Next question" }));
+
+    const secondPrompt = await screen.findByText("What is a rectangle?");
+    const secondLock = secondPrompt.closest(".quiz-lock");
+    expect(secondLock).toBeInstanceOf(HTMLElement);
+    if (!(secondLock instanceof HTMLElement)) return;
+    expect(secondLock).not.toBe(firstLock);
+    expect(copyBlocked(firstLock)).toBe(false);
+    expect(copyBlocked(secondLock)).toBe(true);
+
+    view.unmount();
+    expect(copyBlocked(secondLock)).toBe(false);
   });
 
   it("does not submit the same attempt twice on a double click", async () => {

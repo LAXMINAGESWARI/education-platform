@@ -3891,9 +3891,8 @@ button.admin-published-row {
   flex: none;
 }
 
-.progress-reconnect__placeholder {
-  display: block;
-  height: 2rem;
+.progress-reconnect__live {
+  margin: 0;
 }
 
 .progress-reconnect__pill {

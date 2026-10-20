@@ -89,6 +89,7 @@ export function CurriculumMaterialUpload({
       });
       await followVersion(accepted.version_id, abort);
       if (abort.signal.aborted) return;
+      // Resume uses followVersion directly and must keep the chosen file.
       setFile(null);
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;

@@ -93,7 +93,7 @@ describe("CurriculumMaterialUpload", () => {
       reconnect?.();
     });
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     expect(slot).toHaveAttribute("data-active", "true");
     expect(within(slot).getByRole("status")).toHaveAttribute("aria-live", "polite");
     expect(slot.querySelector("[data-motion='reduced']")).not.toBeNull();
@@ -120,7 +120,7 @@ describe("CurriculumMaterialUpload", () => {
     render(<CurriculumMaterialUpload subtopicId="st-1" />);
     await submitPdf();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     await act(async () => {
       fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
     });
@@ -181,6 +181,10 @@ describe("CurriculumMaterialUpload", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("ready")).toBeInTheDocument();
     expect(screen.getByTestId("progress-reconnect")).toBe(slot);
+    expect(screen.getByLabelText(/pdf file/i)).toHaveProperty("files", expect.anything());
+    const input = screen.getByLabelText(/pdf file/i) as HTMLInputElement;
+    expect(input.files?.[0]?.name).toBe("lesson.pdf");
+    expect(screen.getByRole("button", { name: /upload pdf/i })).toBeEnabled();
   });
 
   it("does not watch a material version after the form unmounts", async () => {

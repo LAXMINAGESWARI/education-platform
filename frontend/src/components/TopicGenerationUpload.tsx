@@ -276,6 +276,27 @@ function phaseStatusCopy(run: GenerationRun): string {
   }
 }
 
+/** Retry refetches a finished or parked review run and does not open another stream. */
+function phaseStreamsOnRetry(phase: RunPhase): boolean {
+  switch (phase) {
+    case "indexing":
+    case "outlining":
+    case "generating":
+      return true;
+    case "outline_review":
+    case "qa_review":
+    case "failed":
+    case "published":
+    case "discarded":
+      return false;
+    default: {
+      const _never: never = phase;
+      void _never;
+      return false;
+    }
+  }
+}
+
 function streamLeavesUiIdle(phase: RunPhase): boolean {
   switch (phase) {
     case "outline_review":
@@ -794,7 +815,7 @@ export function TopicGenerationUpload({
         const review = await getGenerationReview(fresh.id);
         if (!abort.signal.aborted) setWorkspace(review);
       }
-      if (isInFlightGenerationPhase(fresh.phase)) {
+      if (phaseStreamsOnRetry(fresh.phase)) {
         await followRun(fresh.id, abort);
       }
     } catch (err) {
