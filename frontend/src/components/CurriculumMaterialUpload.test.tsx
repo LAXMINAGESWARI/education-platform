@@ -75,14 +75,22 @@ describe("CurriculumMaterialUpload", () => {
     });
   });
 
-  it("shows the reconnect give-up error", async () => {
-    vi.mocked(watchMaterialVersionStatus).mockRejectedValue(
-      new ProgressReconnectError(8, 45_000, new TypeError("connection reset")),
-    );
+  it("shows Reconnecting and then the give-up error", async () => {
+    let fail: ((error: unknown) => void) | undefined;
+    vi.mocked(watchMaterialVersionStatus).mockImplementation((_versionId, options) => {
+      options?.onReconnecting?.({ attempt: 4, delayMs: 8_000 });
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
 
     render(<CurriculumMaterialUpload subtopicId="st-1" />);
     await submitPdf();
 
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Lost the connection to progress updates. Try again.",
     );

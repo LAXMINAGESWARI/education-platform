@@ -274,7 +274,8 @@ describe("AdminDocumentsPage", () => {
     });
   });
 
-  it("shows the reconnect give-up on a document upload", async () => {
+  it("shows Reconnecting and then the give-up error on a document upload", async () => {
+    let fail: ((error: unknown) => void) | undefined;
     vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
       document_id: "doc-2",
       version_id: "ver-2",
@@ -284,9 +285,12 @@ describe("AdminDocumentsPage", () => {
       lifecycle_status: "processing",
       ingest_job_id: "job-2",
     });
-    vi.mocked(watchKnowledgeDocumentVersionStatus).mockRejectedValue(
-      new ProgressReconnectError(8, 45_000, new TypeError("connection reset")),
-    );
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockImplementation((_versionId, options) => {
+      options?.onReconnecting?.({ attempt: 4, delayMs: 8_000 });
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
 
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -295,6 +299,10 @@ describe("AdminDocumentsPage", () => {
     );
     await startUpload();
 
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Lost the connection to progress updates. Try again.",
     );

@@ -843,16 +843,24 @@ describe("TopicGenerationUpload", () => {
     });
   });
 
-  it("shows the reconnect give-up error", async () => {
+  it("shows Reconnecting and then the give-up error", async () => {
     vi.mocked(listTopicGenerationRuns).mockResolvedValue([
       run({ phase: "indexing", outline: null }),
     ]);
-    vi.mocked(subscribeGenerationRun).mockRejectedValue(
-      new ProgressReconnectError(8, 45_000, new TypeError("connection reset")),
-    );
+    let fail: ((error: unknown) => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      options?.onReconnecting?.({ attempt: 4, delayMs: 8_000 });
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
 
     renderPanel();
 
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Lost the connection to progress updates. Try again.",
     );

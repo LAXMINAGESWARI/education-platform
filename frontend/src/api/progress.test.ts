@@ -526,20 +526,25 @@ describe("progress SSE client", () => {
     },
   );
 
+  function knowledgeDocumentFrame(lifecycle: string, id: string): string {
+    return `id: ${id}\nevent: snapshot\ndata: ${JSON.stringify({
+      id: "ver-1",
+      document_id: "doc-1",
+      version_number: 1,
+      lifecycle_status: lifecycle,
+      failure_reason: null,
+      chunk_count: 0,
+    })}\n\n`;
+  }
+
   it.each(["ready", "failed", "published", "superseded", "archived"] as const)(
-    "stops reconnecting when a version reaches %s",
+    "stops a knowledge-document stream when the version reaches %s",
     async (lifecycle) => {
       vi.useFakeTimers();
       vi.spyOn(Math, "random").mockReturnValue(0);
       const onSnapshot = vi.fn();
       vi.mocked(apiStream).mockResolvedValue(
-        streamThenError([
-          `id: version:ver-1:${lifecycle}\nevent: snapshot\ndata: ${JSON.stringify({
-            id: "ver-1",
-            document_id: "doc-1",
-            lifecycle_status: lifecycle,
-          })}\n\n`,
-        ]),
+        streamThenError([knowledgeDocumentFrame(lifecycle, `version:ver-1:${lifecycle}`)]),
       );
 
       const pending = settle(subscribeProgress(versionSubject("ver-1"), { onSnapshot }));
@@ -553,6 +558,50 @@ describe("progress SSE client", () => {
         signal: undefined,
         lastEventId: undefined,
       });
+    },
+  );
+
+  it.each(["draft", "processing"] as const)(
+    "keeps a knowledge-document stream open while the version is %s",
+    async (lifecycle) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const onSnapshot = vi.fn();
+      vi.mocked(apiStream)
+        .mockResolvedValueOnce(
+          streamResponse([knowledgeDocumentFrame(lifecycle, "version:ver-1:open")]),
+        )
+        .mockResolvedValueOnce(
+          streamResponse([
+            knowledgeDocumentFrame(lifecycle, "version:ver-1:next"),
+            'event: close\ndata: {"reason":"terminal"}\n\n',
+          ]),
+        );
+
+      let settled = false;
+      const pending = settle(subscribeProgress(versionSubject("ver-1"), { onSnapshot })).then(
+        (result) => {
+          settled = true;
+          return result;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(apiStream).toHaveBeenCalledTimes(1);
+      expect(onSnapshot).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(apiStream).toHaveBeenCalledTimes(2);
+      expect(apiStream).toHaveBeenNthCalledWith(2, "/progress/versions/ver-1", {
+        signal: undefined,
+        lastEventId: "version:ver-1:open",
+      });
+      expect(onSnapshot.mock.calls.map((call) => call[0]?.lifecycle_status)).toEqual([
+        lifecycle,
+        lifecycle,
+      ]);
     },
   );
 
@@ -616,6 +665,38 @@ describe("progress SSE client", () => {
     await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_MS);
     expect(apiStream).toHaveBeenCalledTimes(1);
   });
+
+  it.each([408, 429, 500, 502, 503, 504])(
+    "retries HTTP %s and does not treat it as a final error",
+    async (status) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const onSnapshot = vi.fn();
+      vi.mocked(apiStream)
+        .mockRejectedValueOnce(new ApiError("unavailable", status, null))
+        .mockResolvedValueOnce(
+          streamResponse([
+            snapshotFrame("indexing", "run-1:abc"),
+            'event: close\ndata: {"reason":"terminal"}\n\n',
+          ]),
+        );
+
+      const pending = settle(subscribeProgress(runSubject("run-1"), { onSnapshot }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(apiStream).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0) - 1);
+      expect(apiStream).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
+
+      expect(result.ok).toBe(true);
+      expect(apiStream).toHaveBeenCalledTimes(2);
+      expect(onSnapshot).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(PROGRESS_RECONNECT_MAX_ELAPSED_MS);
+      expect(apiStream).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("retries a gateway error and then applies the resumed snapshot", async () => {
     vi.useFakeTimers();
