@@ -152,9 +152,10 @@ async def test_multi_row_result_calls_the_llm(monkeypatch: pytest.MonkeyPatch) -
     fake, captured = _fake_chat_completion("Both students are passing their classes.")
     monkeypatch.setattr(_MODULE, "chat_completion", fake)
 
-    rows = [{"name": "A", "passed": True}, {"name": "B", "passed": True}]
+    # Past the 20-row deterministic table, so this still reaches the model.
+    rows = [{"name": "A", "passed": True} for _ in range(21)]
     result = await compose_answer(
-        _base_state(question="are my students passing?", query_result=rows, result_row_count=2)
+        _base_state(question="are my students passing?", query_result=rows, result_row_count=21)
     )
 
     assert _answer(result) == "Both students are passing their classes."
@@ -167,9 +168,8 @@ async def test_multi_row_result_calls_the_llm(monkeypatch: pytest.MonkeyPatch) -
 async def test_single_row_multiple_columns_calls_the_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Row-count 1 but more than one column — not the single-scalar template shape.
-    fake, _ = _fake_chat_completion("Aisha is in grade 8, section 8A.")
-    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    # One row, two columns: a deterministic markdown table, not a model summary.
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
 
     result = await compose_answer(
         _base_state(
@@ -178,7 +178,7 @@ async def test_single_row_multiple_columns_calls_the_llm(
             result_row_count=1,
         )
     )
-    assert _answer(result) == "Aisha is in grade 8, section 8A."
+    assert _answer(result) == "| Grade | Section |\n| --- | --- |\n| 8 | 8A |"
 
 
 # --- Fix (row 15/16 finding): small single-column lists are enumerated, not LLM-summarized
@@ -246,51 +246,37 @@ async def test_full_name_roster_is_not_enumerated_even_when_short(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Same shape (2 rows, one column each) as the enumerable case, but the column is
-    # `full_name` (a person-identifying column, not an attribute label) -- must still go
-    # through the LLM path, not be silently deduplicated.
-    fake, _ = _fake_chat_completion("Your students are Aisha Rahman and Zainab Abdullah.")
-    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    # `full_name`. A small table lists every row and does not deduplicate.
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
     rows = [{"full_name": "Aisha Rahman"}, {"full_name": "Zainab Abdullah"}]
     result = await compose_answer(_base_state(query_result=rows, result_row_count=2))
-    assert _answer(result) == "Your students are Aisha Rahman and Zainab Abdullah."
+    answer = _answer(result)
+    assert "Aisha Rahman" in answer
+    assert "Zainab Abdullah" in answer
+    assert answer.startswith("| Full name |")
 
 
 async def test_full_name_roster_with_a_repeated_value_reaches_the_llm_not_hidden(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # If a duplicate-row bug (or two same-named students) ever produces a repeated
-    # full_name, that must surface to the LLM path as real data to describe -- never get
-    # silently collapsed to one entry the way a repeated subject/section name correctly
-    # would be.
-    captured: dict[str, object] = {}
-
-    async def _fake(
-        messages: list[dict[str, str]], *, settings: object, temperature: float = 0.0
-    ) -> str:
-        captured["messages"] = messages
-        return "Two records for Aisha Rahman were found."
-
-    monkeypatch.setattr(_MODULE, "chat_completion", _fake)
+    # full_name, a small table keeps both rows. It does not collapse them the way a
+    # repeated subject name is collapsed.
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
     rows = [{"full_name": "Aisha Rahman"}, {"full_name": "Aisha Rahman"}]
     result = await compose_answer(_base_state(query_result=rows, result_row_count=2))
-    assert _answer(result) == "Two records for Aisha Rahman were found."
-    messages = cast(list[dict[str, str]], captured["messages"])
-    # Both raw rows were handed to the model -- the duplication itself was never erased
-    # before the model even saw it.
-    assert messages[-1]["content"].count('"Aisha Rahman"') == 2
+    assert _answer(result).count("Aisha Rahman") == 2
 
 
 async def test_non_name_single_column_list_is_not_enumerated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A bare list of measured values (no accompanying label) carries the same "is a
-    # repeat the same fact or two coincidentally-equal ones?" ambiguity as a roster --
-    # only the literal column `name` is in scope, nothing else.
-    fake, _ = _fake_chat_completion("Scores of 82.5% and 91.0% were recorded.")
-    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    # A bare list of measured values is not the name/subject/section enumeration, which
+    # would collapse repeats. A small table keeps every row.
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
     rows = [{"mastery_percent": 82.5}, {"mastery_percent": 91.0}]
     result = await compose_answer(_base_state(query_result=rows, result_row_count=2))
-    assert _answer(result) == "Scores of 82.5% and 91.0% were recorded."
+    assert _answer(result) == "| Mastery percent |\n| --- |\n| 82.5 |\n| 91.0 |"
 
 
 async def test_single_column_list_at_cap_boundary_does_not_call_the_llm(
@@ -307,24 +293,22 @@ async def test_single_column_list_at_cap_boundary_does_not_call_the_llm(
 async def test_single_column_list_past_cap_calls_the_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake, _ = _fake_chat_completion("There are 11 matching subjects.")
+    fake, _ = _fake_chat_completion("There are 21 matching subjects.")
     monkeypatch.setattr(_MODULE, "chat_completion", fake)
-    rows = [{"name": f"Subject {i}"} for i in range(11)]  # one past the cap
-    result = await compose_answer(_base_state(query_result=rows, result_row_count=11))
-    assert _answer(result) == "There are 11 matching subjects."
+    rows = [{"name": f"Subject {i}"} for i in range(21)]  # past the table cap too
+    result = await compose_answer(_base_state(query_result=rows, result_row_count=21))
+    assert _answer(result) == "There are 21 matching subjects."
 
 
 async def test_multi_column_small_list_still_calls_the_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Same row count as the enumerable case, but more than one column per row -- must NOT
-    # be enumerated (no safe generic template exists for multi-column rows); still the
-    # LLM path, unaffected by this fix.
-    fake, _ = _fake_chat_completion("Two students: A and B.")
-    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    # Same row count as the enumerable case, but more than one column per row. A small
+    # table renders every cell; it is not the single-column enumeration and not a model call.
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
     rows = [{"name": "A", "grade": "8"}, {"name": "B", "grade": "9"}]
     result = await compose_answer(_base_state(query_result=rows, result_row_count=2))
-    assert _answer(result) == "Two students: A and B."
+    assert _answer(result) == "| Name | Grade |\n| --- | --- |\n| A | 8 |\n| B | 9 |"
 
 
 async def test_llm_failure_falls_back_to_a_generic_honest_summary(
@@ -337,9 +321,12 @@ async def test_llm_failure_falls_back_to_a_generic_honest_summary(
 
     monkeypatch.setattr(_MODULE, "chat_completion", _raising)
 
-    # Multi-column, so this genuinely reaches the LLM path (a single-column list this
-    # short is now enumerated deterministically instead — see the tests above).
-    rows = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}, {"id": 3, "name": "C"}]
+    # Wider than the 5-column table, so a model failure still falls back honestly.
+    rows = [
+        {"c1": 1, "c2": "A", "c3": "x", "c4": "y", "c5": "z", "c6": "q"},
+        {"c1": 2, "c2": "B", "c3": "x", "c4": "y", "c5": "z", "c6": "q"},
+        {"c1": 3, "c2": "C", "c3": "x", "c4": "y", "c5": "z", "c6": "q"},
+    ]
     result = await compose_answer(_base_state(query_result=rows, result_row_count=3))
 
     assert _answer(result) == "Found 3 matching records."
@@ -757,13 +744,15 @@ async def test_multi_attribute_roster_keeps_same_named_students_as_separate_entr
 async def test_single_row_with_several_columns_still_uses_the_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake, _ = _fake_chat_completion("Rania Yusuf took the last Maths quiz, scoring 69.28%.")
-    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
     rows = [{"full_name": "Rania Yusuf", "score_percent": 69.28, "submitted_at": "2026-10-07"}]
 
     result = await compose_answer(_base_state(query_result=rows, result_row_count=1))
 
-    assert _answer(result) == "Rania Yusuf took the last Maths quiz, scoring 69.28%."
+    answer = _answer(result)
+    assert answer.startswith("| Full name | Score percent | Submitted at |")
+    assert "Rania Yusuf" in answer
+    assert "69.28" in answer
 
 
 async def test_subject_category_list_is_enumerated_not_summarized(

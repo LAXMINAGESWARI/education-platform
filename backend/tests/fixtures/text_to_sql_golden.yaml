@@ -1,0 +1,8 @@
+version: 1
+questions:
+  - id: sample-my-students
+    question: "How many students do I teach in total?"
+    expect_intent: count_my_students
+  - id: sample-subjects
+    question: "What subjects do I teach?"
+    expect_intent: my_subjects

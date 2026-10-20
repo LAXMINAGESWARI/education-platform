@@ -53,6 +53,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-fpr", type=float, default=0.01)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--baseline", type=Path, help="results.json or baseline json to compare")
+    parser.add_argument(
+        "--data-guard-batch",
+        action="store_true",
+        help="send data.jev_injection and data.jev_off_topic in one post_decisions per row",
+    )
     args = parser.parse_args(argv)
     surfaces = [s.strip() for s in args.surfaces.split(",") if s.strip()]
     if not surfaces or set(surfaces) - set(SURFACES):
@@ -114,6 +119,11 @@ def print_plan(dataset: Dataset, args: argparse.Namespace, settings: Settings) -
     )
     if est.total_usd * 1.5 > args.max_usd:
         print("WARNING: the cap is likely to stop the run before it finishes.")
+    if args.data_guard_batch:
+        print(
+            "data guard batch: data.jev_injection and data.jev_off_topic share one "
+            "post_decisions per row; spend is recorded on the injection result"
+        )
 
 
 def write_report(
@@ -186,6 +196,7 @@ async def run_live(
             max_usd=args.max_usd,
             concurrency=args.concurrency,
             progress=True,
+            data_guard_batch=args.data_guard_batch,
         )
     finally:
         if owns:

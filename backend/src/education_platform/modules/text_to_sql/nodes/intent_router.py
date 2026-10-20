@@ -39,6 +39,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from education_platform.core.config import get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion_json
+from education_platform.modules.text_to_sql.llm import gateway_json
+from education_platform.modules.text_to_sql.meter import note_llm_call
+from education_platform.modules.text_to_sql.pipeline import use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import TextToSQLState
 
 _TEMPLATE_FILE: Final[str] = "intent_templates.yaml"
@@ -338,22 +341,24 @@ async def intent_router(state: TextToSQLState) -> TextToSQLState:
         settings = get_settings()
         if not settings.openrouter_configured:
             return _free_form(state)
-        data = await chat_completion_json(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a conservative intent classifier. Use only the governed "
-                        "catalog below. Return JSON with intent, confidence, parameters, "
-                        "operation, ambiguous, and boundary_conflict. Choose null intent "
-                        "when no template is an exact semantic match. Never classify a "
-                        "template requiring signoff as usable.\n\n" + _router_context(catalog)
-                    ),
-                },
-                {"role": "user", "content": state.get("question") or ""},
-            ],
-            settings=settings,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a conservative intent classifier. Use only the governed "
+                    "catalog below. Return JSON with intent, confidence, parameters, "
+                    "operation, ambiguous, and boundary_conflict. Choose null intent "
+                    "when no template is an exact semantic match. Never classify a "
+                    "template requiring signoff as usable.\n\n" + _router_context(catalog)
+                ),
+            },
+            {"role": "user", "content": state.get("question") or ""},
+        ]
+        note_llm_call()
+        if use_text_to_sql_gateway(settings, state):
+            data = await gateway_json("text_to_sql.intent", messages, settings)
+        else:
+            data = await chat_completion_json(messages, settings=settings)
         decision = _RouterDecision.model_validate(data)
     except (OSError, ValueError, OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
         return _free_form(state)

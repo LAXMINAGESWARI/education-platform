@@ -64,6 +64,7 @@ from __future__ import annotations
 from typing import Any, Final
 
 from education_platform.core.config import Settings, get_settings
+from education_platform.core.llm import OpenRouterError
 from education_platform.modules.guard.classifier import (
     DATA_GPT_OFF_TOPIC,
     DATA_OFF_TOPIC,
@@ -73,6 +74,9 @@ from education_platform.modules.guard.classifier import (
     legacy_gpt_flag,
 )
 from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
+from education_platform.modules.text_to_sql.llm import gateway_json
+from education_platform.modules.text_to_sql.meter import note_llm_call
+from education_platform.modules.text_to_sql.pipeline import use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import (
     OFF_TOPIC_REJECTED,
     TextToSQLState,
@@ -97,6 +101,7 @@ async def question_validator(state: TextToSQLState) -> TextToSQLState:
         return {**state}
 
     try:
+        note_llm_call()
         probability = await classify_noul(
             state=guard_state(question),
             question=DATA_OFF_TOPIC,
@@ -132,13 +137,27 @@ async def _gpt_off_topic_fallback(
     settings: Settings,
 ) -> TextToSQLState:
     try:
-        flagged = await legacy_gpt_flag(
-            settings=settings,
-            system=DATA_GPT_OFF_TOPIC,
-            user=question,
-            field="off_topic",
-        )
-    except JudgeError:
+        note_llm_call()
+        if use_text_to_sql_gateway(settings, state):
+            data = await gateway_json(
+                "text_to_sql.validator",
+                [
+                    {"role": "system", "content": DATA_GPT_OFF_TOPIC},
+                    {"role": "user", "content": question},
+                ],
+                settings,
+            )
+            flagged = data.get("off_topic")
+            if not isinstance(flagged, bool):
+                raise JudgeError("GPT classifier omitted off_topic")
+        else:
+            flagged = await legacy_gpt_flag(
+                settings=settings,
+                system=DATA_GPT_OFF_TOPIC,
+                user=question,
+                field="off_topic",
+            )
+    except (JudgeError, OpenRouterError):
         return {
             **state,
             "error": format_error(OFF_TOPIC_REJECTED, _GUARD_UNAVAILABLE_REPLY),

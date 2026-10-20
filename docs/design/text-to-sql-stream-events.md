@@ -24,8 +24,11 @@ is a separate endpoint and always runs the lean pipeline.
 
 `POST /api/v1/text-to-sql/ask/stream`
 
-- Auth: `require_role("teacher")`, the same gate as `/text-to-sql/ask`. Identity
-  (`user_id`, `user_role`, `institution_id`) comes only from the verified JWT.
+- Auth: the teacher allow-list from `require_role("teacher")`, the same gate as
+  `/text-to-sql/ask` (`Requires one of: teacher`). The handler resolves the principal
+  with `get_current_user_detached` so the request database session is released before
+  the first frame. Identity (`user_id`, `user_role`, `institution_id`) comes only from
+  the verified JWT.
 - Success response: `200`, `Content-Type: text/event-stream`, the same `SSE_HEADERS`
   as `modules/progress/router.py`. Auth failures stay ordinary JSON (401/403)
   before the stream starts.

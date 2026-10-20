@@ -12,13 +12,20 @@ anywhere in this codebase — `authorization.scope.Scope` has no parent concept 
 each need their own review before this endpoint should serve them. Widening the allow-list
 here is a deliberate future change, not a bug to fix.
 
-**Identity**: `question` is the *only* field this endpoint reads from the request body.
-`user_id`/`user_role`/`institution_id` come only from `principal` (`api.deps.Principal`,
-resolved from the verified JWT by `require_role`/`get_current_user`) — the same identity
-rule Tasks 6-10 enforce inside the pipeline, applied one layer further out. `user_role` is
-hardcoded to `"teacher"` here rather than read off `principal.roles`: this endpoint is the
-teacher capability specifically, so the pipeline should apply teacher scoping even for a
-principal who happens to also hold another role, not whichever role happened to be "first."
+**Identity**: `question` is the *only* field `POST /text-to-sql/ask` reads from the request
+body. The progress stream also reads a client `request_id`; it does not read identity from
+the body. `user_id`/`user_role`/`institution_id` come only from `principal`
+(`api.deps.Principal`, resolved from the verified JWT) — the same identity rule Tasks 6-10
+enforce inside the pipeline, applied one layer further out. `user_role` is hardcoded to
+`"teacher"` here rather than read off `principal.roles`: this endpoint is the teacher
+capability specifically, so the pipeline should apply teacher scoping even for a principal
+who happens to also hold another role, not whichever role happened to be "first."
+
+**Progress stream**: `POST /text-to-sql/ask/stream` always runs the lean pipeline and
+writes the shared progress envelope (`docs/design/text-to-sql-stream-events.md`). It
+checks the teacher role the same way `require_role("teacher")` does, but resolves the
+principal with `get_current_user_detached` so the request database session is released
+before the first frame. `Last-Event-ID` is ignored.
 
 **The compiled graph is built once, at import time** (`_GRAPH`), not per request.
 `build_text_to_sql_graph()` takes no per-request arguments — every node reads identity from
@@ -50,14 +57,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Final
+from typing import Final, cast
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from education_platform.api.deps import Principal, require_role
+from education_platform.api.deps import Principal, get_current_user_detached, require_role
+from education_platform.core.config import get_settings
+from education_platform.modules.progress.sse import SSE_HEADERS
 from education_platform.modules.text_to_sql.graph import build_text_to_sql_graph
+from education_platform.modules.text_to_sql.lean import run_lean
+from education_platform.modules.text_to_sql.meter import reset_meter, start_meter
+from education_platform.modules.text_to_sql.pipeline import LEAN, pipeline_mode
 from education_platform.modules.text_to_sql.state import TextToSQLState
+from education_platform.modules.text_to_sql.stream import iter_ask_stream
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +82,7 @@ router = APIRouter(tags=["text-to-sql"])
 _GRAPH = build_text_to_sql_graph()
 
 # Generous enough for a few LLM round-trips (a retry or two through generate_sql, plus
-# compose_answer) and execute_sql's own 5s DB statement timeout, without leaving a hung
+# compose_answer) and execute_sql's own 15s DB statement timeout, without leaving a hung
 # OpenRouter call able to tie up a request indefinitely -- nothing upstream of this
 # endpoint enforces an overall wall-clock budget on its own.
 _GRAPH_TIMEOUT_SECONDS: Final[float] = 60.0
@@ -81,14 +96,21 @@ class AskIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class AskStreamIn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    request_id: UUID
+
+
 class AskOut(BaseModel):
     natural_answer: str
     confidence: str | None
     provenance: str | None
 
 
-def _initial_state(*, question: str, principal: Principal) -> TextToSQLState:
-    return {
+def _initial_state(
+    *, question: str, principal: Principal, request_id: str | None = None
+) -> TextToSQLState:
+    state: TextToSQLState = {
         "question": question,
         "user_id": str(principal.user_id),
         "user_role": "teacher",
@@ -106,6 +128,18 @@ def _initial_state(*, question: str, principal: Principal) -> TextToSQLState:
         "error": None,
         "audit_entry": None,
     }
+    if request_id is not None:
+        state["stream_request_id"] = request_id
+    return state
+
+
+def _require_teacher(principal: Principal) -> None:
+    """Same allow-list and detail as ``require_role("teacher")``."""
+    if "teacher" not in principal.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires one of: teacher",
+        )
 
 
 @router.post("/text-to-sql/ask", response_model=AskOut)
@@ -121,10 +155,22 @@ async def ask(
     initial = _initial_state(question=body.question, principal=principal)
 
     try:
-        result = await asyncio.wait_for(
-            _GRAPH.ainvoke(initial, config={"recursion_limit": _RECURSION_LIMIT}),
-            timeout=_GRAPH_TIMEOUT_SECONDS,
-        )
+        if pipeline_mode(get_settings()) == LEAN:
+            result: TextToSQLState = await asyncio.wait_for(
+                run_lean(initial), timeout=_GRAPH_TIMEOUT_SECONDS
+            )
+        else:
+            token = start_meter()
+            try:
+                result = cast(
+                    TextToSQLState,
+                    await asyncio.wait_for(
+                        _GRAPH.ainvoke(initial, config={"recursion_limit": _RECURSION_LIMIT}),
+                        timeout=_GRAPH_TIMEOUT_SECONDS,
+                    ),
+                )
+            finally:
+                reset_meter(token)
     except TimeoutError:
         logger.error(
             "text_to_sql.ask: graph run exceeded %.0fs, user_id=%s",
@@ -154,4 +200,26 @@ async def ask(
         natural_answer=result.get("natural_answer") or _UNEXPECTED_FAILURE_ANSWER,
         confidence=result.get("confidence"),
         provenance=result.get("provenance"),
+    )
+
+
+@router.post("/text-to-sql/ask/stream")
+async def ask_stream(
+    body: AskStreamIn,
+    principal: Principal = Depends(get_current_user_detached),
+) -> StreamingResponse:
+    """Stream one lean ask. A dropped client re-posts the same ``request_id``."""
+    _require_teacher(principal)
+    request_id = str(body.request_id)
+    initial = _initial_state(question=body.question, principal=principal, request_id=request_id)
+    return StreamingResponse(
+        iter_ask_stream(
+            initial,
+            request_id=request_id,
+            timeout_seconds=_GRAPH_TIMEOUT_SECONDS,
+            timeout_message=_TIMEOUT_ANSWER,
+            unexpected_message=_UNEXPECTED_FAILURE_ANSWER,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
     )

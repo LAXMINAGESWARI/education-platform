@@ -6,6 +6,7 @@ Offline by default. Paid OpenRouter calls happen only with `--live`.
 cd backend
 uv run python scripts/eval_chat_guard.py --dry-run                 # rows + cost, no network
 uv run python scripts/eval_chat_guard.py --live --max-usd 2.00     # the paid run
+uv run python scripts/eval_chat_guard.py --surfaces data --dry-run --data-guard-batch
 uv run python scripts/eval_chat_guard.py --rescore evals/guard/results/<run>/raw_scores.jsonl
 uv run python scripts/eval_chat_guard.py --rescore evals/guard/datasets/raw_scores_a0b00a3.jsonl --threshold 0.85 --surfaces policy
 ```

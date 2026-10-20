@@ -75,6 +75,7 @@ import re
 from typing import Any, Final
 
 from education_platform.core.config import Settings, get_settings
+from education_platform.core.llm import OpenRouterError
 from education_platform.modules.guard.classifier import (
     DATA_GPT_INJECTION,
     DATA_INJECTION,
@@ -84,6 +85,9 @@ from education_platform.modules.guard.classifier import (
     legacy_gpt_flag,
 )
 from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
+from education_platform.modules.text_to_sql.llm import gateway_json
+from education_platform.modules.text_to_sql.meter import note_llm_call
+from education_platform.modules.text_to_sql.pipeline import use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
     TextToSQLState,
@@ -141,6 +145,7 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
 
     try:
         # The question text only. Identity stays in state for apply_role_scope.
+        note_llm_call()
         probability = await classify_noul(
             state=guard_state(question),
             question=DATA_INJECTION,
@@ -174,13 +179,27 @@ async def _gpt_injection_fallback(
 ) -> TextToSQLState:
     """Regex already ran. HTTP 402 uses the pre-Jev GPT classifier."""
     try:
-        flagged = await legacy_gpt_flag(
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-        )
-    except JudgeError:
+        note_llm_call()
+        if use_text_to_sql_gateway(settings, state):
+            data = await gateway_json(
+                "text_to_sql.guard",
+                [
+                    {"role": "system", "content": DATA_GPT_INJECTION},
+                    {"role": "user", "content": question},
+                ],
+                settings,
+            )
+            flagged = data.get("injection")
+            if not isinstance(flagged, bool):
+                raise JudgeError("GPT classifier omitted injection")
+        else:
+            flagged = await legacy_gpt_flag(
+                settings=settings,
+                system=DATA_GPT_INJECTION,
+                user=question,
+                field="injection",
+            )
+    except (JudgeError, OpenRouterError):
         return {
             **state,
             "audit_entry": _note(state, guard_stage="gpt_error"),

@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     ai_gateway_features: str = ""
     ai_gateway_policy_chat: bool = False
     ai_gateway_text_to_sql: bool = False
+    # Teacher ask pipeline. "lean" runs guards, intent, and speculative SQL
+    # together and repairs at most once. Anything else stays on the legacy graph.
+    text_to_sql_pipeline: str = "legacy"
+    # Lean guards: one Jev request for injection and off-topic when true.
+    # False keeps the two separate calls so the guard eval can compare them.
+    text_to_sql_guard_batch: bool = True
     ai_gateway_generation: bool = False
     ai_gateway_feedback: bool = False
     ai_gateway_review_chat: bool = False

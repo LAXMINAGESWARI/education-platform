@@ -134,6 +134,7 @@ would be a worse failure mode than a defensive check that should never fire.
 from __future__ import annotations
 
 import json
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
@@ -142,10 +143,15 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from education_platform.core.config import get_settings
+from education_platform.ai_platform.gateway.api import CallContext, complete_stream
+from education_platform.core.config import Settings, get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion
+from education_platform.modules.text_to_sql.compose_stream import current_compose_stream
+from education_platform.modules.text_to_sql.llm import gateway_text
+from education_platform.modules.text_to_sql.meter import note_llm_call, note_tokens
 from education_platform.modules.text_to_sql.nodes.execute_sql import ROW_CAP, is_zero_result
 from education_platform.modules.text_to_sql.nodes.sanity_check import PERCENTAGE_COLUMNS
+from education_platform.modules.text_to_sql.pipeline import use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import TextToSQLState
 
 _ZERO_ROW_ANSWER: Final[str] = "I couldn't find any records matching that question."
@@ -525,11 +531,91 @@ def _fallback_summary(rows: list[dict[str, Any]]) -> str:
     return f"Found {count} matching {noun}."
 
 
-async def _llm_answer(question: str, rows: list[dict[str, Any]]) -> str:
+_TABLE_MAX_ROWS: Final[int] = 20
+_TABLE_MAX_COLUMNS: Final[int] = 5
+
+
+def _readable_column(name: str) -> str:
+    label = _humanize_column(name)
+    if not label:
+        return name
+    return label[0].upper() + label[1:]
+
+
+def small_result_table(
+    rows: list[dict[str, Any]], row_count: int
+) -> tuple[list[str], list[list[Any]]] | None:
+    """A deterministic table for a small result the earlier templates did not cover.
+
+    At most 20 rows and 5 columns. ``None`` when the result is empty, ragged, or
+    larger than that, which is when compose still calls the model.
+    """
+    if row_count <= 0 or row_count > _TABLE_MAX_ROWS or len(rows) != row_count:
+        return None
+    key_orders = {tuple(row.keys()) for row in rows}
+    if len(key_orders) != 1:
+        return None
+    (keys,) = key_orders
+    if not keys or len(keys) > _TABLE_MAX_COLUMNS:
+        return None
+    columns = [_readable_column(key) for key in keys]
+    table_rows = [[row[key] for key in keys] for row in rows]
+    return columns, table_rows
+
+
+def _markdown_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _json_cell(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int, float)):
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    return str(value)
+
+
+def _markdown_table(columns: list[str], table_rows: list[list[Any]]) -> str:
+    header = "| " + " | ".join(columns) + " |"
+    rule = "| " + " | ".join("---" for _ in columns) + " |"
+    body = ["| " + " | ".join(_markdown_cell(value) for value in row) + " |" for row in table_rows]
+    return "\n".join([header, rule, *body])
+
+
+async def _complete_compose(
+    messages: list[dict[str, str]], settings: Settings, state: TextToSQLState | None
+) -> str:
+    note_llm_call()
+    hook = current_compose_stream()
+    if hook is not None and use_text_to_sql_gateway(settings, state):
+
+        async def on_delta(text: str) -> None:
+            await hook.delta(text)
+
+        result = await complete_stream(
+            "text_to_sql.compose",
+            messages,
+            ctx=CallContext(feature="text_to_sql", settings=settings),
+            on_delta=on_delta,
+        )
+        note_tokens(result.usage.prompt_tokens, result.usage.completion_tokens)
+        return result.text
+    if use_text_to_sql_gateway(settings, state):
+        return await gateway_text("text_to_sql.compose", messages, settings)
+    return await chat_completion(messages, settings=settings, temperature=0.0)
+
+
+async def _llm_answer(
+    question: str, rows: list[dict[str, Any]], state: TextToSQLState | None = None
+) -> str:
     settings = get_settings()
     messages = _build_messages(question, rows)
     try:
-        raw = await chat_completion(messages, settings=settings, temperature=0.0)
+        raw = await _complete_compose(messages, settings, state)
     except OpenRouterError:
         return _fallback_summary(rows)
     text = raw.strip()
@@ -542,6 +628,7 @@ async def _compose_core_answer(
     row_count: int,
     criterion: str | None = None,
     empty_answer: str | None = None,
+    state: TextToSQLState | None = None,
 ) -> str:
     if row_count == 0:
         return empty_answer or _ZERO_ROW_ANSWER
@@ -557,7 +644,14 @@ async def _compose_core_answer(
     attribute_columns = _roster_with_attributes_shape(rows, row_count)
     if attribute_columns is not None:
         return _roster_with_attributes_answer(attribute_columns, rows, criterion)
-    return _ensure_roster_complete(await _llm_answer(question, rows), rows, row_count)
+    table = small_result_table(rows, row_count)
+    if table is not None:
+        columns, table_rows = table
+        hook = current_compose_stream()
+        if hook is not None:
+            await hook.table(columns, [[_json_cell(value) for value in row] for row in table_rows])
+        return _markdown_table(columns, table_rows)
+    return _ensure_roster_complete(await _llm_answer(question, rows, state), rows, row_count)
 
 
 def _not_taught_answer(state: TextToSQLState, rows: list[dict[str, Any]]) -> str | None:
@@ -648,7 +742,7 @@ async def compose_answer(state: TextToSQLState) -> TextToSQLState:
     sentences = [
         not_taught
         if not_taught is not None
-        else await _compose_core_answer(question, rows, row_count, criterion, empty_answer)
+        else await _compose_core_answer(question, rows, row_count, criterion, empty_answer, state)
     ]
     if "cross_institution_scope_assumed" in triggered_names:
         sentences.append(_SCOPE_NARROWING_DISCLOSURE)
