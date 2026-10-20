@@ -80,7 +80,11 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake(**_kwargs: object) -> float:
         return 0.0
 
+    async def _gpt_clear(**_kwargs: object) -> bool:
+        return False
+
     monkeypatch.setattr(_INJECTION_GUARD_MODULE, "classify_noul", _fake)
+    monkeypatch.setattr(_INJECTION_GUARD_MODULE, "legacy_gpt_flag", _gpt_clear)
 
 
 class _QuestionValidatorModule(Protocol):
@@ -514,3 +518,35 @@ def test_golden_rows_recorded_probabilities_meet_threshold() -> None:
             assert recorded >= threshold, row["id"]
         else:
             assert recorded < threshold, row["id"]
+
+
+def test_golden_fixture_matches_the_paid_jsonl() -> None:
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "education_platform"
+        / "modules"
+        / "guard"
+        / "fixtures"
+        / "golden_guard_rows.json"
+    )
+    scores = (
+        Path(__file__).resolve().parents[1]
+        / "evals"
+        / "guard"
+        / "datasets"
+        / "raw_scores_a0b00a3.jsonl"
+    )
+    stored: dict[tuple[str, str], float] = {}
+    for line in scores.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if record.get("probability") is None:
+            continue
+        stored[(str(record["check"]), str(record["row_id"]))] = float(record["probability"])
+    rows = json.loads(fixture.read_text(encoding="utf-8"))
+    assert rows
+    for row in rows:
+        key = (row["recorded_check"], row["recorded_row_id"])
+        assert stored[key] == row["recorded_noul"], row["id"]

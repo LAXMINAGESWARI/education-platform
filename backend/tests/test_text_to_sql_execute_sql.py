@@ -73,7 +73,11 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake(**_kwargs: object) -> float:
         return 0.0
 
+    async def _gpt_clear(**_kwargs: object) -> bool:
+        return False
+
     monkeypatch.setattr(_INJECTION_GUARD_MODULE, "classify_noul", _fake)
+    monkeypatch.setattr(_INJECTION_GUARD_MODULE, "legacy_gpt_flag", _gpt_clear)
 
 
 class _QuestionValidatorModule(Protocol):
