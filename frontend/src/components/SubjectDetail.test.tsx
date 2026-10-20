@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -117,6 +117,12 @@ describe("SubjectDetail", () => {
       "href",
       "/subjects/math-1/topics/topic-1/lesson",
     );
+    const topicProgress = screen.getByRole("list", { name: "Fractions progress" });
+    expect(topicProgress.closest(".subtopic-card__head")).not.toBeNull();
+    expect(within(topicProgress).getByText("80%", { selector: ".badge", exact: false })).toBeInTheDocument();
+    expect(topicProgress).not.toHaveTextContent(">");
+    expect(topicProgress).not.toHaveTextContent("›");
+    expect(topicProgress.querySelector(".subtopic-card__chevron")).toBeNull();
   });
 
   it("renders an empty subject without topic cards", () => {

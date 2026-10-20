@@ -163,9 +163,9 @@ function TopicCard({
             </Link>
             <p className="list-item__meta">{percentLabel}</p>
             <TopicProgress percent={topic.progress_percent} />
+            <TopicInfoPills topic={topic} due={due} />
           </div>
         </div>
-        <TopicInfoPills topic={topic} due={due} />
         <TopicEntries subjectId={subjectId} topic={topic} />
       </li>
     );

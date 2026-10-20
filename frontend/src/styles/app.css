@@ -2070,10 +2070,7 @@ a.list-item__title:hover {
 .topic-card__pills {
   margin: 0.45rem 0 0;
   padding: 0;
-}
-
-.subtopic-card > .topic-card__pills {
-  padding: 0 1rem 0.15rem;
+  list-style: none;
 }
 
 .topic-entry {
