@@ -241,7 +241,7 @@ describe("AdminDocumentsPage", () => {
     expect(signal?.aborted).toBe(true);
   });
 
-  it("shows Reconnecting while a document ingest retries", async () => {
+  it("shows Reconnecting while a document ingest retries and clears it on the first frame", async () => {
     let reconnected: (() => void) | undefined;
     vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
       document_id: "doc-2",

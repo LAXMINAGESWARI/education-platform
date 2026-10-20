@@ -9,11 +9,13 @@ vi.mock("./client", () => ({
 import { apiStream } from "./client";
 import {
   PROGRESS_CONNECT_TIMEOUT_MS,
+  PROGRESS_HEALTHY_BACKOFF_RESET_MS,
   PROGRESS_RECONNECT_FACTOR,
   PROGRESS_RECONNECT_INITIAL_MS,
   PROGRESS_RECONNECT_MAX_ATTEMPTS,
   PROGRESS_RECONNECT_MAX_ELAPSED_MS,
   PROGRESS_RECONNECT_MAX_MS,
+  PROGRESS_STALL_TIMEOUT_MS,
   ProgressReconnectError,
   progressReconnectDelayMs,
   runSubject,
@@ -101,12 +103,27 @@ function heldStream(signal: AbortSignal | undefined): Response {
 function openUntilDropped(): { response: Response; drop: () => void } {
   let drop = (): void => {};
   const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | undefined;
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(": heartbeat\n\n"));
+      const beat = () => {
+        controller.enqueue(encoder.encode(": heartbeat\n\n"));
+      };
+      beat();
+      timer = setInterval(beat, 15_000);
       drop = () => {
+        if (timer !== undefined) {
+          clearInterval(timer);
+          timer = undefined;
+        }
         controller.error(new TypeError("connection reset"));
       };
+    },
+    cancel() {
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
     },
   });
   return {
@@ -116,6 +133,27 @@ function openUntilDropped(): { response: Response; drop: () => void } {
     }),
     drop: () => {
       drop();
+    },
+  };
+}
+
+function controllableFrames(): { response: Response; send: (frame: string) => void } {
+  let send = (_frame: string): void => {};
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      send = (frame) => {
+        controller.enqueue(encoder.encode(frame));
+      };
+    },
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+    send: (frame) => {
+      send(frame);
     },
   };
 }
@@ -407,7 +445,8 @@ describe("progress SSE client", () => {
     await vi.advanceTimersByTimeAsync(base - 1);
     expect(apiStream).toHaveBeenCalledTimes(3);
     expect(notices.map((notice) => notice.delayMs)).toEqual([base, grown, base]);
-    // The heartbeat ends the outage, so the failure count restarts. The exponent does not.
+    // A short heartbeat ends the outage, so the failure count restarts.
+    // The exponent stays until a snapshot or a healthy stretch past the cap.
     expect(notices.map((notice) => notice.attempt)).toEqual([1, 1, 1]);
     await vi.advanceTimersByTimeAsync(1);
     expect(apiStream).toHaveBeenCalledTimes(4);
@@ -460,10 +499,10 @@ describe("progress SSE client", () => {
     expect(settled).toBe(false);
     expect(notices).toEqual([
       { attempt: 1, delayMs: progressReconnectDelayMs(0, 0) },
-      { attempt: 1, delayMs: progressReconnectDelayMs(1, 0) },
+      { attempt: 1, delayMs: progressReconnectDelayMs(0, 0) },
     ]);
 
-    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(1, 0));
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
     const result = await pending;
     expect(result.ok).toBe(true);
     expect(apiStream).toHaveBeenCalledTimes(3);
@@ -502,7 +541,7 @@ describe("progress SSE client", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(apiStream).toHaveBeenCalledTimes(index + 1);
       expect(settled).toBe(false);
-      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(settled).toBe(false);
       expect(apiStream).toHaveBeenCalledTimes(index + 1);
       drops[index]?.();
@@ -510,15 +549,196 @@ describe("progress SSE client", () => {
       expect(settled).toBe(false);
       expect(onReconnecting).toHaveBeenLastCalledWith({
         attempt: 1,
-        delayMs: progressReconnectDelayMs(index, 0),
+        delayMs: progressReconnectDelayMs(0, 0),
       });
-      await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(index, 0));
+      await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
     }
 
     const result = await pending;
     expect(result.ok).toBe(true);
     expect(onReconnecting).toHaveBeenCalledTimes(cycles);
     expect(apiStream).toHaveBeenCalledTimes(cycles + 1);
+  });
+
+  it("does not reset the failure budget when a 2xx stream drops before any frame", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    const base = progressReconnectDelayMs(0, 0);
+    const grown = progressReconnectDelayMs(1, 0);
+    vi.mocked(apiStream)
+      .mockResolvedValueOnce(streamResponse([]))
+      .mockResolvedValueOnce(streamResponse([]))
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("indexing", "run-1:abc"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+        onReconnected,
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReconnected).not.toHaveBeenCalled();
+    expect(onReconnecting).toHaveBeenCalledTimes(1);
+    expect(onReconnecting).toHaveBeenLastCalledWith({ attempt: 1, delayMs: base });
+
+    await vi.advanceTimersByTimeAsync(base);
+    expect(onReconnected).not.toHaveBeenCalled();
+    expect(onReconnecting).toHaveBeenLastCalledWith({ attempt: 2, delayMs: grown });
+
+    await vi.advanceTimersByTimeAsync(grown);
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+    expect(apiStream).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("resets the backoff exponent after the stream stays healthy past the cap", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const held = openUntilDropped();
+    const onReconnecting = vi.fn();
+    vi.mocked(apiStream)
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(held.response)
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("outline_review", "run-1:still"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    expect(onReconnecting).toHaveBeenLastCalledWith({
+      attempt: 1,
+      delayMs: progressReconnectDelayMs(0, 0),
+    });
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_HEALTHY_BACKOFF_RESET_MS);
+    expect(apiStream).toHaveBeenCalledTimes(2);
+    held.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReconnecting).toHaveBeenLastCalledWith({
+      attempt: 1,
+      delayMs: progressReconnectDelayMs(0, 0),
+    });
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(apiStream).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries when an open stream goes quiet for the stall timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const quiet = controllableFrames();
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    vi.mocked(apiStream)
+      .mockResolvedValueOnce(quiet.response)
+      .mockResolvedValueOnce(
+        streamResponse([
+          snapshotFrame("indexing", "run-1:abc"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: vi.fn(),
+        onReconnecting,
+        onReconnected,
+      }),
+    );
+
+    quiet.send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_STALL_TIMEOUT_MS - 1);
+    expect(onReconnecting).not.toHaveBeenCalled();
+    expect(apiStream).toHaveBeenCalledTimes(1);
+
+    quiet.send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+    expect(onReconnecting).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(PROGRESS_STALL_TIMEOUT_MS - 1);
+    expect(onReconnecting).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onReconnecting).toHaveBeenCalledTimes(1);
+    expect(onReconnecting).toHaveBeenCalledWith({
+      attempt: 1,
+      delayMs: progressReconnectDelayMs(0, 0),
+    });
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(apiStream).toHaveBeenCalledTimes(2);
+    expect(onReconnected).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fires onReconnected on the first frame and not when headers arrive", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const events: string[] = [];
+    vi.mocked(apiStream)
+      .mockResolvedValueOnce(streamResponse([]))
+      .mockResolvedValueOnce(
+        streamResponse([
+          ": heartbeat\n\n",
+          snapshotFrame("indexing", "run-1:abc"),
+          'event: close\ndata: {"reason":"terminal"}\n\n',
+        ]),
+      );
+
+    const pending = settle(
+      subscribeProgress(runSubject("run-1"), {
+        onSnapshot: () => {
+          events.push("snapshot");
+        },
+        onReconnecting: ({ attempt, delayMs }) => {
+          events.push(`wait:${attempt}:${delayMs}`);
+        },
+        onReconnected: () => {
+          events.push("back");
+        },
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual([`wait:1:${progressReconnectDelayMs(0, 0)}`]);
+
+    await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([
+      `wait:1:${progressReconnectDelayMs(0, 0)}`,
+      "back",
+      "snapshot",
+    ]);
   });
 
   function attemptsUntilGiveUp(random: number): number {
@@ -615,7 +835,7 @@ describe("progress SSE client", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("clears the reconnecting notice when the next socket opens", async () => {
+  it("clears the reconnecting notice when the next stream delivers a frame", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     const events: string[] = [];
