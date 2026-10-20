@@ -328,12 +328,14 @@ describe("AssistantPage", () => {
       await ask(user);
 
       expect(screen.getByRole("list", { name: "Answer progress" })).toBeInTheDocument();
-      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("Done");
-      expect(screen.getByText("Understanding")).toHaveTextContent("Understanding");
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Checking").closest("li")).toHaveAttribute("aria-current", "step");
       const current = screen.getByText("Understanding").closest("li");
+      expect(current).toHaveTextContent("In progress");
       expect(current).toHaveAttribute("aria-current", "step");
-      expect(screen.getByRole("status")).toHaveTextContent("Understanding your question");
-      expect(screen.getByRole("status")).toHaveTextContent("40%");
+      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.queryByText("40%")).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
       expect(screen.getByText("You teach 10.")).toBeInTheDocument();
 
       release({
@@ -443,7 +445,7 @@ describe("AssistantPage", () => {
 
       const slot = screen.getByTestId("progress-reconnect");
       expect(slot).toHaveAttribute("data-active", "true");
-      expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+      expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
       expect(screen.queryByText("Hello")).not.toBeInTheDocument();
 
       release({
@@ -468,20 +470,56 @@ describe("AssistantPage", () => {
     });
 
     it("falls back to the non-streaming ask when the stream endpoint is missing", async () => {
+      let release: (value: textToSqlApi.AskResponse) => void = () => {};
       vi.mocked(textToSqlApi.askQuestionStream).mockRejectedValue(
         new ApiError("Not Found", 404, null),
       );
-      vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
-        natural_answer: "Fallback answer.",
-        confidence: "high",
-        provenance: null,
+      vi.mocked(textToSqlApi.askQuestion).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Checking")).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+      release({ natural_answer: "Fallback answer.", confidence: "high", provenance: null });
+      expect(await screen.findByText("Fallback answer.")).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("How many students do I teach?");
+    });
+
+    it("keeps the current stages visible while the audit delays the first answer", async () => {
+      let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        handlers?.onProgress?.(progress("checking", "running", "Checking your question"));
+        handlers?.onProgress?.(progress("understanding", "running", "Understanding your question"));
+        return new Promise((resolve) => {
+          release = resolve;
+        });
       });
       const user = userEvent.setup();
       renderPage();
       await ask(user);
 
-      expect(await screen.findByText("Fallback answer.")).toBeInTheDocument();
-      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("How many students do I teach?");
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText("You teach 10.")).not.toBeInTheDocument();
+
+      release({
+        kind: "final",
+        requestId: REQUEST_ID,
+        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+      });
+      expect(await screen.findByText("You teach 10.")).toBeInTheDocument();
     });
 
     it("cancels an in-flight ask", async () => {

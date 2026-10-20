@@ -376,6 +376,57 @@ describe("askQuestionStream", () => {
     expect(apiStream).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a healthy stage across heartbeats until the first answer frame", async () => {
+    vi.useFakeTimers();
+    let send = (_frame: string): void => {};
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        send = (frame) => {
+          controller.enqueue(encoder.encode(frame));
+        };
+      },
+    });
+    vi.mocked(apiStream).mockResolvedValue(
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    );
+    const seen: string[] = [];
+    const pending = askQuestionStream("How many students do I teach?", {
+      requestId: REQUEST_ID,
+      onProgress: (progress) => {
+        seen.push(progress.stage);
+      },
+      onAnswerDelta: (text) => {
+        seen.push(text);
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    send(progressFrame("summarising", "running", 1, "Writing the answer"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(["summarising"]);
+
+    // The audit runs before any table or answer_delta. Heartbeats are 15s and the
+    // stall window is 45s, so a quiet healthy socket stays on this stage.
+    await vi.advanceTimersByTimeAsync(40_000);
+    send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(40_000);
+    send(": heartbeat\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(apiStream).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(["summarising"]);
+
+    send('event: answer_delta\ndata: {"text":"You teach 10."}\n\n');
+    send(finalFrame());
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await pending;
+    expect(result).toMatchObject({ kind: "final", requestId: REQUEST_ID });
+    expect(seen).toEqual(["summarising", "You teach 10."]);
+    expect(apiStream).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a missing stream endpoint", async () => {
     vi.useFakeTimers();
     vi.mocked(apiStream).mockRejectedValue(new ApiError("Not Found", 404, null));

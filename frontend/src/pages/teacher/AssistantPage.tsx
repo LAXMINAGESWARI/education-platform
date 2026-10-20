@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { ProgressReconnectError } from "../../api/progress";
-import { stageVisuals, type StageVisual } from "../../api/stageOrder";
+import {
+  emptyTextToSqlStageReport,
+  noteTextToSqlStage,
+  textToSqlStageVisuals,
+  type StageVisual,
+  type TextToSqlStageReport,
+} from "../../api/stageOrder";
 import {
   askQuestion,
   askQuestionStream,
   TEXT_TO_SQL_STAGE_LABEL,
-  TEXT_TO_SQL_STAGES,
   type Confidence,
   type TextToSqlProgress,
   type TextToSqlTable,
@@ -24,7 +29,10 @@ type ThreadEntry = {
   id: string;
   question: string;
   status: EntryStatus;
+  /** Stream shows the stepper. A 404 falls back to the plain ask and only "Thinking…". */
+  transport: "stream" | "fallback";
   progress: TextToSqlProgress | null;
+  stages: TextToSqlStageReport;
   answer: string;
   table?: TextToSqlTable;
   confidence?: Confidence | null;
@@ -122,8 +130,14 @@ function cellText(value: TextToSqlTable["rows"][number][number]): string {
   return String(value);
 }
 
-function AskStageStepper({ progress }: { progress: TextToSqlProgress | null }) {
-  const steps = stageVisuals(TEXT_TO_SQL_STAGES, progress);
+function AskStageStepper({
+  progress,
+  stages,
+}: {
+  progress: TextToSqlProgress | null;
+  stages: TextToSqlStageReport;
+}) {
+  const steps = textToSqlStageVisuals(stages);
   return (
     <div className="assistant-chat__stages">
       <ol className="generation-stepper" aria-label="Answer progress">
@@ -140,21 +154,11 @@ function AskStageStepper({ progress }: { progress: TextToSqlProgress | null }) {
       </ol>
       <p className="assistant-chat__stage-message" role="status" aria-live="polite" aria-atomic="true">
         {progress?.message ? (
-          <>
-            {progress.message}
-            {progress.percent !== null ? (
-              <span className="assistant-chat__percent"> {progress.percent}%</span>
-            ) : null}
-          </>
+          progress.message
         ) : (
           <span className="sr-only">Waiting for the next update</span>
         )}
       </p>
-      {progress !== null && progress.percent !== null ? (
-        <progress className="assistant-chat__meter" max={100} value={progress.percent}>
-          {progress.percent}%
-        </progress>
-      ) : null}
     </div>
   );
 }
@@ -204,7 +208,9 @@ function emptyEntry(id: string, question: string): ThreadEntry {
     id,
     question,
     status: "pending",
+    transport: "stream",
     progress: null,
+    stages: emptyTextToSqlStageReport(),
     answer: "",
     reconnecting: false,
   };
@@ -261,6 +267,7 @@ export function AssistantPage() {
           patchEntry(id, (entry) => ({
             ...entry,
             progress,
+            stages: noteTextToSqlStage(entry.stages, progress),
           }));
         },
         onAnswerReset: () => {
@@ -269,6 +276,7 @@ export function AssistantPage() {
             answer: "",
             table: undefined,
             progress: null,
+            stages: emptyTextToSqlStageReport(),
           }));
         },
         onAnswerDelta: (delta) => {
@@ -323,6 +331,13 @@ export function AssistantPage() {
     } catch (error) {
       if (isAbortError(error) || controller.signal.aborted) return;
       if (isStreamMissing(error)) {
+        patchEntry(id, (entry) => ({
+          ...entry,
+          transport: "fallback",
+          progress: null,
+          stages: emptyTextToSqlStageReport(),
+          reconnecting: false,
+        }));
         try {
           const fallback = await askQuestion(text);
           if (controller.signal.aborted) return;
@@ -333,6 +348,7 @@ export function AssistantPage() {
             confidence: fallback.confidence,
             provenance: fallback.provenance,
             progress: null,
+            stages: emptyTextToSqlStageReport(),
             reconnecting: false,
           }));
           triggerHaptic("success");
@@ -408,10 +424,15 @@ export function AssistantPage() {
             <div className="assistant-chat__bubble assistant-chat__bubble--user" aria-label="You">
               <p className="assistant-chat__body">{entry.question}</p>
             </div>
-            {entry.status === "pending" && (
+            {entry.status === "pending" && entry.transport === "fallback" && (
+              <p className="assistant-chat__typing muted" role="status">
+                Thinking…
+              </p>
+            )}
+            {entry.status === "pending" && entry.transport === "stream" && (
               <div className="assistant-chat__live" aria-label="Assistant">
                 <ProgressReconnectStatus active={entry.reconnecting} />
-                <AskStageStepper progress={entry.progress} />
+                <AskStageStepper progress={entry.progress} stages={entry.stages} />
                 {entry.answer ? (
                   <p className="assistant-chat__body" aria-live="polite">
                     {entry.answer}
@@ -430,7 +451,9 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {entry.progress !== null ? <AskStageStepper progress={entry.progress} /> : null}
+                {entry.progress !== null ? (
+                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                ) : null}
                 {entry.table ? <ResultTable table={entry.table} /> : null}
                 <div aria-live="polite">
                   <MarkdownContent className="assistant-chat__body markdown">
@@ -448,7 +471,9 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {entry.progress !== null ? <AskStageStepper progress={entry.progress} /> : null}
+                {entry.progress !== null ? (
+                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                ) : null}
                 <p className="assistant-chat__body" role="status">
                   {entry.refusal}
                 </p>

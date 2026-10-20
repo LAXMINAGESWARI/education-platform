@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import { CurriculumMaterialUpload } from "./CurriculumMaterialUpload";
 
 vi.mock("../api/adminIngest", () => ({
@@ -226,4 +227,36 @@ describe("CurriculumMaterialUpload", () => {
 
     expect(watchMaterialVersionStatus).not.toHaveBeenCalled();
   });
+
+  it("shows 16 of 64 chunks from an embedding progress frame", async () => {
+    vi.mocked(watchMaterialVersionStatus).mockImplementation((_versionId, options) => {
+      options?.onProgress?.(embeddingProgress("ver-1"));
+      return new Promise(() => undefined);
+    });
+
+    render(<CurriculumMaterialUpload subtopicId="st-1" />);
+    await submitPdf();
+
+    expect(await screen.findByText("16 of 64 chunks")).toBeInTheDocument();
+    const meter = screen.getByRole("progressbar", { name: "16 of 64 chunks" });
+    expect(meter).toHaveAttribute("value", "16");
+    expect(meter).toHaveAttribute("max", "64");
+  });
 });
+
+function embeddingProgress(subjectId: string): ProgressEnvelope {
+  return {
+    v: 1,
+    kind: "upload",
+    subject_id: subjectId,
+    seq: 4,
+    stage: "embedding",
+    status: "running",
+    percent: 60,
+    current: 16,
+    total: 64,
+    unit: "chunk",
+    message: "Embedding 16 of 64 chunks.",
+    updated_at: "2026-10-20T10:15:03+00:00",
+  };
+}

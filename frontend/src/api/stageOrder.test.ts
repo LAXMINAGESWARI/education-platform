@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   TEXT_TO_SQL_STAGE_ORDER,
   UPLOAD_STAGE_ORDER,
+  emptyTextToSqlStageReport,
   noteProgressSeq,
+  noteTextToSqlStage,
   resetProgressCursor,
   stageVisuals,
+  textToSqlStageVisuals,
   type StageSnapshot,
   type StageVisual,
 } from "./stageOrder";
@@ -79,6 +82,56 @@ describe("stageVisuals", () => {
       "pending",
       "pending",
       "pending",
+      "pending",
+    ]);
+  });
+});
+
+describe("textToSqlStageVisuals", () => {
+  function visualsFor(events: StageSnapshot[]): StageVisual[] {
+    const report = events.reduce(
+      (current, event) => noteTextToSqlStage(current, event),
+      emptyTextToSqlStageReport(),
+    );
+    return textToSqlStageVisuals(report).map((item) => item.visual);
+  }
+
+  it("keeps checking and understanding in progress together", () => {
+    expect(
+      visualsFor([
+        { stage: "checking", status: "running" },
+        { stage: "understanding", status: "running" },
+      ]),
+    ).toEqual(["current", "current", "pending", "pending", "pending", "pending"]);
+  });
+
+  it("marks only the stage that reported done", () => {
+    expect(
+      visualsFor([
+        { stage: "checking", status: "done" },
+        { stage: "understanding", status: "running" },
+      ]),
+    ).toEqual(["complete", "current", "pending", "pending", "pending", "pending"]);
+  });
+
+  it("leaves understanding pending when checking fails", () => {
+    expect(visualsFor([{ stage: "checking", status: "failed" }])).toEqual([
+      "failed",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+  });
+
+  it("marks both early stages done once a later stage arrives", () => {
+    expect(visualsFor([{ stage: "running", status: "running" }])).toEqual([
+      "complete",
+      "complete",
+      "complete",
+      "complete",
+      "current",
       "pending",
     ]);
   });

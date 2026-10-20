@@ -4926,10 +4926,21 @@ button.admin-published-row {
   font-size: 0.75rem;
 }
 
-.assistant-chat__meter {
+.assistant-chat__meter,
+.upload-progress__meter {
   width: min(100%, 16rem);
   height: 0.45rem;
   accent-color: var(--accent);
+}
+
+.upload-progress {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.upload-progress__count {
+  margin: 0;
+  font-size: 0.85rem;
 }
 
 .assistant-chat__table-wrap {

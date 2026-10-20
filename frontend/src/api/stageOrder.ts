@@ -75,6 +75,71 @@ function indexOfStage<Stage extends string>(order: readonly Stage[], stage: stri
   return -1;
 }
 
+const TEXT_TO_SQL_PARALLEL = ["checking", "understanding"] as const;
+
+type ParallelStage = (typeof TEXT_TO_SQL_PARALLEL)[number];
+
+/** Latest text-to-SQL progress plus the two stages that run together. */
+export type TextToSqlStageReport = {
+  latest: StageSnapshot | null;
+  pair: Partial<Record<ParallelStage, StageStatus>>;
+};
+
+export function emptyTextToSqlStageReport(): TextToSqlStageReport {
+  return { latest: null, pair: {} };
+}
+
+/** Remember checking and understanding on their own. A later stage does not erase that. */
+export function noteTextToSqlStage(
+  report: TextToSqlStageReport,
+  snapshot: StageSnapshot,
+): TextToSqlStageReport {
+  const stage = parallelStage(snapshot.stage);
+  if (stage === null) {
+    return { latest: snapshot, pair: report.pair };
+  }
+  return {
+    latest: snapshot,
+    pair: { ...report.pair, [stage]: snapshot.status },
+  };
+}
+
+/**
+ * Checking and understanding stay in progress together.
+ * One of them is done only when that stage reports done, or a later stage arrives.
+ * A later stage still marks every earlier stage done, including ones that never arrived.
+ */
+export function textToSqlStageVisuals(
+  report: TextToSqlStageReport,
+): { stage: (typeof TEXT_TO_SQL_STAGE_ORDER)[number]; visual: StageVisual }[] {
+  const latest = report.latest;
+  const currentIndex = latest === null ? -1 : indexOfStage(TEXT_TO_SQL_STAGE_ORDER, latest.stage);
+  const parallelEnd = indexOfStage(TEXT_TO_SQL_STAGE_ORDER, "understanding");
+  if (currentIndex > parallelEnd) {
+    return stageVisuals(TEXT_TO_SQL_STAGE_ORDER, latest);
+  }
+  return TEXT_TO_SQL_STAGE_ORDER.map((stage) => ({
+    stage,
+    visual: parallelVisual(stage, report, currentIndex >= 0),
+  }));
+}
+
+function parallelStage(stage: string): ParallelStage | null {
+  if (stage === "checking" || stage === "understanding") return stage;
+  return null;
+}
+
+function parallelVisual(stage: string, report: TextToSqlStageReport, pairOpen: boolean): StageVisual {
+  const parallel = parallelStage(stage);
+  if (parallel === null || !pairOpen) return "pending";
+  const status = report.pair[parallel];
+  if (status === "done") return "complete";
+  if (status === "failed") return "failed";
+  const other: ParallelStage = parallel === "checking" ? "understanding" : "checking";
+  if (report.pair[other] === "failed" && status === undefined) return "pending";
+  return "current";
+}
+
 function visualAt(index: number, currentIndex: number, snapshot: StageSnapshot | null): StageVisual {
   if (snapshot === null || currentIndex < 0) return "pending";
   if (index < currentIndex) return "complete";

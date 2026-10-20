@@ -1,9 +1,11 @@
 import { apiStream } from "./client";
+import { parseProgressEnvelope, type ProgressEnvelope } from "./progressEnvelope";
 import {
   subscribeSse,
   type ProgressReconnectNotice,
   type SseFrame,
 } from "./sseReconnect";
+import { noteProgressSeq, resetProgressCursor } from "./stageOrder";
 import { ApiError } from "./types";
 import type {
   GenerationRun,
@@ -111,6 +113,7 @@ type SubscribeOptions = {
   signal?: AbortSignal;
   lastEventId?: string;
   onSnapshot: (snapshot: ProgressSnapshot) => void;
+  onProgress?: (progress: ProgressEnvelope) => void;
   onReconnecting?: (notice: ProgressReconnectNotice) => void;
   /** Fires on the first frame of a connection, including the first connect. */
   onReconnected?: () => void;
@@ -149,6 +152,7 @@ export async function subscribeProgress(
   options: SubscribeOptions,
 ): Promise<void> {
   const lastEventId = { current: options.lastEventId };
+  let cursor = resetProgressCursor();
   await subscribeSse({
     signal: options.signal,
     open: (signal) =>
@@ -156,10 +160,27 @@ export async function subscribeProgress(
         signal,
         lastEventId: lastEventId.current,
       }),
-    onReconnecting: options.onReconnecting,
+    onReconnecting: (notice) => {
+      cursor = resetProgressCursor();
+      options.onReconnecting?.(notice);
+    },
     onReconnected: options.onReconnected,
     resetsBackoff: (frame) => frame.event === "snapshot",
-    onFrame: (frame) => handleProgressFrame(frame, options, lastEventId),
+    onFrame: (frame) => {
+      if (frame.event !== "progress") {
+        return handleProgressFrame(frame, options, lastEventId);
+      }
+      let envelope: ProgressEnvelope;
+      try {
+        envelope = parseProgressEnvelope(frame.data);
+      } catch (error) {
+        if (error instanceof SyntaxError) return;
+        throw error;
+      }
+      const noted = noteProgressSeq(cursor, envelope.seq);
+      cursor = noted.cursor;
+      if (noted.accept) options.onProgress?.(envelope);
+    },
   });
 }
 
@@ -169,6 +190,7 @@ export async function watchProgress(
   options: {
     signal?: AbortSignal;
     onSnapshot?: (snapshot: ProgressSnapshot) => void;
+    onProgress?: (progress: ProgressEnvelope) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
     /** Fires on the first frame of a connection, including the first connect. */
     onReconnected?: () => void;
@@ -179,6 +201,7 @@ export async function watchProgress(
     signal: options.signal,
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected,
+    onProgress: options.onProgress,
     onSnapshot: (snapshot) => {
       last = snapshot;
       options.onSnapshot?.(snapshot);
