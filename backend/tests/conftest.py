@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import os
 import re
+import shutil
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -59,22 +60,24 @@ _FAST_HASHER = PasswordHasher(time_cost=1, memory_cost=1024, parallelism=1)
 _DB_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKER_DATABASE_URL: str | None = None
 _CLONE_WAIT_SECONDS = 60
+_CLONED_TEMPLATE_URL: str | None = None
+_CLONED_WORKER_DB: str | None = None
 
 
-# Docling, torch, or embedding imports, from the speedup plan and its timings.
-# test_generation is mostly database time, but it imports the ingest worker.
-_ML_TEST_FILES = frozenset(
-    {
-        "test_assistant_chat.py",
-        "test_feedback.py",
-        "test_generation.py",
-        "test_generation_curriculum.py",
-        "test_prefetch_docling_models.py",
-        "test_rag_ingest.py",
-        "test_selective_contracts.py",
-        "test_worker_bootstrap.py",
-    }
-)
+def _load_ml_test_files() -> frozenset[str]:
+    """Filenames marked ml. scripts/test-changed.sh reads the same file."""
+    path = Path(__file__).with_name("ml_test_files.txt")
+    names: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            names.append(line)
+    return frozenset(names)
+
+
+# Same file scripts/test-changed.sh reads. test_generation is mostly database
+# time, but it imports the ingest worker.
+_ML_TEST_FILES = _load_ml_test_files()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -104,6 +107,19 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if worker:
         _activate_worker_database(worker)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Drop this worker's cloned database and this run's ready directory.
+
+    Idle workers clone during collection and never run the session fixture, so
+    cleanup lives here. Only the database and `/tmp/curioed-xdist-<run>` directory
+    created for this process are removed.
+    """
+    del session, exitstatus
+    if os.environ.get("PYTEST_XDIST_WORKER") and _CLONED_WORKER_DB is not None:
+        _drop_cloned_database()
+        _remove_run_ready_dir()
 
 
 def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -275,6 +291,49 @@ def _activate_worker_database(worker: str) -> None:
     reset_engine()
 
 
+def _remember_clone(base_url: str, worker_db: str) -> None:
+    global _CLONED_TEMPLATE_URL, _CLONED_WORKER_DB
+    _CLONED_TEMPLATE_URL = base_url
+    _CLONED_WORKER_DB = worker_db
+
+
+def _drop_cloned_database() -> None:
+    """Drop the clone recorded for this process. Failures here must not hide test results."""
+    if _CLONED_TEMPLATE_URL is None or _CLONED_WORKER_DB is None:
+        return
+    template = make_url(_CLONED_TEMPLATE_URL).database
+    if template is None or template == _CLONED_WORKER_DB:
+        return
+    reset_engine()
+    admin_url = to_sync_url(
+        make_url(_CLONED_TEMPLATE_URL)
+        .set(database="postgres")
+        .render_as_string(hide_password=False)
+    )
+    admin = create_engine(
+        admin_url,
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+        connect_args=sync_connect_args(),
+    )
+    try:
+        with admin.connect() as conn:
+            quoted = _quote_db(_CLONED_WORKER_DB)
+            conn.execute(text(f"DROP DATABASE IF EXISTS {quoted} WITH (FORCE)"))
+    except Exception:
+        return
+    finally:
+        admin.dispose()
+
+
+def _remove_run_ready_dir() -> None:
+    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
+    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
+    ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
+    if ready_dir.is_dir():
+        shutil.rmtree(ready_dir, ignore_errors=True)
+
+
 def _clone_worker_database(base_url: str, worker: str) -> str:
     """Migrate the shared test database once, then give this worker its own copy.
 
@@ -305,6 +364,7 @@ def _clone_worker_database(base_url: str, worker: str) -> str:
         try:
             _upgrade_database(base_url)
             _clone_from_template(base_url, template, worker_db)
+            _remember_clone(base_url, worker_db)
             ready_dir.mkdir(parents=True, exist_ok=True)
             (ready_dir / worker).write_text("ready", encoding="utf-8")
         finally:

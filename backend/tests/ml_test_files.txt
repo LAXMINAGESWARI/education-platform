@@ -1,0 +1,10 @@
+# Docling, torch, or embedding imports. test_generation is mostly database time,
+# but it imports the ingest worker. conftest.py and scripts/test-changed.sh both read this list.
+test_assistant_chat.py
+test_feedback.py
+test_generation.py
+test_generation_curriculum.py
+test_prefetch_docling_models.py
+test_rag_ingest.py
+test_selective_contracts.py
+test_worker_bootstrap.py
