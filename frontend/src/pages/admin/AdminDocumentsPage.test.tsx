@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProgressReconnectError } from "../../api/progress";
+import type { ProgressEnvelope } from "../../api/progressEnvelope";
 import { AdminDocumentsPage } from "./AdminDocumentsPage";
 
 const authState = vi.hoisted(() => ({
@@ -480,4 +481,49 @@ describe("AdminDocumentsPage", () => {
 
     expect(calls).toBe(2);
   });
+
+  it("shows 16 of 64 chunks from an embedding progress frame", async () => {
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockImplementation((_versionId, options) => {
+      options?.onProgress?.(embeddingProgress("ver-2"));
+      return new Promise(() => undefined);
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await startUpload();
+
+    expect(await screen.findByText("16 of 64 chunks")).toBeInTheDocument();
+    const meter = screen.getByRole("progressbar", { name: "16 of 64 chunks" });
+    expect(meter).toHaveAttribute("value", "16");
+    expect(meter).toHaveAttribute("max", "64");
+  });
 });
+
+function embeddingProgress(subjectId: string): ProgressEnvelope {
+  return {
+    v: 1,
+    kind: "upload",
+    subject_id: subjectId,
+    seq: 4,
+    stage: "embedding",
+    status: "running",
+    percent: 60,
+    current: 16,
+    total: 64,
+    unit: "chunk",
+    message: "Embedding 16 of 64 chunks.",
+    updated_at: "2026-10-20T10:15:03+00:00",
+  };
+}

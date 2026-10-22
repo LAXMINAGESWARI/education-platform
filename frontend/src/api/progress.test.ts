@@ -255,6 +255,38 @@ describe("progress SSE client", () => {
     expect(onSnapshot.mock.calls.map((call) => call[0]?.phase)).toEqual(["indexing", "failed"]);
   });
 
+  it("reports an upload progress count and ignores a stale or unreadable frame", async () => {
+    const onProgress = vi.fn();
+    const embedding = {
+      v: 1,
+      kind: "upload",
+      subject_id: "8f1c0c2e-1b2a-4d5e-9c00-1a2b3c4d5e6f",
+      seq: 4,
+      stage: "embedding",
+      status: "running",
+      percent: 60,
+      current: 16,
+      total: 64,
+      unit: "chunk",
+      message: "Embedding 16 of 64 chunks.",
+      updated_at: "2026-10-20T10:15:03+00:00",
+    };
+    vi.mocked(apiStream).mockResolvedValue(
+      streamResponse([
+        'event: progress\ndata: {"v":2,"kind":"upload"}\n\n',
+        `event: progress\ndata: ${JSON.stringify(embedding)}\n\n`,
+        `event: progress\ndata: ${JSON.stringify({ ...embedding, seq: 1, current: 1 })}\n\n`,
+        'event: snapshot\ndata: {"id":"ver-1","lifecycle_status":"ready"}\n\n',
+        'event: close\ndata: {"reason":"terminal"}\n\n',
+      ]),
+    );
+
+    await subscribeProgress(versionSubject("ver-1"), { onSnapshot: vi.fn(), onProgress });
+
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(embedding);
+  });
+
   it("returns the last snapshot from watchProgress", async () => {
     vi.mocked(apiStream).mockResolvedValue(
       streamResponse([

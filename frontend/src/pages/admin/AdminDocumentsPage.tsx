@@ -8,6 +8,7 @@ import {
   uploadKnowledgeDocument,
 } from "../../api/adminIngest";
 import { ProgressReconnectError } from "../../api/progress";
+import type { ProgressEnvelope } from "../../api/progressEnvelope";
 import { ApiError, type KnowledgeDocumentListItem } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { DEMO_ADMIN } from "../../auth/demoAccounts";
@@ -15,6 +16,7 @@ import { ROLE_ADMIN, ROLE_STUDENT, ROLE_TEACHER } from "../../auth/roles";
 import { IngestStatusBadge } from "../../components/IngestStatusBadge";
 import { ProgressReconnectStatus, ProgressStreamAlert } from "../../components/ProgressReconnect";
 import { PushButton } from "../../components/PushButton";
+import { UploadProgressMeter } from "../../components/UploadProgressMeter";
 
 const DOC_TYPES = [
   { value: "policy", label: "Policy" },
@@ -57,6 +59,7 @@ export function AdminDocumentsPage() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const dragDepth = useRef(0);
   const watchAbortRef = useRef<AbortController | null>(null);
   const watchedVersionId = useRef<string | null>(null);
@@ -155,6 +158,7 @@ export function AdminDocumentsPage() {
     setUploadError(null);
     setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     setUploadStatus("processing");
 
     watchAbortRef.current?.abort();
@@ -189,6 +193,9 @@ export function AdminDocumentsPage() {
       onReconnected: () => {
         // First frame, not response headers, so the banner does not flicker.
         if (!abort.signal.aborted) setReconnecting(false);
+      },
+      onProgress: (progress) => {
+        if (!abort.signal.aborted) setCounts(progress);
       },
     });
     if (abort.signal.aborted) return;
@@ -225,6 +232,7 @@ export function AdminDocumentsPage() {
     setUploadError(null);
     setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     try {
       const fresh = await getKnowledgeDocumentVersionStatus(versionId);
       if (abort.signal.aborted) return;
@@ -364,6 +372,7 @@ export function AdminDocumentsPage() {
                 />
               ) : null}
               <ProgressReconnectStatus active={reconnecting} />
+              <UploadProgressMeter envelope={counts} />
               {uploadStatus && (
                 <p className="admin-upload__status" role="status">
                   Ingest: <IngestStatusBadge status={uploadStatus} />

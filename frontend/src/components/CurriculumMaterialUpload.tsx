@@ -7,10 +7,12 @@ import {
   uploadSubtopicMaterial,
 } from "../api/adminIngest";
 import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import { ApiError, type MaterialVersionStatus } from "../api/types";
 import { IngestStatusBadge } from "./IngestStatusBadge";
 import { ProgressReconnectStatus, ProgressStreamAlert } from "./ProgressReconnect";
 import { PushButton } from "./PushButton";
+import { UploadProgressMeter } from "./UploadProgressMeter";
 
 export type SubtopicOption = {
   id: string;
@@ -40,6 +42,7 @@ export function CurriculumMaterialUpload({
   const [error, setError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const [status, setStatus] = useState<MaterialVersionStatus | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const watchedVersionId = useRef<string | null>(null);
@@ -68,6 +71,7 @@ export function CurriculumMaterialUpload({
     setError(null);
     setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     setStatus(null);
 
     pollAbortRef.current?.abort();
@@ -109,6 +113,9 @@ export function CurriculumMaterialUpload({
         // First frame, not response headers, so the banner does not flicker.
         if (!abort.signal.aborted) setReconnecting(false);
       },
+      onProgress: (progress) => {
+        if (!abort.signal.aborted) setCounts(progress);
+      },
     });
     if (abort.signal.aborted) return;
     setReconnecting(false);
@@ -140,6 +147,7 @@ export function CurriculumMaterialUpload({
     setError(null);
     setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     try {
       const fresh = await getMaterialVersionStatus(versionId);
       if (abort.signal.aborted) return;
@@ -223,6 +231,7 @@ export function CurriculumMaterialUpload({
         <ProgressStreamAlert message={streamError} busy={busy} onRetry={() => void resumeProgress()} />
       ) : null}
       <ProgressReconnectStatus active={reconnecting} />
+      <UploadProgressMeter envelope={counts} />
       {status && (
         <p className="admin-upload__status" role="status">
           Ingest: <IngestStatusBadge status={status.lifecycle_status} />

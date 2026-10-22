@@ -16,6 +16,7 @@ import {
   subscribeGenerationRun,
 } from "../api/generation";
 import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import {
   ApiError,
   type DraftChangeRequest,
@@ -32,6 +33,7 @@ import { ROLE_ADMIN } from "../auth/roles";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { GenerationStepDetailPanel } from "./GenerationStepDetail";
 import { ProgressReconnectStatus, ProgressStreamAlert } from "./ProgressReconnect";
+import { UploadProgressMeter } from "./UploadProgressMeter";
 import { PushButton } from "./PushButton";
 import { TopicGenerationQa } from "./TopicGenerationQa";
 import { TopicGenerationReview } from "./TopicGenerationReview";
@@ -352,6 +354,7 @@ export function TopicGenerationUpload({
   const [error, setError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const [runs, setRuns] = useState<GenerationRun[]>([]);
   const [run, setRun] = useState<GenerationRun | null>(null);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
@@ -454,7 +457,10 @@ export function TopicGenerationUpload({
   }, []);
 
   async function followRun(runId: string, abort: AbortController) {
-    if (!abort.signal.aborted) setReconnecting(false);
+    if (!abort.signal.aborted) {
+      setReconnecting(false);
+      setCounts(null);
+    }
     try {
       await subscribeGenerationRun(runId, {
         signal: abort.signal,
@@ -464,6 +470,9 @@ export function TopicGenerationUpload({
         onReconnected: () => {
           // First frame, not response headers, so the banner does not flicker.
           if (!abort.signal.aborted) setReconnecting(false);
+        },
+        onProgress: (progress) => {
+          if (!abort.signal.aborted) setCounts(progress);
         },
         onSnapshot: (next) => {
           if (abort.signal.aborted) return;
@@ -855,6 +864,7 @@ export function TopicGenerationUpload({
     const status = (
       <>
         <ProgressReconnectStatus active={reconnecting} />
+        <UploadProgressMeter envelope={counts} />
         <GenerationProgressStepper
           run={current}
           timings={stepTimings}

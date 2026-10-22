@@ -1,5 +1,6 @@
 import { apiRequest } from "./client";
 import { runSubject, watchProgress, type ProgressReconnectNotice } from "./progress";
+import type { ProgressEnvelope } from "./progressEnvelope";
 import type {
   AcceptedGenerationRun,
   CloseRoundCommand,
@@ -215,6 +216,7 @@ export async function subscribeGenerationRun(
   options: {
     signal?: AbortSignal;
     onSnapshot?: (run: GenerationRun) => void;
+    onProgress?: (progress: ProgressEnvelope) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
     /** Fires on the first frame of a connection, including the first connect. */
     onReconnected?: () => void;
@@ -224,6 +226,7 @@ export async function subscribeGenerationRun(
     signal: options.signal,
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected,
+    onProgress: options.onProgress,
     onSnapshot: (next) => {
       options.onSnapshot?.(next as GenerationRun);
     },
