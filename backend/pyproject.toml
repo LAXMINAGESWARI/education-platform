@@ -36,6 +36,8 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.25",
   "pytest-cov>=6.0",
+  "pytest-timeout>=2.3",
+  "pytest-xdist>=3.6",
   "ruff>=0.9",
   "types-PyYAML>=6.0",
 ]
@@ -109,6 +111,9 @@ markers = [
 ]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Per-test cap (pytest-timeout). A hung test fails at 120s with a stack dump
+# instead of holding the job until the workflow timeout.
+timeout = 120
 
 [tool.coverage.run]
 branch = true
@@ -116,7 +121,6 @@ source = ["education_platform"]
 concurrency = ["thread", "greenlet"]
 omit = [
   "*/alembic/*",
-  "*/modules/materials/seed.py",
   "*/db/session.py",
 ]
 

@@ -6,7 +6,23 @@ import type {
   SubtopicNode,
   TopicNode,
 } from "../api/types";
+import type { StatusKind } from "./badges";
 import { trackedAttempts } from "./quizAction";
+
+const SUBJECT_BLURBS: Record<string, string> = {
+  Mathematics: "Number sense, algebra foundations, and geometry basics.",
+  MATH: "Number sense, algebra foundations, and geometry basics.",
+};
+
+export function subjectBlurb(
+  subject: Pick<SubjectNode, "name" | "code" | "grade_name" | "academic_period_name">,
+): string {
+  return (
+    SUBJECT_BLURBS[subject.name] ??
+    SUBJECT_BLURBS[subject.code] ??
+    `${subject.grade_name} · ${subject.academic_period_name}`
+  );
+}
 
 /** POC school curriculum lives in the first (and usually only) published topic bucket. */
 export function schoolTopic(subject: SubjectNode): TopicNode | null {
@@ -56,6 +72,53 @@ export function subjectProgress(subject: SubjectNode): {
     total,
     pct: total === 0 ? 0 : Math.round((100 * done) / total),
   };
+}
+
+function topicHasStarted(topic: TopicNode): boolean {
+  if (topic.complete || topic.progress_percent > 0) return true;
+  if (topic.topic_lesson_completed || topic.topic_lesson_progress) return true;
+  if ((topic.overall_quiz?.attempt_count ?? 0) > 0) return true;
+  return topic.subtopics.some(
+    (subtopic) =>
+      subtopic.lesson_completed ||
+      subtopic.progress_percent > 0 ||
+      subtopic.progress != null ||
+      (subtopic.quiz?.attempt_count ?? 0) > 0,
+  );
+}
+
+/** Status for the subject the student just opened. Uses directory fields only. */
+export function subjectStudyStatus(subject: SubjectNode): StatusKind {
+  if (subject.topics.length === 0) return "coming_soon";
+  const { done, total } = subjectProgress(subject);
+  if (total > 0 && done >= total) return "complete";
+  if (done > 0 || subject.topics.some(topicHasStarted)) return "in_progress";
+  return "not_started";
+}
+
+/** Lesson and quiz totals for the topic cards on the subject page. */
+export function subjectCardCounts(topics: TopicNode[]): {
+  lessonsDone: number;
+  lessonsTotal: number;
+  quizzesPassed: number;
+  quizzesAvailable: number;
+} {
+  let lessonsDone = 0;
+  let lessonsTotal = 0;
+  let quizzesPassed = 0;
+  let quizzesAvailable = 0;
+  for (const topic of topics) {
+    if (topic.has_topic_lesson) {
+      lessonsTotal += 1;
+      if (topic.topic_lesson_completed) lessonsDone += 1;
+    }
+    const quiz = topic.overall_quiz;
+    if (quiz?.available) {
+      quizzesAvailable += 1;
+      if (quiz.passed) quizzesPassed += 1;
+    }
+  }
+  return { lessonsDone, lessonsTotal, quizzesPassed, quizzesAvailable };
 }
 
 export function topicPagePath(subjectId: string, topicId: string): string {

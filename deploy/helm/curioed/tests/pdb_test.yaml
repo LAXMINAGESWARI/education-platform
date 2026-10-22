@@ -1,0 +1,51 @@
+suite: pod disruption budgets
+templates:
+  - pdb.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: budgets web and cloudflared and skips a one-replica api
+    asserts:
+      - hasDocuments:
+          count: 2
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-web
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-cloudflared
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - isNull:
+          path: spec.minAvailable
+  - it: adds an api budget once the floor is 2
+    set:
+      api.autoscaling.minReplicas: 2
+    asserts:
+      - hasDocuments:
+          count: 3
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-api
+  - it: drops the web budget when web has one replica
+    set:
+      web.replicas: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-cloudflared

@@ -201,16 +201,6 @@ class GenerationReviewStrategy:
             )
         if len(text) < 3:
             return AssistantReply(content=REFUSAL_REPLY, citations=(), draft_change_request=None)
-        refusal = await screen_review_message(text, history, settings)
-        if refusal is not None:
-            await _record_refusal(
-                session,
-                principal,
-                text,
-                guard_stage=refusal.guard_stage,
-                settings=settings,
-            )
-            return AssistantReply(content=refusal.reply, citations=(), draft_change_request=None)
 
         run = await session.get(ContentGenerationRun, context.run_id)
         if run is None:
@@ -221,6 +211,17 @@ class GenerationReviewStrategy:
         revision = frozen_revision_from_row(revision_row)
         if context.target is not None:
             assert_target_on_revision(context.target, revision)
+
+        refusal = await screen_review_message(text, history, settings)
+        if refusal is not None:
+            await _record_refusal(
+                session,
+                principal,
+                text,
+                guard_stage=refusal.guard_stage,
+                settings=settings,
+            )
+            return AssistantReply(content=refusal.reply, citations=(), draft_change_request=None)
 
         chunks: tuple[RunChunk, ...] = ()
         if run.intake_source_material_version_id is not None:

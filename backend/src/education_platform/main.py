@@ -4,13 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
+from education_platform.core.health import readiness_response
 from education_platform.db import models as _models
-from education_platform.db.url import to_sync_url
+from education_platform.db.session import dispose_engines
 from education_platform.modules.academics.router import router as academics_router
 from education_platform.modules.assessments.router import router as assessments_router
 from education_platform.modules.assistant.router import router as assistant_router
@@ -23,7 +22,6 @@ from education_platform.modules.generation.router import router as generation_ro
 from education_platform.modules.insights.router import router as insights_router
 from education_platform.modules.judge.policy import warn_judge_mode_at_startup
 from education_platform.modules.materials.router import router as materials_router
-from education_platform.modules.materials.seed import seed_approved_materials
 from education_platform.modules.progress.router import router as progress_router
 from education_platform.modules.rag.router import router as rag_router
 from education_platform.modules.self_evaluation.router import router as self_evaluation_router
@@ -32,21 +30,12 @@ from education_platform.modules.text_to_sql.router import router as text_to_sql_
 _ = _models
 
 
-def _seed_if_empty() -> None:
-    settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            seed_approved_materials(session, replace=False)
-    finally:
-        engine.dispose()
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Curriculum loading is a one-off job, not part of API startup.
     warn_judge_mode_at_startup()
-    _seed_if_empty()
     yield
+    await dispose_engines()
 
 
 def cors_origin_regex(origin_regex: str) -> str | None:
@@ -59,6 +48,8 @@ def cors_origin_regex(origin_regex: str) -> str | None:
 
 settings = get_settings()
 
+# Curriculum loading is a one-off job (`python -m education_platform.modules.materials.seed`).
+# Replicas must not write that catalog on boot.
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -91,6 +82,19 @@ async def domain_error_handler(_request: Request, exc: DomainError) -> JSONRespo
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-@app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
+@app.get("/health/live", tags=["system"])
+async def health_live() -> dict[str, str]:
+    """Process is up. No database call, so a DB blip does not fail liveness."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["system"])
+async def health_ready() -> JSONResponse:
+    """Postgres answers SELECT 1 within the configured timeout."""
+    return await readiness_response()
+
+
+@app.get("/health", tags=["system"])
+async def health() -> JSONResponse:
+    """Same check as /health/ready. Compose and autodeploy call this path."""
+    return await readiness_response()

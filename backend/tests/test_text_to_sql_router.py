@@ -73,6 +73,11 @@ def _pass_injection_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         "classify_noul",
         AsyncMock(return_value=0.0),
     )
+    monkeypatch.setattr(
+        _INJECTION_GUARD_MODULE,
+        "legacy_gpt_flag",
+        AsyncMock(return_value=False),
+    )
 
 
 class _QuestionValidatorModule(Protocol):
@@ -97,6 +102,11 @@ def _pass_question_validator(monkeypatch: pytest.MonkeyPatch) -> None:
         _QUESTION_VALIDATOR_MODULE,
         "classify_noul",
         AsyncMock(return_value=0.0),
+    )
+    monkeypatch.setattr(
+        _QUESTION_VALIDATOR_MODULE,
+        "legacy_gpt_flag",
+        AsyncMock(return_value=False),
     )
 
 
