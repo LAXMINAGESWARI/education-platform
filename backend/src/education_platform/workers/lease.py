@@ -29,6 +29,10 @@ from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
 from education_platform.db.session import sync_session
+from education_platform.modules.progress.stage_store import (
+    lease_requires_stage_reset,
+    reset_stage_on_requeue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,8 +238,19 @@ def claim(session: Session, model: type[Any]) -> ClaimResult | None:
     if job is None:
         return None
     job_id = job.id
+    was_running = _is_running(job.status)
     if attempts_are_exhausted(int(job.attempts), int(job.max_attempts)):
         return Exhausted(job_id)
+    # Same predicate as the status and stream reads. A running row here already
+    # failed the SQL lease check, so treat its lock as missing. A queued row
+    # resets only when it kept attempts >= 1. release_lease must call
+    # reset_stage_on_requeue only when its update rowcount is 1.
+    if getattr(model, "__tablename__", None) == "ingest_jobs" and lease_requires_stage_reset(
+        job_status="running" if was_running else _status_value(job.status),
+        attempts=int(job.attempts or 0),
+        locked_until=None if was_running else job.locked_until,
+    ):
+        reset_stage_on_requeue(session, job)
     lease_seconds = get_settings().worker_lease_seconds
     attempts = int(job.attempts) + 1
     locked_until = datetime.now(UTC) + timedelta(seconds=lease_seconds)
@@ -319,9 +334,14 @@ def _release_owned_row(lease: OwnedLease) -> bool:
                 attempts=lease.model.attempts - 1,
             )
         )
-        session.commit()
         rowcount = getattr(result, "rowcount", None)
-        return isinstance(rowcount, int) and rowcount > 0
+        matched = isinstance(rowcount, int) and rowcount > 0
+        if matched and getattr(lease.model, "__tablename__", None) == "ingest_jobs":
+            job = session.get(lease.model, lease.job_id)
+            if job is not None:
+                reset_stage_on_requeue(session, job)
+        session.commit()
+        return matched
     except Exception:
         logger.exception("Lease release failed for %s", lease.job_id)
         session.rollback()
@@ -377,3 +397,12 @@ def _extend_lease(lease: OwnedLease) -> bool:
 def _status(model: type[Any], value: str) -> Any:
     enum_class = model.__table__.c.status.type.enum_class
     return enum_class(value)
+
+
+def _status_value(status: Any) -> str:
+    value = getattr(status, "value", status)
+    return str(value)
+
+
+def _is_running(status: Any) -> bool:
+    return _status_value(status) == "running"
