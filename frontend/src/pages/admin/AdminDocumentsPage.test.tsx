@@ -20,9 +20,17 @@ vi.mock("../../api/adminIngest", () => ({
   listKnowledgeDocuments: vi.fn(),
   uploadKnowledgeDocument: vi.fn(),
   watchKnowledgeDocumentVersionStatus: vi.fn(),
+  getKnowledgeDocumentVersionStatus: vi.fn(),
+  isTerminalIngestStatus: (status: string) =>
+    status === "ready" ||
+    status === "failed" ||
+    status === "published" ||
+    status === "superseded" ||
+    status === "archived",
 }));
 
 import {
+  getKnowledgeDocumentVersionStatus,
   listKnowledgeDocuments,
   watchKnowledgeDocumentVersionStatus,
   uploadKnowledgeDocument,
@@ -34,6 +42,7 @@ describe("AdminDocumentsPage", () => {
     vi.mocked(listKnowledgeDocuments).mockReset();
     vi.mocked(uploadKnowledgeDocument).mockReset();
     vi.mocked(watchKnowledgeDocumentVersionStatus).mockReset();
+    vi.mocked(getKnowledgeDocumentVersionStatus).mockReset();
     vi.mocked(listKnowledgeDocuments).mockResolvedValue([
       {
         id: "doc-1",
@@ -99,7 +108,7 @@ describe("AdminDocumentsPage", () => {
     await user.selectOptions(screen.getByLabelText(/^type$/i), "handbook");
 
     const file = new File(["%PDF-1.4"], "handbook.pdf", { type: "application/pdf" });
-    fireEvent.change(screen.getByLabelText(/drop a pdf here/i), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("PDF file"), { target: { files: [file] } });
     await user.click(screen.getByRole("button", { name: /upload pdf/i }));
 
     await waitFor(() => {
@@ -151,7 +160,7 @@ describe("AdminDocumentsPage", () => {
     });
     await user.type(screen.getByLabelText(/^title$/i), "Handbook");
     const file = new File(["%PDF-1.4"], "handbook.pdf", { type: "application/pdf" });
-    fireEvent.change(screen.getByLabelText(/drop a pdf here/i), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("PDF file"), { target: { files: [file] } });
     await user.click(screen.getByRole("button", { name: /upload pdf/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("InvalidCxxCompiler");
@@ -201,7 +210,7 @@ describe("AdminDocumentsPage", () => {
     });
     await user.type(screen.getByLabelText(/^title$/i), "Handbook");
     const file = new File(["%PDF-1.4"], "handbook.pdf", { type: "application/pdf" });
-    fireEvent.change(screen.getByLabelText(/drop a pdf here/i), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("PDF file"), { target: { files: [file] } });
     await user.click(screen.getByRole("button", { name: /upload pdf/i }));
   }
 
@@ -265,7 +274,7 @@ describe("AdminDocumentsPage", () => {
     );
     await startUpload();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     act(() => {
       reconnected?.();
     });
@@ -299,7 +308,7 @@ describe("AdminDocumentsPage", () => {
     );
     await startUpload();
 
-    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
     await act(async () => {
       fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
     });
@@ -307,6 +316,99 @@ describe("AdminDocumentsPage", () => {
       "Lost the connection to progress updates. Try again.",
     );
     expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
+
+  it("retries a document progress stream and clears the give-up error", async () => {
+    const user = userEvent.setup();
+    let fail: ((error: unknown) => void) | undefined;
+    let calls = 0;
+    vi.mocked(uploadKnowledgeDocument).mockResolvedValue({
+      document_id: "doc-2",
+      version_id: "ver-2",
+      version_number: 1,
+      title: "Handbook",
+      doc_type: "handbook",
+      lifecycle_status: "processing",
+      ingest_job_id: "job-2",
+    });
+    vi.mocked(getKnowledgeDocumentVersionStatus).mockResolvedValue({
+      id: "ver-2",
+      document_id: "doc-2",
+      version_number: 1,
+      lifecycle_status: "processing",
+      failure_reason: null,
+      chunk_count: 1,
+    });
+    vi.mocked(watchKnowledgeDocumentVersionStatus).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      }
+      return Promise.resolve({
+        id: "ver-2",
+        document_id: "doc-2",
+        version_number: 1,
+        lifecycle_status: "ready",
+        failure_reason: null,
+        chunk_count: 4,
+      });
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    const slot = screen.getByTestId("progress-reconnect");
+    expect(slot).toHaveAttribute("data-reserve", "fixed");
+    await startUpload();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(watchKnowledgeDocumentVersionStatus).toHaveBeenCalledTimes(2);
+    });
+    expect(getKnowledgeDocumentVersionStatus).toHaveBeenCalledWith("ver-2");
+    expect(screen.queryByText("Lost the connection to progress updates. Try again.")).not.toBeInTheDocument();
+    expect(screen.getByTestId("progress-reconnect")).toBe(slot);
+    expect(slot).toHaveAttribute("data-active", "false");
+  });
+
+  it("opens the file picker from a click and from the keyboard", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AdminDocumentsPage />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Attendance policy")).toBeInTheDocument();
+    });
+
+    const input = screen.getByLabelText("PDF file");
+    const open = vi.spyOn(input, "click").mockImplementation(() => undefined);
+    const browse = screen.getByRole("button", { name: /drop a pdf here/i });
+    await user.click(browse);
+    expect(open).toHaveBeenCalledTimes(1);
+    browse.focus();
+    await user.keyboard("{Enter}");
+    expect(open).toHaveBeenCalledTimes(2);
+    await user.keyboard(" ");
+    expect(open).toHaveBeenCalledTimes(3);
+
+    const file = new File(["%PDF-1.4"], "fee_policy.pdf", { type: "application/pdf" });
+    fireEvent.drop(screen.getByTestId("pdf-dropzone"), {
+      dataTransfer: { files: [file] },
+    });
+    expect(screen.getByText("fee_policy.pdf")).toBeInTheDocument();
   });
 
   it("does not apply the document list when the page unmounts during refresh", async () => {

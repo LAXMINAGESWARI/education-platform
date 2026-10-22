@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import * as authApi from "../api/auth";
-import { clearTokens, getAccessToken } from "../api/client";
+import { clearTokens, getAccessToken, getRefreshToken } from "../api/client";
 import {
   fetchEnrollments,
   hasActiveSubjectEnrollment,
@@ -33,6 +33,8 @@ type AuthState = {
   enrollments: EnrollmentSummary | null;
   enrolled: boolean;
   loading: boolean;
+  /** Set when stored tokens are still valid but the server could not be reached. */
+  sessionError: string | null;
   /** True when the session is a DEV fixture (admin/teacher mock), not a real JWT. */
   isDevMockSession: boolean;
   hasRole: (role: string) => boolean;
@@ -109,6 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     null,
   );
   const [loading, setLoading] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [isDevMockSession, setIsDevMockSession] = useState(false);
 
   const loadSession = useCallback(async () => {
@@ -117,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTokens();
       setUser(fixtureUserForRole(mockRole));
       setEnrollmentsState(null);
+      setSessionError(null);
       setIsDevMockSession(true);
       setLoading(false);
       return;
@@ -126,12 +130,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!getAccessToken()) {
       setUser(null);
       setEnrollmentsState(null);
+      setSessionError(null);
       setLoading(false);
       return;
     }
     try {
       const me = await authApi.fetchMe();
       setUser(me);
+      setSessionError(null);
       if (!shouldLoadEnrollments(me.roles)) {
         setEnrollmentsState(null);
         return;
@@ -143,11 +149,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEnrollmentsState(null);
       }
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
+      // A 401 from /auth/me is rethrown when refresh fails. Refresh already
+      // cleared the pair on 401 or 403. A network error or 5xx leaves it.
+      const sessionRejected = err instanceof ApiError && err.status === 401 && !getRefreshToken();
+      if (sessionRejected) {
         clearTokens();
+        setUser(null);
+        setEnrollmentsState(null);
+        setSessionError(null);
+      } else if (getRefreshToken()) {
+        setSessionError("Can't reach the server. Retry to continue.");
+      } else {
+        setUser(null);
+        setEnrollmentsState(null);
+        setSessionError(null);
       }
-      setUser(null);
-      setEnrollmentsState(null);
     } finally {
       setLoading(false);
     }
@@ -259,6 +275,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       enrollments,
       enrolled: enrollments ? hasActiveSubjectEnrollment(enrollments) : false,
       loading,
+      sessionError,
       isDevMockSession,
       hasRole: hasRoleFn,
       primaryRole: primary,
@@ -273,6 +290,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       enrollments,
       loading,
+      sessionError,
       isDevMockSession,
       hasRoleFn,
       primary,
