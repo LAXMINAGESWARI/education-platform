@@ -73,6 +73,7 @@ from education_platform.modules.rag.models import (
 )
 from education_platform.modules.rag.vector_store import VectorRow, delete_by_version, upsert_rows
 from education_platform.workers.lease import (
+    bound_lease,
     close_session,
     commit_owned,
     exceeded_max_attempts_message,
@@ -488,6 +489,20 @@ def _fail_job(session: Session, job: IngestJob, reason: str) -> None:
     commit_owned(session)
 
 
+def _live_claim(claim: StageClaim) -> StageClaim:
+    """Keep the frozen attempt count and the lease token the heartbeat last wrote.
+
+    A graceful release refunds ``attempts`` and the next claim can land on the
+    same count with a new ``locked_until``. Matching attempts alone would let
+    the old worker keep writing stages.
+    """
+    lease = bound_lease()
+    if lease is None:
+        return claim
+    with lease.lock:
+        return StageClaim(attempts=claim.attempts, locked_until=lease.locked_until)
+
+
 def _note_stage(
     version: _VersionRow,
     job: IngestJob,
@@ -502,7 +517,7 @@ def _note_stage(
     persist_upload_stage(
         version,
         job,
-        claim=claim,
+        claim=_live_claim(claim),
         stage=stage,
         message=message,
         current=current,
@@ -534,6 +549,7 @@ def _fail_version(session: Session, job: IngestJob, version: _VersionRow, reason
         job_error=stored,
         message=friendly_failure_message(version.stage, stored),
     )
+    commit_owned(session)
 
 
 def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
@@ -778,6 +794,7 @@ def _finish_ready(
         job_error=None,
         message=DONE_MESSAGE,
     )
+    commit_owned(session)
 
 
 def _process_source_material(

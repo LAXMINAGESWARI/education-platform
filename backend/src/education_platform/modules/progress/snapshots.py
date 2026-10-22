@@ -11,7 +11,9 @@ from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.generation import service as generation_service
 from education_platform.modules.generation.schemas import GenerationRunOut
+from education_platform.modules.generation.types import RunPhase
 from education_platform.modules.materials.models import SourceMaterial, SourceMaterialVersion
+from education_platform.modules.progress.events import ProgressEvent, progress_from_snapshot
 from education_platform.modules.progress.types import (
     ProgressSnapshot,
     ProgressSubject,
@@ -74,6 +76,32 @@ class PostgresSnapshotReader:
         jobs = await generation_service.jobs_for_runs(session, [run])
         qa_items = await generation_service.qa_items_for_run(session, run)
         return GenerationRunOut.from_domain(run, jobs.get(run.id, ()), qa_items)
+
+    async def intake_upload_progress(
+        self,
+        principal: Principal,
+        snapshot: ProgressSnapshot,
+    ) -> ProgressEvent | None:
+        """Upload stage for a run that is still indexing its intake PDF.
+
+        The run row does not store the ingest stage, so a stage wake would
+        otherwise leave ``/progress/runs/{id}`` on the last run snapshot.
+        """
+        if not isinstance(snapshot, GenerationRunOut):
+            return None
+        if snapshot.phase is not RunPhase.INDEXING or snapshot.intake_version_id is None:
+            return None
+        factory = get_session_factory()
+        async with factory() as session:
+            try:
+                status = await rag_service.get_material_version_status(
+                    session,
+                    principal,
+                    snapshot.intake_version_id,
+                )
+            except DomainError:
+                return None
+            return progress_from_snapshot(status)
 
     async def _read_version(
         self,

@@ -83,8 +83,9 @@ type StreamHandlers = {
   requestId?: string;
   onProgress?: (progress: TextToSqlProgress) => void;
   /**
-   * The server runs the question again on reconnect and does not replay or
-   * dedupe frames. Drop any partial answer, table, and stage state here.
+   * Reconnect re-POSTs the same request id. The server replays the stored run
+   * and does not execute SQL again. Partial answer tokens are not stored, so
+   * drop them here. A finished run replays only the terminal frame.
    */
   onAnswerReset?: () => void;
   onAnswerDelta?: (text: string) => void;
@@ -216,8 +217,8 @@ function newRequestId(): string {
 
 /**
  * Stream one teacher question. A dropped connection re-POSTs the same
- * `request_id`. Nothing is replayed: the server starts the ask again, so
- * the seq cursor resets and `onAnswerReset` fires before that next POST.
+ * `request_id`. The server replays the stored run instead of starting over,
+ * so the seq cursor resets and `onAnswerReset` fires before that next POST.
  * A progress seq lower than the last accepted one is ignored. Gaps are kept.
  * `final`, `refusal`, and `error` end the subscription.
  */

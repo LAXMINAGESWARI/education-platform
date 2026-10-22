@@ -237,7 +237,7 @@ describe("askQuestionStream", () => {
     expect(apiStream).toHaveBeenCalledTimes(3);
   });
 
-  it("re-posts the same request id and clears a partial answer", async () => {
+  it("re-posts the same request id and replays the stored final without a second answer", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     vi.spyOn(crypto, "randomUUID").mockReturnValue(REQUEST_ID);
@@ -251,14 +251,15 @@ describe("askQuestionStream", () => {
       )
       .mockResolvedValueOnce(
         streamResponse([
-          progressFrame("summarising", "running", 1, "Writing the answer"),
-          'event: answer_delta\ndata: {"text":"You teach "}\n\n',
-          'event: answer_delta\ndata: {"text":"10."}\n\n',
+          progressFrame("summarising", "done", 2, "Answer ready"),
           finalFrame("You teach 10."),
         ]),
       );
 
     const pending = askQuestionStream("How many students do I teach?", {
+      onProgress: (progress) => {
+        log.push(`progress:${progress.seq}:${progress.stage}`);
+      },
       onAnswerDelta: (text) => {
         log.push(`delta:${text}`);
       },
@@ -268,12 +269,17 @@ describe("askQuestionStream", () => {
     });
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(log).toEqual(["delta:Hello", "reset"]);
+    expect(log).toEqual(["progress:1:summarising", "delta:Hello", "reset"]);
     await vi.advanceTimersByTimeAsync(progressReconnectDelayMs(0, 0));
     const result = await pending;
 
     expect(result).toMatchObject({ kind: "final", requestId: REQUEST_ID });
-    expect(log).toEqual(["delta:Hello", "reset", "delta:You teach ", "delta:10."]);
+    expect(log).toEqual([
+      "progress:1:summarising",
+      "delta:Hello",
+      "reset",
+      "progress:2:summarising",
+    ]);
     expect(apiStream).toHaveBeenCalledTimes(2);
     const bodies = vi.mocked(apiStream).mock.calls.map((call) => call[1]?.body);
     expect(bodies).toEqual([
