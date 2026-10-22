@@ -17,6 +17,7 @@ import {
   PROGRESS_RECONNECT_MAX_MS,
   PROGRESS_STALL_TIMEOUT_MS,
   ProgressReconnectError,
+  parseProgressEvent,
   progressReconnectDelayMs,
   runSubject,
   subscribeProgress,
@@ -295,6 +296,41 @@ describe("progress SSE client", () => {
     );
     const snapshot = await watchProgress(runSubject("run-1"));
     expect((snapshot as GenerationRun).phase).toBe("failed");
+  });
+
+  it("parses the shared progress event union", () => {
+    const upload = parseProgressEvent("progress", {
+      v: 1,
+      kind: "upload",
+      subject_id: "ver-1",
+      seq: 4,
+      stage: "embedding",
+      status: "running",
+      percent: 70,
+      current: 5,
+      total: 10,
+      unit: "chunk",
+      message: "Embedding 5 of 10 chunks.",
+      updated_at: "2026-10-20T10:15:03+00:00",
+    });
+    expect(upload).toEqual({
+      event: "progress",
+      data: expect.objectContaining({ kind: "upload", stage: "embedding", seq: 4, percent: 70 }),
+    });
+
+    const delta = parseProgressEvent("answer_delta", { text: "Four " });
+    expect(delta).toEqual({ event: "answer_delta", data: { text: "Four " } });
+
+    const finalEvent = parseProgressEvent("final", {
+      natural_answer: "Four students",
+      confidence: "high",
+      provenance: "roster",
+    });
+    expect(finalEvent?.event).toBe("final");
+
+    expect(parseProgressEvent("progress", { v: 2, kind: "upload" })).toBeNull();
+    expect(parseProgressEvent("progress", { v: 1, kind: "upload", stage: "nope" })).toBeNull();
+    expect(parseProgressEvent("refusal", { message: "I can't answer that." })?.event).toBe("refusal");
   });
 
   it("raises stream error events", async () => {

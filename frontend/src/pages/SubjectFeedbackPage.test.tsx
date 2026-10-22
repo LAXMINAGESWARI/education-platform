@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +35,7 @@ vi.mock("../api/attempts", () => ({
 }));
 
 import { listQuizAttempts } from "../api/attempts";
+import { HASH_FOCUS_CLASS } from "../lib/hashFocus";
 import {
   deleteTopicGoal,
   getFeedbackHighlights,
@@ -306,6 +307,325 @@ describe("feedback hierarchy", () => {
     );
   });
 
+  it("filters due reviews to the subject in the query", async () => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({
+      due_reviews: [
+        {
+          subtopic_id: "st-math",
+          subtopic_name: "Fractions practice",
+          topic_name: "Fractions",
+          days_since_last_attempt: 10,
+          due_interval_days: 7,
+          remediation: null,
+        },
+        {
+          subtopic_id: "st-sci",
+          subtopic_name: "Forces practice",
+          topic_name: "Forces",
+          days_since_last_attempt: 9,
+          due_interval_days: 7,
+          remediation: null,
+        },
+      ],
+      trajectories: [],
+    });
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      subjects: [
+        {
+          id: "math-1",
+          code: "MATH",
+          name: "Mathematics",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-1",
+              title: "Fractions",
+              slug: "fractions",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-math",
+                  title: "Fractions practice",
+                  slug: "fractions-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: "sci-1",
+          code: "SCI",
+          name: "Science",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-2",
+              title: "Forces",
+              slug: "forces",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-sci",
+                  title: "Forces practice",
+                  slug: "forces-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/feedback?subject=math-1&section=due"]}>
+        <FeedbackSubjectPickerPage />
+      </MemoryRouter>,
+    );
+
+    const due = await screen.findByRole("region", { name: "Due for review" });
+    expect(due).toHaveAttribute("id", "feedback-due");
+    expect(due).toHaveTextContent("1 subtopic is past the review interval.");
+    expect(due).toHaveTextContent("Fractions practice");
+    expect(due).not.toHaveTextContent("Forces practice");
+  });
+
+  it("scrolls to due reviews and focuses the heading after feedback loads", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due#feedback-due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      expect(heading).toHaveClass(HASH_FOCUS_CLASS);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("scrolls due reviews to the start only after due rows render", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    let releaseHighlights: (value: Awaited<ReturnType<typeof getFeedbackHighlights>>) => void = () => undefined;
+    vi.mocked(getFeedbackHighlights).mockReturnValue(
+      new Promise((resolve) => {
+        releaseHighlights = resolve;
+      }),
+    );
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      subjects: [
+        {
+          id: "math-1",
+          code: "MATH",
+          name: "Mathematics",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-1",
+              title: "Fractions",
+              slug: "fractions",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-math",
+                  title: "Fractions practice",
+                  slug: "fractions-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    const flushFrames = () => {
+      const pending = frames.splice(0);
+      for (const callback of pending) callback(0);
+    };
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?subject=math-1&section=due#feedback-due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByRole("heading", { name: "Feedback by subject" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Due for review" })).toBeInTheDocument();
+      flushFrames();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(screen.queryByText("Fractions practice")).not.toBeInTheDocument();
+
+      releaseHighlights({
+        due_reviews: [
+          {
+            subtopic_id: "st-math",
+            subtopic_name: "Fractions practice",
+            topic_name: "Fractions",
+            days_since_last_attempt: 10,
+            due_interval_days: 7,
+            remediation: null,
+          },
+        ],
+        trajectories: [],
+      });
+
+      expect(await screen.findByText("Fractions practice")).toBeInTheDocument();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      flushFrames();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      flushFrames();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      const heading = screen.getByRole("heading", { name: "Due for review" });
+      expect(heading).toHaveClass(HASH_FOCUS_CLASS);
+      expect(heading).toHaveFocus();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("scrolls to needs attention and focuses that heading after subject feedback loads", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      const heading = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      expect(heading).toHaveAttribute("tabindex", "-1");
+      expect(heading).toHaveClass(HASH_FOCUS_CLASS);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("scrolls needs attention to the start only after the subject data renders", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    let releaseSubject: (value: Awaited<ReturnType<typeof getFeedbackSubject>>) => void = () => undefined;
+    vi.mocked(getFeedbackSubject).mockReturnValue(
+      new Promise((resolve) => {
+        releaseSubject = resolve;
+      }),
+    );
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    const flushFrames = () => {
+      const pending = frames.splice(0);
+      for (const callback of pending) callback(0);
+    };
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("Loading feedback…")).toBeInTheDocument();
+      flushFrames();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      releaseSubject(subject);
+      const heading = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      flushFrames();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      flushFrames();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      expect(heading).toHaveClass(HASH_FOCUS_CLASS);
+      expect(heading).toHaveFocus();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not scroll or move focus on a feedback load without a hash or section", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByRole("heading", { name: "Feedback by subject" })).toBeInTheDocument();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(document.body);
+      expect(screen.queryByRole("heading", { name: "Due for review" })).not.toBeInTheDocument();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
   it("lists topics in order and leaves an unattempted topic blank", async () => {
     const user = userEvent.setup();
     render(
@@ -324,7 +644,10 @@ describe("feedback hierarchy", () => {
     expect(screen.getByRole("region", { name: "Subject summary" })).toHaveTextContent(
       "You're doing well in Mensuration.",
     );
-    expect(screen.getByText("Needs attention: Algebra")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Needs attention: Algebra" })).toHaveAttribute(
+      "id",
+      "needs-attention",
+    );
     const links = screen.getAllByRole("link");
     const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
     expect(topicLinks.map((link) => link.textContent)).toEqual(["Mensuration", "Decimals"]);

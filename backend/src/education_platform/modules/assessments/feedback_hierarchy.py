@@ -52,6 +52,7 @@ from education_platform.modules.academics.models import (
     Subtopic,
     Topic,
 )
+from education_platform.modules.assessments.feedback_summary import facts_hash, resolve_summary
 from education_platform.modules.assessments.goals_service import goal_out, goals_for_topics
 from education_platform.modules.assessments.models import (
     AttemptAnswer,
@@ -64,7 +65,6 @@ from education_platform.modules.assessments.models import (
     QuizScope,
     QuizVersion,
     StudentSubtopicGoal,
-    SubjectFeedbackSummary,
 )
 from education_platform.modules.assessments.schemas import (
     FeedbackAttemptScore,
@@ -127,12 +127,155 @@ class SubjectRollup:
     needing_attention: tuple[str, ...]
 
 
+_SMALL_WORDS = frozenset({"and", "of", "the", "in", "for", "to", "a", "an", "on", "by"})
+
+
+def display_unit_name(name: str) -> str:
+    """Title-case a unit name for the subject summary.
+
+    Small words stay lowercase unless they are the first word: and, of, the,
+    in, for, to, a, an, on, by. ``Ratios and proportions`` becomes
+    ``Ratios and Proportions``. The stored row is unchanged, and the subject
+    card still shows that stored name.
+    """
+    parts = [part for part in name.split(" ") if part]
+    titled: list[str] = []
+    for index, part in enumerate(parts):
+        if index > 0 and part.casefold() in _SMALL_WORDS:
+            titled.append(part.casefold())
+        else:
+            titled.append(part[:1].upper() + part[1:].lower())
+    return " ".join(titled)
+
+
+@dataclass(frozen=True, slots=True)
+class UnitFact:
+    """One chapter the subject summary is allowed to talk about."""
+
+    name: str
+    percent: Decimal
+    attempt_count: int
+
+
+def units_from_topic_concepts(
+    topics: list[tuple[str, int, list[tuple[str, int, int]]]],
+) -> list[UnitFact]:
+    """Average real concepts inside each unit. Noise headings are not units.
+
+    ``topics`` is ``(unit name, attempt count, [(concept name, correct, answered)])``
+    in chapter order. A textbook heading such as ``EXERCISE 9.2`` is dropped
+    before the average, and a unit whose name is itself a heading is dropped.
+    A unit with no remaining concepts is omitted, even if an attempt count was
+    passed in.
+    """
+    facts: list[UnitFact] = []
+    for topic_name, attempt_count, concepts in topics:
+        if attempt_count <= 0 or is_outline_noise_heading(topic_name):
+            continue
+        percents: list[Decimal] = []
+        for concept_name, correct, answered in concepts:
+            if answered <= 0 or is_outline_noise_heading(concept_name):
+                continue
+            percents.append(
+                ((Decimal(correct) / Decimal(answered)) * Decimal("100")).quantize(_CENT)
+            )
+        if not percents:
+            continue
+        percent = (sum(percents, Decimal("0")) / Decimal(len(percents))).quantize(_CENT)
+        facts.append(UnitFact(display_unit_name(topic_name), percent, attempt_count))
+    return facts
+
+
+def subject_summary_prompt(
+    subject_name: str,
+    units: list[UnitFact],
+    *,
+    subject_score: Decimal | None = None,
+) -> str:
+    """Facts for the subject paragraph. Concepts inside a unit are not listed.
+
+    ``subject_score`` is the card score (mean of attempted topic-quiz bests).
+    The model is told to cite that number and not to average the unit lines.
+    """
+    lines = [
+        f"Subject: {subject_name}",
+        (
+            "Each line is one unit (a chapter). Say how every unit is going. "
+            "Do not name exercises, textbook section headings, or concepts inside a unit."
+        ),
+    ]
+    if subject_score is not None:
+        lines.append(f"Subject score: {subject_score}%")
+    if not units:
+        lines.append("No unit has a scored attempt yet.")
+        lines.append(_closing(units, subject_score))
+        return "\n".join(lines)
+    lines.append("Units:")
+    for unit in units:
+        noun = "attempt" if unit.attempt_count == 1 else "attempts"
+        lines.append(f"- {unit.name}: {unit.percent}% over {unit.attempt_count} {noun}")
+    if len(units) >= 2:
+        strongest = max(units, key=lambda unit: (unit.percent, unit.name))
+        weakest = min(units, key=lambda unit: (unit.percent, unit.name))
+        lines.append(f"Strongest unit: {strongest.name} ({strongest.percent}%)")
+        lines.append(f"Weakest unit: {weakest.name} ({weakest.percent}%)")
+    needing = [unit.name for unit in units if unit.percent < PASS_PERCENT]
+    if needing:
+        lines.append("Work on next: " + ", ".join(needing))
+    else:
+        lines.append("Every attempted unit is at or above the pass mark.")
+    lines.append(_closing(units, subject_score))
+    return "\n".join(lines)
+
+
+def _closing(units: list[UnitFact], subject_score: Decimal | None) -> str:
+    if subject_score is None:
+        score_rule = "Do not invent an overall score."
+    else:
+        score_rule = (
+            "Do not compute an overall score. The subject score above is the number to cite."
+        )
+    if len(units) == 1:
+        return (
+            "Write a short paragraph about how this unit is going and what to work on next. "
+            "Do not name a strongest or weakest unit. " + score_rule
+        )
+    if not units:
+        return "Write a short paragraph. " + score_rule
+    return (
+        "Write a short paragraph. Say how each unit is going, name the strongest unit "
+        "and the weakest unit, and say what to work on next. "
+        + score_rule
+        + " Use only the units listed above."
+    )
+
+
+def unit_template(subject_name: str, units: list[UnitFact]) -> str:
+    """Shown until the model paragraph is stored. Same units as the prompt."""
+    if not units:
+        return subject_template(subject_name, None, ())
+    parts: list[str] = []
+    strongest = max(units, key=lambda unit: (unit.percent, unit.name))
+    if strongest.percent >= PASS_PERCENT:
+        parts.append(f"You're doing well in {strongest.name}.")
+    for unit in units:
+        noun = "attempt" if unit.attempt_count == 1 else "attempts"
+        parts.append(f"{unit.name} is at {unit.percent}% over {unit.attempt_count} {noun}.")
+    needing = [unit.name for unit in units if unit.percent < PASS_PERCENT]
+    if needing:
+        parts.append(f"Work on {', '.join(needing)} next.")
+    else:
+        parts.append("Every attempted unit is at or above the pass mark.")
+    return " ".join(parts)
+
+
 def feedback_concept_label(name: str) -> str | None:
     """Student-facing concept name, or None when the heading is filler.
 
     Reuses the outline writer's noise check and title normalizer so a stored
-    heading such as "9.4.1 Cuboid" becomes "Cuboid", and "EXERCISE 9.3" or
-    "Ridhima's method" is folded into the topic instead of listed on its own.
+    heading such as "9.4.1 Cuboid" becomes "Cuboid", and "EXERCISE 9.3" is
+    folded into the topic instead of listed on its own. A concept title such
+    as "Newton's Method" is kept.
     """
     if is_outline_noise_heading(name):
         return None
@@ -600,22 +743,6 @@ async def _lesson_topic_ids(session: AsyncSession, topic_ids: list[UUID]) -> set
     return {topic_id for topic_id in rows if topic_id is not None}
 
 
-async def _stored_summaries(
-    session: AsyncSession, student_id: UUID, subject_ids: list[UUID]
-) -> dict[UUID, str]:
-    if not subject_ids:
-        return {}
-    rows = (
-        await session.scalars(
-            select(SubjectFeedbackSummary).where(
-                SubjectFeedbackSummary.student_id == student_id,
-                SubjectFeedbackSummary.subject_id.in_(subject_ids),
-            )
-        )
-    ).all()
-    return {row.subject_id: row.summary for row in rows if row.summary}
-
-
 def _topic_score(
     topic: _TopicRow,
     rollup: TopicRollup,
@@ -687,6 +814,44 @@ async def _bundle(
 
 def _subject_topics(offering: _OfferingSubject, topics: list[_TopicRow]) -> list[_TopicRow]:
     return [topic for topic in topics if topic.offering_id == offering.offering_id]
+
+
+async def card_summary_inputs(
+    session: AsyncSession, scope: Scope, subject_id: UUID
+) -> tuple[str, list[UnitFact], Decimal | None]:
+    """Unit lines and the card score shared by the detail view and the dashboard.
+
+    The unit percent is the mean of real concept scores on topic quizzes. The
+    score is ``rollup_subject`` — the same number the card shows. A heading
+    such as ``EXERCISE 9.2`` is left out of the unit lines.
+    """
+    student_id = _require_student(scope)
+    offerings = [row for row in await _offerings(session, scope) if row.subject_id == subject_id]
+    if not offerings:
+        subject = await session.get(Subject, subject_id)
+        return (subject.name if subject is not None else "", [], None)
+    topics = await _topics(session, [row.offering_id for row in offerings])
+    subject_topics: list[_TopicRow] = []
+    for offering in offerings:
+        subject_topics.extend(_subject_topics(offering, topics))
+    subject_topics.sort(key=lambda topic: (topic.sequence, topic.name))
+    topic_ids = [topic.id for topic in subject_topics]
+    attempts = await _scored_attempts(session, student_id, topic_ids)
+    rollups = {topic.id: rollup_topic(attempts.get(topic.id, [])) for topic in subject_topics}
+    card = rollup_subject([(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics])
+    counts = await _concept_counts(session, student_id, topic_ids)
+    concept_rows = [
+        (
+            topic.name,
+            rollups[topic.id].attempt_count,
+            [
+                (name, correct, answered)
+                for name, _sequence, correct, answered, _subtopic_id in counts.get(topic.id, [])
+            ],
+        )
+        for topic in subject_topics
+    ]
+    return offerings[0].subject_name, units_from_topic_concepts(concept_rows), card.score_percent
 
 
 def _card(
@@ -870,17 +1035,33 @@ async def get_subject(
         [(topic.id, topic.name, rollups[topic.id]) for topic in subject_topics]
     )
     topic_ids = [topic.id for topic in subject_topics]
-    by_topic = await _concept_strengths(session, student_id, topic_ids)
+    by_counts = await _concept_counts(session, student_id, topic_ids)
+    by_topic = {topic_id: group_subtopic_strengths(rows) for topic_id, rows in by_counts.items()}
     goals = await goals_for_topics(session, student_id, topic_ids)
     regressions = await _topic_regression_counts(session, student_id, topic_ids)
     class_averages = await _classmate_best_averages(session, student_id, topic_ids)
     strengths = _subject_concepts(subject_topics, by_topic)
-    stored = await _stored_summaries(session, student_id, [subject_id])
-    summary = stored.get(subject_id)
-    status: Literal["ready", "fallback"] = "ready" if summary else "fallback"
-    if not summary:
-        strongest_name = subject.strongest[1] if subject.strongest else None
-        summary = subject_template(offering.subject_name, strongest_name, subject.needing_attention)
+    # feedback_service imports this module, so the shared builder is imported
+    # here rather than at module scope.
+    from education_platform.modules.assessments.feedback_service import (
+        subject_prompt_and_template,
+    )
+
+    prompt, template, has_units = await subject_prompt_and_template(session, scope, subject_id)
+    if has_units:
+        resolved = await resolve_summary(
+            session,
+            student_id,
+            subject_id,
+            facts_hash(prompt),
+            prompt,
+            template,
+        )
+        summary = resolved.text
+        status: Literal["ready", "pending", "fallback"] = resolved.status
+    else:
+        summary = template
+        status = "fallback"
     mastered, attempted = milestone_counts(strengths)
     return FeedbackSubjectDetail(
         subject_id=offering.subject_id,

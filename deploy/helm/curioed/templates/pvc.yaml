@@ -1,0 +1,28 @@
+{{- $class := .Values.persistence.storageClass }}
+{{- $claims := list
+  (dict "name" (include "curioed.uploadsClaim" .) "size" .Values.persistence.uploads.size "component" "uploads")
+  (dict "name" (include "curioed.hfClaim" .) "size" .Values.persistence.hfCache.size "component" "hf-cache")
+  (dict "name" (include "curioed.inductorClaim" .) "size" .Values.persistence.inductorCache.size "component" "inductor-cache")
+  (dict "name" (include "curioed.backupClaim" .) "size" .Values.persistence.backups.size "component" "backups")
+}}
+{{- range $claims }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "curioed.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+  annotations:
+    {{- include "curioed.keepAnnotation" $ | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .size }}
+  {{- with $class }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

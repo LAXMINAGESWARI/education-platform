@@ -76,11 +76,10 @@ Full matrix: [docs/README.md#implementation-status](docs/README.md#implementatio
 docker compose up -d postgres
 # wait until healthy, then:
 
-# 2. Migrate (API auto-seeds from docs/curriculum/ when no topics exist)
+# 2. Migrate, then load docs/curriculum (the API does not seed on startup)
 cd backend
 uv run alembic upgrade head
-# optional manual seed:
-# uv run python -m education_platform.modules.materials.seed
+uv run python -m education_platform.modules.materials.seed
 
 # 3. API
 uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000

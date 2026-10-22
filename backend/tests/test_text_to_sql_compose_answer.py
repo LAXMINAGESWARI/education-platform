@@ -181,6 +181,30 @@ async def test_single_row_multiple_columns_calls_the_llm(
     assert _answer(result) == "Aisha is in grade 8, section 8A."
 
 
+async def test_small_result_table_is_lean_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy /ask keeps the model sentence. Lean renders the same rows as a table."""
+    rows = [{"grade": "8", "section": "8A"}]
+    fake, _ = _fake_chat_completion("Aisha is in grade 8, section 8A.")
+    monkeypatch.setattr(_MODULE, "chat_completion", fake)
+    legacy = await compose_answer(
+        _base_state(
+            question="what grade and section is Aisha in?", query_result=rows, result_row_count=1
+        )
+    )
+    assert _answer(legacy) == "Aisha is in grade 8, section 8A."
+
+    monkeypatch.setattr(_MODULE, "chat_completion", _never_called)
+    lean = await compose_answer(
+        _base_state(
+            question="what grade and section is Aisha in?",
+            query_result=rows,
+            result_row_count=1,
+            pipeline="lean",
+        )
+    )
+    assert _answer(lean) == "| Grade | Section |\n| --- | --- |\n| 8 | 8A |"
+
+
 # --- Fix (row 15/16 finding): small single-column lists are enumerated, not LLM-summarized
 
 

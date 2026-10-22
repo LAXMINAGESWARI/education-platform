@@ -60,6 +60,7 @@ from education_platform.modules.rag.models import (
     KnowledgeDocumentVersionStatus,
 )
 from education_platform.workers.ingest import process_ingest_job_sync
+from evals.guard.dataset import load_dataset
 
 TINY_PDF = (
     b"%PDF-1.1\n"
@@ -76,6 +77,26 @@ TINY_PDF = (
 ATTENDANCE_CHUNK = (
     "Learner Attendance Policy\nStudents must notify the office after three absences."
 )
+_REPLAY_SCORES = Path(__file__).resolve().parents[1] / (
+    "evals/guard/datasets/raw_scores_a0b00a3.jsonl"
+)
+
+
+def _policy_injection_noul_by_text() -> dict[str, float]:
+    """Recorded policy.jev_injection probabilities, keyed by the eval question."""
+    texts = {row.id: row.text for row in load_dataset().rows}
+    found: dict[str, float] = {}
+    for line in _REPLAY_SCORES.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record["check"] != "policy.jev_injection" or record["probability"] is None:
+            continue
+        text = texts.get(str(record["row_id"]))
+        if text is not None:
+            found[text] = float(record["probability"])
+    return found
+
+
+_POLICY_INJECTION_NOUL = _policy_injection_noul_by_text()
 
 
 def _admin_headers(client: TestClient) -> dict[str, str]:
@@ -857,7 +878,7 @@ def test_policy_refusal_is_audited_via_api(
         body = json.loads(request.content)
         state = body.get("state") if isinstance(body.get("state"), dict) else {}
         message = state.get("message") if isinstance(state.get("message"), str) else ""
-        noul = 0.99 if "Disregard your role" in message else 0.01
+        noul = _POLICY_INJECTION_NOUL[message]
         return httpx.Response(
             200,
             json={
@@ -914,7 +935,7 @@ def test_policy_refusal_is_audited_via_api(
         ).all()
         assert len(rows) == 1
         payload = rows[0].payload
-        assert payload["injection_probability"] == 0.99
+        assert payload["injection_probability"] == _POLICY_INJECTION_NOUL[attack]
         assert payload["guard_stage"] == "jev"
         assert "message_preview" not in payload
 

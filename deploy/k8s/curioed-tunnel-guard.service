@@ -1,0 +1,13 @@
+[Unit]
+Description=Stop Compose cloudflared when the k3s tunnel has replicas
+After=docker.service k3s.service
+Wants=docker.service k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/curioed-tunnel-guard.sh
+# Copy deploy/k8s/curioed-tunnel-guard.sh to that path, or edit ExecStart.
+# Optional: enable curioed-tunnel-guard.timer instead of this unit.
+
+[Install]
+WantedBy=multi-user.target

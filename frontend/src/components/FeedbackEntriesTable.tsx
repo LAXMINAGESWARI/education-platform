@@ -35,6 +35,7 @@ export type DueReviewRow = {
   topicName: string;
   daysSinceLastAttempt: number;
   dueIntervalDays: number;
+  subjectId: string | null;
   subjectName: string | null;
   href: string | null;
 };
