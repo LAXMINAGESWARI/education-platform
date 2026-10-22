@@ -1,0 +1,136 @@
+# Recorded model responses for compare.py --replay. No network.
+# legacy is the main compose output (the model sentence). lean may render a table.
+version: 1
+cases:
+  - id: scalar
+    question: How many students do I teach?
+    route: free_form
+    rows:
+      - student_count: 3
+    legacy:
+      natural_answer: The student count is 3.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: The student count is 3.
+      confidence: high
+      provenance: No tables were queried.
+  - id: P2
+    question: What is the average score by subject for my class?
+    route: free_form
+    rows:
+      - subject: Mathematics
+        average_score_percent: 70
+      - subject: Science
+        average_score_percent: 73.33
+    compose_completion: Mathematics averages 70 and Science averages 73.33.
+    legacy:
+      natural_answer: Mathematics averages 70 and Science averages 73.33.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Subject | Average score percent |\n| --- | --- |\n| Mathematics | 70 |\n| Science | 73.33 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: P3
+    question: What is the average score for each mathematics topic?
+    route: free_form
+    rows:
+      - topic: Fractions
+        attempts: 4
+        average_score: 67.5
+      - topic: Decimals
+        attempts: 3
+        average_score: 73.33
+    compose_completion: Fractions averages 67.5 across 4 attempts and Decimals averages 73.33 across 3.
+    legacy:
+      natural_answer: Fractions averages 67.5 across 4 attempts and Decimals averages 73.33 across 3.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Topic | Attempts | Average score |\n| --- | --- | --- |\n| Fractions | 4 | 67.5 |\n| Decimals | 3 | 73.33 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: P7
+    question: How has my class mathematics average changed each month?
+    route: free_form
+    rows:
+      - month: 2026-01
+        average_score_percent: 70
+      - month: 2026-02
+        average_score_percent: 60
+    compose_completion: The mathematics average was 70 in 2026-01 and 60 in 2026-02.
+    legacy:
+      natural_answer: The mathematics average was 70 in 2026-01 and 60 in 2026-02.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Month | Average score percent |\n| --- | --- |\n| 2026-01 | 70 |\n| 2026-02 | 60 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: S3
+    question: How many attempts does each quiz have?
+    route: free_form
+    rows:
+      - quiz_name: Fractions
+        submitted_count: 4
+        mean_score: 67.5
+      - quiz_name: Decimals
+        submitted_count: 3
+        mean_score: 73.33
+    compose_completion: Fractions has 4 attempts and Decimals has 3.
+    legacy:
+      natural_answer: Fractions has 4 attempts and Decimals has 3.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Quiz name | Submitted count | Mean score |\n| --- | --- | --- |\n| Fractions | 4 | 67.5 |\n| Decimals | 3 | 73.33 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: S4
+    question: How many days was each section present or late?
+    route: free_form
+    rows:
+      - section_name: 6A
+        present_days: 5
+        late_days: 1
+      - section_name: 6B
+        present_days: 4
+        late_days: 0
+    compose_completion: 6A was present 5 days and late 1. 6B was present 4 days.
+    legacy:
+      natural_answer: 6A was present 5 days and late 1. 6B was present 4 days.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Section name | Present days | Late days |\n| --- | --- | --- |\n| 6A | 5 | 1 |\n| 6B | 4 | 0 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: S8
+    question: How many mathematics attempts passed?
+    route: free_form
+    rows:
+      - subject: Mathematics
+        attempt_count: 7
+        pass_count: 4
+    compose_completion: Mathematics has 7 attempts and 4 passes.
+    legacy:
+      natural_answer: Mathematics has 7 attempts and 4 passes.
+      confidence: high
+      provenance: No tables were queried.
+    lean:
+      natural_answer: "| Subject | Attempt count | Pass count |\n| --- | --- | --- |\n| Mathematics | 7 | 4 |"
+      confidence: high
+      provenance: No tables were queried.
+  - id: refuse-poem
+    question: Write me a poem about the sea.
+    route: refuse
+    rows: []
+    legacy:
+      natural_answer: I can only help with questions about your school's students, classes, attendance, or curriculum data. Try asking something in that scope.
+      confidence: low
+      provenance: null
+    lean:
+      natural_answer: I can only help with questions about your school's students, classes, attendance, or curriculum data. Try asking something in that scope.
+      confidence: low
+      provenance: null

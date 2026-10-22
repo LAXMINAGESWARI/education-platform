@@ -67,11 +67,14 @@ not reachable through the compiled graph today.
 
 from __future__ import annotations
 
-from typing import Literal
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from education_platform.modules.text_to_sql.meter import add_ms, ensure_meter
 from education_platform.modules.text_to_sql.nodes import (
     apply_role_scope,
     audit_log,
@@ -94,6 +97,21 @@ from education_platform.modules.text_to_sql.state import (
     TextToSQLState,
     error_category,
 )
+
+
+def _observe(key: str, node: Callable[[TextToSQLState], Awaitable[TextToSQLState]]) -> Any:
+    """Record this node's wall time on the shared meter. The node itself is unchanged."""
+
+    async def wrapped(state: TextToSQLState) -> TextToSQLState:
+        ensure_meter()
+        started = time.perf_counter()
+        try:
+            return await node(state)
+        finally:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            add_ms(key, elapsed if elapsed > 0 else 0)
+
+    return wrapped
 
 
 def _route_after_injection_guard(state: TextToSQLState) -> Literal["ok", "blocked"]:
@@ -191,18 +209,18 @@ def _route_after_sanity_check(state: TextToSQLState) -> Literal["suspicious", "n
 def build_text_to_sql_graph() -> CompiledStateGraph[TextToSQLState, None, TextToSQLState]:
     graph: StateGraph[TextToSQLState] = StateGraph(TextToSQLState)
 
-    graph.add_node("injection_guard", injection_guard)
-    graph.add_node("question_validator", question_validator)
-    graph.add_node("intent_router", intent_router)
+    graph.add_node("injection_guard", _observe("guard_ms", injection_guard))
+    graph.add_node("question_validator", _observe("guard_ms", question_validator))
+    graph.add_node("intent_router", _observe("intent_ms", intent_router))
     graph.add_node("load_schema", load_schema)
     graph.add_node("link_schema", link_schema)
-    graph.add_node("generate_sql", generate_sql)
+    graph.add_node("generate_sql", _observe("generate_ms", generate_sql))
     graph.add_node("validate_sql", validate_sql)
     graph.add_node("apply_role_scope", apply_role_scope)
-    graph.add_node("execute_sql", execute_sql)
-    graph.add_node("resolve_at_risk", resolve_at_risk)
+    graph.add_node("execute_sql", _observe("execute_ms", execute_sql))
+    graph.add_node("resolve_at_risk", _observe("execute_ms", resolve_at_risk))
     graph.add_node("sanity_check", sanity_check)
-    graph.add_node("compose_answer", compose_answer)
+    graph.add_node("compose_answer", _observe("compose_ms", compose_answer))
     graph.add_node("audit_log", audit_log)
     graph.add_node("honest_refusal", honest_refusal)
 

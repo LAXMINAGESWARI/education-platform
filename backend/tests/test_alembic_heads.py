@@ -77,46 +77,72 @@ def _tables(sync_url: str) -> set[str]:
         engine.dispose()
 
 
-def test_gateway_migration_round_trip_on_seeded_db(seeded_db: Session, clean_db: str) -> None:
+def test_latest_migration_round_trip_on_seeded_db(seeded_db: Session, clean_db: str) -> None:
     """Upgrade, downgrade, and upgrade again while curriculum rows are present."""
     seeded_db.commit()
     sync_url = to_sync_url(clean_db)
     _skip_unless_test_database(sync_url)
     cfg = _alembic_config(sync_url)
     command.upgrade(cfg, "head")
-    before = _table_counts(sync_url, skip=frozenset({"llm_gateway_calls"}))
+    ask_runs = "text_to_sql_ask_runs"
+    before = _table_counts(sync_url, skip=frozenset({ask_runs}))
     assert before["topics"] > 0
+    institution_id = uuid4()
+    user_id = uuid4()
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO llm_gateway_calls ("
-                    "id, feature, step, requested_model, prompt_tokens, completion_tokens, "
-                    "cached_tokens, latency_ms, status"
+                    "INSERT INTO institutions (id, name, timezone, status) "
+                    "VALUES (:id, :name, 'UTC', 'active')"
+                ),
+                {"id": institution_id, "name": f"ask-run-{institution_id.hex}"},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO users ("
+                    "id, institution_id, email, full_name, password_hash, status"
                     ") VALUES ("
-                    ":id, 'policy_chat', 'policy_chat.answer', 'openai/gpt-4o-mini', "
-                    "1, 1, 0, 1, 'ok'"
+                    ":id, :institution_id, :email, 'Ask Run', 'hash', 'active'"
                     ")"
                 ),
-                {"id": uuid4()},
+                {
+                    "id": user_id,
+                    "institution_id": institution_id,
+                    "email": f"ask-run-{user_id.hex}@example.com",
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO text_to_sql_ask_runs ("
+                    "id, user_id, request_id, status, progress, terminal, "
+                    "sql_executed, audited, expires_at"
+                    ") VALUES ("
+                    ":id, :user_id, :request_id, 'running', CAST('[]' AS json), "
+                    "CAST('[]' AS json), false, false, now() + interval '10 minutes'"
+                    ")"
+                ),
+                {"id": uuid4(), "user_id": user_id, "request_id": uuid4()},
             )
     finally:
         engine.dispose()
-    assert _count(sync_url, "llm_gateway_calls") == 1
+    assert _count(sync_url, ask_runs) == 1
+    before = _table_counts(sync_url, skip=frozenset({ask_runs}))
 
     # Step back across the gateway revision, not merely the current tip.
     # Later migrations (ingest stage columns) sit on top of b3c4d5e6f7a8.
     command.downgrade(cfg, "d6e7f8a9b0c1")
     try:
-        assert "llm_gateway_calls" not in _tables(sync_url)
+        assert ask_runs not in _tables(sync_url)
+        assert "llm_gateway_calls" in _tables(sync_url)
         assert _table_counts(sync_url) == before
     finally:
         command.upgrade(cfg, "head")
 
-    assert "llm_gateway_calls" in _tables(sync_url)
-    assert _count(sync_url, "llm_gateway_calls") == 0
-    assert _table_counts(sync_url, skip=frozenset({"llm_gateway_calls"})) == before
+    assert ask_runs in _tables(sync_url)
+    assert _count(sync_url, ask_runs) == 0
+    assert _table_counts(sync_url, skip=frozenset({ask_runs})) == before
     engine = create_engine(sync_url)
     try:
         with engine.connect() as conn:
