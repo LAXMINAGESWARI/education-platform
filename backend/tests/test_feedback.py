@@ -134,6 +134,9 @@ def test_subject_feedback_reflects_scored_attempt(
     assert job is not None
     assert "Mathematics" in job.prompt
     assert "100" in job.prompt
+    assert "Units:" in job.prompt
+    assert "subtopic" not in job.prompt.lower()
+    assert "Square Numbers" not in job.prompt
 
     _finish_summary(seeded_db)
     cached = client.get(f"/api/v1/subjects/{subject_id}/feedback", headers=enrolled_student_headers)
