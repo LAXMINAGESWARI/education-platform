@@ -68,6 +68,27 @@ services:
     networks:
       - data
 
+  # Approved markdown curriculum (POC Demo School). Same work the API used to
+  # do inside its lifespan. One shot, after migrate, so replicas do not seed.
+  # SEED_SYNTHETIC does not apply here; that flag stays on the migrate service.
+  seed:
+    <<: *logging
+    image: education-platform-api:prod
+    restart: "no"
+    entrypoint: ["python", "-m", "education_platform.modules.materials.seed"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+
   api:
     <<: *logging
     image: education-platform-api:prod
@@ -90,6 +111,12 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+    # GET /health runs SELECT 1 (HEALTH_READY_TIMEOUT_SECONDS, default 2s).
+    # This 5s budget is longer, so Compose sees 200 or 503 instead of a client
+    # timeout. A database blip marks api unhealthy; restart: unless-stopped
+    # does not recreate a running container, so the check stays on /health.
     healthcheck:
       test:
         [
@@ -112,7 +139,8 @@ services:
     restart: unless-stopped
     init: true
     command: ["python", "-m", "education_platform.workers"]
-    stop_grace_period: 30s
+    # Longer than WORKER_SHUTDOWN_GRACE_SECONDS (25) so the lease release can commit.
+    stop_grace_period: 40s
     env_file:
       - path: .env
         required: false
@@ -126,6 +154,8 @@ services:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      seed:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "/app/deploy/db_ping.py"]

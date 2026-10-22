@@ -92,6 +92,7 @@ compose=(docker compose --project-name education-platform-prod --env-file "$env_
 "${compose[@]}" build
 "${compose[@]}" up -d --wait postgres
 "${compose[@]}" up --force-recreate --no-deps --abort-on-container-exit --exit-code-from migrate migrate
+"${compose[@]}" up --force-recreate --no-deps --abort-on-container-exit --exit-code-from seed seed
 "${compose[@]}" up -d --remove-orphans --wait --force-recreate --no-deps api worker web caddy
 
 docker image prune -af

@@ -6,7 +6,6 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from education_platform.core.llm import OpenRouterError
@@ -17,6 +16,12 @@ from education_platform.modules.assessments.models import (
     FeedbackSummaryJobStatus,
     FeedbackSummaryOrigin,
 )
+from education_platform.workers.lease import (
+    close_session,
+    commit_owned,
+    exceeded_max_attempts_message,
+    prepare_leased_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,7 @@ logger = logging.getLogger(__name__)
 def process_feedback_summary_job_sync(job_id: UUID) -> None:
     """Generate prose for a claimed job and store it when the hash is still current."""
     session = sync_session()
+    prepare_leased_writes(session)
     try:
         job = session.get(FeedbackSummaryJob, job_id)
         if job is None or job.status != FeedbackSummaryJobStatus.RUNNING:
@@ -41,13 +47,13 @@ def process_feedback_summary_job_sync(job_id: UUID) -> None:
             )
         job.status = FeedbackSummaryJobStatus.SUCCEEDED
         job.error = None
-        session.commit()
+        commit_owned(session)
     except Exception:
         logger.exception("feedback summary job %s failed", job_id)
         session.rollback()
         _release_for_retry(job_id)
     finally:
-        session.close()
+        close_session(session)
 
 
 def fail_exhausted_feedback_summary_job(session: Session, job_id: UUID) -> None:
@@ -55,30 +61,31 @@ def fail_exhausted_feedback_summary_job(session: Session, job_id: UUID) -> None:
     job = session.get(FeedbackSummaryJob, job_id)
     if job is None:
         return
-    reason = f"Worker lost this job {job.attempts} times"
+    reason = exceeded_max_attempts_message(int(job.max_attempts))
     feedback_summary.apply_summary(
         session, job, job.template_summary, FeedbackSummaryOrigin.TEMPLATE
     )
     job.status = FeedbackSummaryJobStatus.FAILED
     job.error = reason[:2000]
-    session.commit()
+    commit_owned(session)
 
 
 def _release_for_retry(job_id: UUID) -> None:
-    """Expire the lease so the next poll can claim the still-running job."""
+    """Expire the lease so the next poll can claim the still-running job.
+
+    The write is the same ownership match as a shutdown release. A lost lease
+    does not move the new owner's ``locked_until``.
+    """
     session = sync_session()
+    prepare_leased_writes(session)
     try:
-        session.execute(
-            update(FeedbackSummaryJob)
-            .where(
-                FeedbackSummaryJob.id == job_id,
-                FeedbackSummaryJob.status == FeedbackSummaryJobStatus.RUNNING,
-            )
-            .values(locked_until=datetime.now(UTC) - timedelta(seconds=1))
-        )
-        session.commit()
+        job = session.get(FeedbackSummaryJob, job_id)
+        if job is None:
+            return
+        job.locked_until = datetime.now(UTC) - timedelta(seconds=1)
+        commit_owned(session)
     except Exception:
         logger.exception("Could not release feedback summary job %s", job_id)
         session.rollback()
     finally:
-        session.close()
+        close_session(session)

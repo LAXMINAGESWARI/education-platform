@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the CurioEd tunnel guard
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=curioed-tunnel-guard.service
+
+[Install]
+WantedBy=timers.target
