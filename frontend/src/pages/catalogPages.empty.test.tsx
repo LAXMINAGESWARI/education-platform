@@ -1,8 +1,9 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "../api/types";
+import { ApiError, type FeedbackOverview } from "../api/types";
 import { FeedbackSubjectPickerPage } from "./FeedbackSubjectPickerPage";
 import { HomePage, clearLearningDirectoryCache } from "./HomePage";
 
@@ -149,7 +150,50 @@ describe("Feedback and Subjects empty states", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load subjects.");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to subjects" })).toHaveAttribute("href", "/");
     expect(screen.queryByRole("heading", { name: "Science" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Your subjects" })).not.toBeInTheDocument();
+  });
+
+  it("shows feedback loading and clears the error when Try again starts", async () => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({ subjects: [] });
+    vi.mocked(getFeedbackOverview).mockReturnValue(new Promise(() => undefined));
+    const { unmount } = render(
+      <MemoryRouter>
+        <FeedbackSubjectPickerPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading feedback…");
+    unmount();
+
+    vi.mocked(getFeedbackOverview).mockRejectedValueOnce(
+      new ApiError("Could not load feedback.", 500, null),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <FeedbackSubjectPickerPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load feedback.");
+
+    let resolveOverview: (value: FeedbackOverview | PromiseLike<FeedbackOverview>) => void = () =>
+      undefined;
+    vi.mocked(getFeedbackOverview).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOverview = resolve;
+        }),
+    );
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading feedback…");
+
+    resolveOverview({ score_percent: null, subjects: [] });
+    expect(await screen.findByText("No enrolled subjects yet.")).toBeInTheDocument();
   });
 });

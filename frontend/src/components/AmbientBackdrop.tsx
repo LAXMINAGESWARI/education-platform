@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { matchPath, useLocation } from "react-router-dom";
 
-import {
-  BACKDROP_CHROME_ANCHOR,
-  drawBackdropChrome,
-  useBackdropChrome,
-} from "../lib/backdropChrome";
 import { createDoodleEngine } from "../lib/doodleEngine";
 import { hasCoarsePointer, prefersReducedMotion } from "../lib/motionPrefs";
 import { canStartSketch, createUserSketch } from "../lib/userSketch";
@@ -61,12 +56,6 @@ function drawReactiveGrid(
   }
 }
 
-function readChromeAnchor(): DOMRect | null {
-  const el = document.querySelector(`[${BACKDROP_CHROME_ANCHOR}]`);
-  if (!(el instanceof HTMLElement)) return null;
-  return el.getBoundingClientRect();
-}
-
 /** Routes that show the sage grid. Doodles stay on the subjects home page only. */
 export function isAmbientBackdropPath(pathname: string): boolean {
   if (pathname === "/" || pathname === "/login" || pathname === "/feedback") return true;
@@ -114,15 +103,11 @@ export function AmbientBackdrop() {
   const doodlesEnabled = isSubjectsHomePath(pathname);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chrome = useBackdropChrome();
-  const chromeRef = useRef(chrome);
-  chromeRef.current = chrome;
 
   const [staticOnly, setStaticOnly] = useState(() => {
     if (typeof window === "undefined") return true;
     return prefersReducedMotion() || hasCoarsePointer();
   });
-  const [staticRect, setStaticRect] = useState<DOMRect | null>(null);
 
   useEffect(() => {
     const mqReduce = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -140,22 +125,6 @@ export function AmbientBackdrop() {
       mqCoarse.removeEventListener("change", syncMode);
     };
   }, []);
-
-  useEffect(() => {
-    if (!active || !staticOnly || !chrome) {
-      setStaticRect(null);
-      return;
-    }
-
-    const syncRect = () => setStaticRect(readChromeAnchor());
-    syncRect();
-    window.addEventListener("resize", syncRect);
-    window.addEventListener("scroll", syncRect, true);
-    return () => {
-      window.removeEventListener("resize", syncRect);
-      window.removeEventListener("scroll", syncRect, true);
-    };
-  }, [active, staticOnly, chrome]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -220,11 +189,6 @@ export function AmbientBackdrop() {
         drawReactiveGrid(ctx, width, height, mouseX, mouseY);
         doodle?.tick(ctx, Date.now());
         sketch?.tick(ctx, Date.now());
-        const data = chromeRef.current;
-        const anchor = data ? readChromeAnchor() : null;
-        if (data && anchor) {
-          drawBackdropChrome(ctx, data, anchor);
-        }
       }
       rafId = window.requestAnimationFrame(tick);
     };
@@ -263,33 +227,6 @@ export function AmbientBackdrop() {
       data-doodles={doodlesEnabled ? "true" : "false"}
     >
       {!staticOnly && <canvas ref={canvasRef} className="ambient-backdrop__canvas" />}
-      {staticOnly && chrome && staticRect && (
-        <div
-          className="ambient-backdrop__chrome"
-          style={{
-            top: staticRect.top,
-            left: staticRect.left,
-            width: staticRect.width,
-            height: staticRect.height,
-          }}
-        >
-          <div className="ambient-backdrop__chrome-progress">
-            <div className="ambient-backdrop__chrome-row">
-              <p className="ambient-backdrop__chrome-label">{chrome.progressLabel}</p>
-              <span
-                className={`ambient-backdrop__chrome-badge ${
-                  chrome.complete ? "ambient-backdrop__chrome-badge--ok" : ""
-                }`}
-              >
-                {chrome.statusLabel}
-              </span>
-            </div>
-            <div className="ambient-backdrop__chrome-track">
-              <span style={{ width: `${chrome.progressPercent}%` }} />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

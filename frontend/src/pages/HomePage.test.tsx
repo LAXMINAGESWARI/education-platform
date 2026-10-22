@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+
+import { ApiError } from "../api/types";
 
 import { HomePage, clearLearningDirectoryCache } from "./HomePage";
 
@@ -10,6 +13,10 @@ vi.mock("../components/AppShell", () => ({
 
 vi.mock("../api/materials", () => ({
   fetchLearningDirectory: vi.fn(),
+}));
+
+vi.mock("../api/feedback", () => ({
+  getFeedbackHighlights: vi.fn().mockResolvedValue({ due_reviews: [], trajectories: [] }),
 }));
 
 import { fetchLearningDirectory } from "../api/materials";
@@ -272,6 +279,11 @@ describe("HomePage", () => {
 
     expect(await screen.findByText("Continue")).toBeInTheDocument();
     expect(screen.getByText("In progress · slide 3")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/topics/topic-1/lesson?slide=3",
+    );
+    expect(screen.getByRole("link", { name: /Lesson/ })).toHaveClass("pill-btn");
     expect(screen.getByRole("link", { name: /Quiz/ })).toHaveAttribute(
       "href",
       "/quizzes/overall-1",
@@ -324,5 +336,213 @@ describe("HomePage", () => {
     expect(screen.getByText("Take quiz")).toBeInTheDocument();
     expect(screen.queryByText(/unlocks when/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/published/i)).not.toBeInTheDocument();
+  });
+
+  it("opens the subject page from a subject card", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("link", { name: /Mathematics/ }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Mathematics" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Topics" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your subjects" })).not.toBeInTheDocument();
+  });
+
+  it("shows a fully complete subject", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      ...mockDirectory,
+      subjects: [
+        {
+          ...mockDirectory.subjects[0],
+          progress_percent: 100,
+          topics: [
+            {
+              ...mockDirectory.subjects[0].topics[0],
+              complete: true,
+              progress_percent: 100,
+              has_topic_lesson: true,
+              topic_lesson_completed: true,
+              overall_quiz: {
+                ...mockDirectory.subjects[0].topics[0].overall_quiz!,
+                unlocked: true,
+                locked_reason: null,
+                passed: true,
+                best_score_percent: 100,
+              },
+            },
+          ],
+        },
+      ],
+    } as never);
+
+    render(
+      <MemoryRouter
+        initialEntries={["/subjects/math-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("1/1 topics complete · 100%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /Subject completion/ })).toHaveAttribute(
+      "aria-valuenow",
+      "100",
+    );
+    expect(screen.getByRole("progressbar", { name: /Subject completion/ })).toHaveClass(
+      "progress--complete",
+    );
+    expect(screen.getByText("Complete")).toHaveClass("badge", "badge--ok");
+    expect(screen.queryByRole("link", { name: /Resume where you stopped/ })).not.toBeInTheDocument();
+  });
+
+  it("refetches the directory before showing a subject as missing", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValueOnce(mockDirectory as never);
+    const { unmount } = render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <HomePage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    unmount();
+
+    let resolveDirectory: (value: unknown) => void = () => undefined;
+    vi.mocked(fetchLearningDirectory).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDirectory = resolve;
+        }) as never,
+    );
+
+    render(
+      <MemoryRouter
+        initialEntries={["/subjects/new-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading subject…");
+    expect(
+      screen.queryByText("This subject is not on your learning directory."),
+    ).not.toBeInTheDocument();
+
+    resolveDirectory({
+      subjects: [
+        {
+          id: "new-1",
+          code: "SCI",
+          name: "Science",
+          grade_name: "Grade 6",
+          academic_period_name: "2026-27",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "sci-topic",
+              title: "Matter",
+              slug: "matter",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Science" })).toBeInTheDocument();
+    expect(
+      screen.queryByText("This subject is not on your learning directory."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("retries a subject that failed to load and links back to Subjects", async () => {
+    vi.mocked(fetchLearningDirectory).mockResolvedValueOnce(mockDirectory as never);
+    const { unmount } = render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <HomePage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("heading", { name: "Mathematics" })).toBeInTheDocument();
+    unmount();
+
+    vi.mocked(fetchLearningDirectory).mockRejectedValueOnce(
+      new ApiError("Could not load subjects.", 500, null),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter
+        initialEntries={["/subjects/new-1"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <Routes>
+          <Route path="/subjects/:subjectId" element={<HomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.queryByText("This subject is not on your learning directory."),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load subjects.");
+    expect(
+      screen.queryByText("This subject is not on your learning directory."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to subjects" })).toHaveAttribute("href", "/");
+
+    let resolveRetry: (value: unknown) => void = () => undefined;
+    vi.mocked(fetchLearningDirectory).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRetry = resolve;
+        }) as never,
+    );
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading subject…");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    resolveRetry({
+      subjects: [
+        {
+          id: "new-1",
+          code: "SCI",
+          name: "Science",
+          grade_name: "Grade 6",
+          academic_period_name: "2026-27",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "sci-topic",
+              title: "Matter",
+              slug: "matter",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Science" })).toBeInTheDocument();
   });
 });

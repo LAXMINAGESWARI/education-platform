@@ -1,7 +1,16 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { getFeedbackHighlights } from "../api/feedback";
 import type { SubjectNode } from "../api/types";
-import { subjectBlurb, subjectCardCounts, subjectProgress, subjectStudyStatus } from "../lib/subjectMaterial";
+import { dueReviewsPath, dueTopicIds, subjectFeedbackPath, weakTopicsPath } from "../lib/feedbackLinks";
+import {
+  subjectBlurb,
+  subjectCardCounts,
+  subjectProgress,
+  subjectResumeTarget,
+  subjectStudyStatus,
+} from "../lib/subjectMaterial";
 import { BadgePill, StatusBadge } from "./BadgePill";
 import { Crumbs } from "./Crumbs";
 import { SchoolMaterialPanel } from "./SchoolMaterialPanel";
@@ -9,9 +18,11 @@ import { SchoolMaterialPanel } from "./SchoolMaterialPanel";
 function SubjectRouteBody({
   kind,
   message,
+  onRetry,
 }: {
   kind: "loading" | "error" | "missing";
   message?: string;
+  onRetry?: () => void;
 }) {
   switch (kind) {
     case "loading":
@@ -22,9 +33,17 @@ function SubjectRouteBody({
       );
     case "error":
       return (
-        <p className="form__error" role="alert">
-          {message ?? "Could not load this subject."}
-        </p>
+        <div className="subject-status">
+          <p className="form__error" role="alert">
+            {message ?? "Could not load this subject."}
+          </p>
+          <button type="button" className="btn btn--sm" onClick={() => onRetry?.()}>
+            Try again
+          </button>
+          <Link className="btn btn--sm btn--outline" to="/">
+            Back to subjects
+          </Link>
+        </div>
       );
     case "missing":
       return (
@@ -47,9 +66,11 @@ function SubjectRouteBody({
 export function SubjectRouteStatus({
   kind,
   message,
+  onRetry,
 }: {
   kind: "loading" | "error" | "missing";
   message?: string;
+  onRetry?: () => void;
 }) {
   return (
     <div className="subject-view">
@@ -59,7 +80,7 @@ export function SubjectRouteStatus({
           { label: "Subject" },
         ]}
       />
-      <SubjectRouteBody kind={kind} message={message} />
+      <SubjectRouteBody kind={kind} message={message} onRetry={onRetry} />
     </div>
   );
 }
@@ -72,6 +93,26 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
   const placement = `${subject.grade_name} · ${subject.academic_period_name}`;
   const blurb = subjectBlurb(subject);
   const complete = total > 0 && pct >= 100;
+  const resume = subjectResumeTarget(subject);
+  const [dueTopics, setDueTopics] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (subject.topics.length === 0) return;
+    let cancelled = false;
+    void Promise.resolve(getFeedbackHighlights())
+      .then((highlights) => {
+        if (cancelled || !highlights) return;
+        const next = dueTopicIds(subject.topics, highlights.due_reviews);
+        if (next.length === 0) return;
+        setDueTopics(next);
+      })
+      .catch(() => {
+        if (!cancelled) setDueTopics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [subject]);
 
   return (
     <div className="subject-view">
@@ -101,7 +142,7 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
             </>
           ) : (
             <>
-              <div className="progress-label" id="subject-progress-label">
+              <div className="progress-label">
                 {done}/{total} topics complete · {pct}%
               </div>
               <div
@@ -133,13 +174,41 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
                   </li>
                 ) : null}
               </ul>
+              <nav className="subject-shortcuts" aria-label="Subject shortcuts">
+                {resume ? (
+                  <Link className="pill-btn" to={resume.href}>
+                    <span className="pill-btn__face">
+                      <span className="pill-btn__action">Resume where you stopped</span>
+                      <span className="pill-btn__detail">
+                        {resume.topicTitle}
+                        {resume.slide != null ? ` · slide ${resume.slide}` : ""}
+                      </span>
+                    </span>
+                  </Link>
+                ) : null}
+                <Link className="pill-btn" to={subjectFeedbackPath(subject.id)}>
+                  <span className="pill-btn__face">
+                    <span className="pill-btn__action">Subject feedback</span>
+                  </span>
+                </Link>
+                <Link className="pill-btn" to={dueReviewsPath(subject.id)}>
+                  <span className="pill-btn__face">
+                    <span className="pill-btn__action">Due reviews</span>
+                  </span>
+                </Link>
+                <Link className="pill-btn" to={weakTopicsPath(subject.id)}>
+                  <span className="pill-btn__face">
+                    <span className="pill-btn__action">Weak topics</span>
+                  </span>
+                </Link>
+              </nav>
             </>
           )}
         </article>
       </header>
       {topics.length > 0 ? (
         <div className="material-pane material-pane--school">
-          <SchoolMaterialPanel subjectId={subject.id} topics={topics} />
+          <SchoolMaterialPanel subjectId={subject.id} topics={topics} dueTopicIds={dueTopics} />
         </div>
       ) : null}
     </div>

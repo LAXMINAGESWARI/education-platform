@@ -4,6 +4,7 @@ import type { AttemptHistoryItem, MaterialProgress, QuizSummary, TopicNode } fro
 import { latestRetakeLabel, passedBestLabel, trackedAttempts } from "../lib/quizAction";
 import { topicPagePath } from "../lib/subjectMaterial";
 import { formatAttemptWhen } from "./AttemptHistory";
+import { BadgePill, ScoreBadge, StatusBadge } from "./BadgePill";
 import { TopicEntries } from "./TopicEntries";
 
 function lessonStarted(progress: MaterialProgress | null | undefined, progressPercent: number): boolean {
@@ -95,14 +96,51 @@ function TopicProgress({ percent }: { percent: number }) {
   );
 }
 
+function TopicInfoPills({
+  topic,
+  due,
+}: {
+  topic: TopicNode;
+  due: boolean;
+}) {
+  const score = topic.overall_quiz?.best_score_percent;
+  const slide =
+    topic.topic_lesson_progress?.status === "opened"
+      ? topic.topic_lesson_progress.last_unit_ordinal
+      : null;
+  if (score == null && slide == null && !due) return null;
+
+  return (
+    <ul className="meta-row topic-card__pills" aria-label={`${topic.title} progress`}>
+      {score != null ? (
+        <li>
+          <ScoreBadge value={score} />
+        </li>
+      ) : null}
+      {slide != null && slide > 0 ? (
+        <li>
+          <BadgePill>Slide {slide}</BadgePill>
+        </li>
+      ) : null}
+      {due ? (
+        <li>
+          <StatusBadge status="due" />
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
 function TopicCard({
   subjectId,
   topic,
   index,
+  due,
 }: {
   subjectId: string;
   topic: TopicNode;
   index: number;
+  due: boolean;
 }) {
   const quiz = topic.overall_quiz;
   const lessonDone = Boolean(topic.topic_lesson_completed);
@@ -125,6 +163,7 @@ function TopicCard({
             </Link>
             <p className="list-item__meta">{percentLabel}</p>
             <TopicProgress percent={topic.progress_percent} />
+            <TopicInfoPills topic={topic} due={due} />
           </div>
         </div>
         <TopicEntries subjectId={subjectId} topic={topic} />
@@ -140,6 +179,7 @@ function TopicCard({
           <p className="list-item__title">{topic.title}</p>
           <p className="list-item__meta">{percentLabel}</p>
           <TopicProgress percent={topic.progress_percent} />
+          <TopicInfoPills topic={topic} due={due} />
         </div>
         <div className="subtopic-card__quiz-col">
           <span className={`badge ${status.cls}`}>{status.label}</span>
@@ -160,9 +200,11 @@ function TopicCard({
 export function SchoolMaterialPanel({
   subjectId,
   topics,
+  dueTopicIds = [],
 }: {
   subjectId: string;
   topics: TopicNode[];
+  dueTopicIds?: readonly string[];
 }) {
   const topicCount = topics.length === 1 ? "1 topic" : `${topics.length} topics`;
 
@@ -182,7 +224,13 @@ export function SchoolMaterialPanel({
           ) : (
             <ul className="list">
               {topics.map((topic, index) => (
-                <TopicCard key={topic.id} subjectId={subjectId} topic={topic} index={index} />
+                <TopicCard
+                  key={topic.id}
+                  subjectId={subjectId}
+                  topic={topic}
+                  index={index}
+                  due={dueTopicIds.includes(topic.id)}
+                />
               ))}
             </ul>
           )}
