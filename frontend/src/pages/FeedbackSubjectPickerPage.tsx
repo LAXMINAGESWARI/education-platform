@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 
 import { getFeedbackHighlights, getFeedbackOverview } from "../api/feedback";
 import { fetchLearningDirectory } from "../api/materials";
@@ -13,19 +13,23 @@ import {
   type DueReviewRow,
 } from "../components/FeedbackEntriesTable";
 import { formatScore, scoreNumber } from "../lib/feedbackHierarchy";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 type ReviewTarget = { subjectId: string; subjectName: string };
 
 export function FeedbackSubjectPickerPage() {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<FeedbackOverview | null>(null);
   const [dueReviews, setDueReviews] = useState<ReviewNudgeOut[]>([]);
   const [reviewTargets, setReviewTargets] = useState<Map<string, ReviewTarget>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [dueLoaded, setDueLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setDueLoaded(false);
     void getFeedbackOverview()
       .then((data) => {
         if (!cancelled) {
@@ -57,6 +61,9 @@ export function FeedbackSubjectPickerPage() {
           setDueReviews([]);
           setReviewTargets(new Map());
         }
+      })
+      .finally(() => {
+        if (!cancelled) setDueLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -87,12 +94,10 @@ export function FeedbackSubjectPickerPage() {
   const showDue = visibleDue.length > 0 || searchParams.get("section") === "due";
 
   useEffect(() => {
-    if (searchParams.get("section") !== "due") return;
-    const target = document.getElementById("feedback-due");
-    if (target && typeof target.scrollIntoView === "function") {
-      target.scrollIntoView({ block: "start" });
-    }
-  }, [searchParams, showDue]);
+    const wantsDue = location.hash === "#feedback-due" || searchParams.get("section") === "due";
+    if (!wantsDue || !overview || !dueLoaded) return;
+    return revealElementByIdWhenSettled("feedback-due");
+  }, [dueLoaded, location.hash, overview, searchParams, showDue]);
 
   const attempted = overview?.subjects.filter((subject) => scoreNumber(subject.score_percent) !== null).length ?? 0;
   const quizzes =
@@ -196,7 +201,7 @@ export function FeedbackSubjectPickerPage() {
               aria-labelledby="feedback-due-heading"
             >
               <header className="catalog-panel__head">
-                <h2 id="feedback-due-heading" className="section-title">
+                <h2 id="feedback-due-heading" className="section-title" tabIndex={-1}>
                   Due for review
                 </h2>
                 <p>

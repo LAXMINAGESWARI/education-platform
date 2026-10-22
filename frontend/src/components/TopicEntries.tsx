@@ -44,7 +44,11 @@ export function TopicEntries({
           </span>
         </div>
       )}
-      <Link className="pill-btn" to={topicFeedbackPath(subjectId, topic.id)}>
+      <Link
+        className="pill-btn"
+        to={topicFeedbackPath(subjectId, topic.id)}
+        aria-label={`Feedback for ${topic.title}`}
+      >
         <span className="pill-btn__face">
           <span className="pill-btn__action">Feedback</span>
         </span>

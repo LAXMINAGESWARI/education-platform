@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -123,6 +123,28 @@ describe("SubjectDetail", () => {
     expect(topicProgress).not.toHaveTextContent(">");
     expect(topicProgress).not.toHaveTextContent("›");
     expect(topicProgress.querySelector(".subtopic-card__chevron")).toBeNull();
+    expect(topicProgress).toHaveAttribute("role", "list");
+    expect(screen.getByRole("link", { name: "Feedback for Fractions" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback/topics/topic-1",
+    );
+    expect(screen.getByRole("link", { name: "Feedback for Decimals" })).toHaveAttribute(
+      "href",
+      "/subjects/math-1/feedback/topics/topic-2",
+    );
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+  });
+
+  it("hides Weak topics when no attempted topic is below the pass bar", () => {
+    renderDetail(
+      subject({
+        topics: [
+          topic({ overall_quiz: { ...topic().overall_quiz!, best_score_percent: 70, passed: true } }),
+        ],
+      }),
+    );
+    expect(screen.queryByRole("link", { name: "Weak topics" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Subject feedback" })).toBeInTheDocument();
   });
 
   it("renders an empty subject without topic cards", () => {
@@ -165,6 +187,11 @@ describe("SubjectDetail", () => {
       subject({
         topics: [
           topic({
+            overall_quiz: {
+              ...topic().overall_quiz!,
+              best_score_percent: 55,
+              passed: false,
+            },
             topic_lesson_progress: {
               status: "opened",
               opened_at: "2026-08-09T21:00:00Z",
@@ -214,6 +241,52 @@ describe("SubjectDetail", () => {
     );
     expect(await screen.findByText("Due")).toHaveClass("badge", "badge--warn");
     expect(screen.getByText("Slide 3")).toBeInTheDocument();
+  });
+
+  it("removes the Due pill when a later highlight list is empty", async () => {
+    const dueSubject = subject({
+      topics: [
+        topic({
+          subtopics: [
+            {
+              id: "st-due",
+              title: "Practice",
+              slug: "practice",
+              sequence: 1,
+              has_lesson: false,
+              lesson_completed: false,
+              progress_percent: 0,
+              quiz: null,
+            },
+          ],
+        }),
+      ],
+    });
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({
+      due_reviews: [
+        {
+          subtopic_id: "st-due",
+          subtopic_name: "Practice",
+          topic_name: "Fractions",
+          days_since_last_attempt: 12,
+          due_interval_days: 7,
+          remediation: null,
+        },
+      ],
+      trajectories: [],
+    });
+    const { rerender } = renderDetail(dueSubject);
+    expect(await screen.findByText("Due")).toBeInTheDocument();
+
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({ due_reviews: [], trajectories: [] });
+    rerender(
+      <MemoryRouter>
+        <SubjectDetail subject={{ ...dueSubject }} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("Due")).not.toBeInTheDocument();
+    });
   });
 });
 

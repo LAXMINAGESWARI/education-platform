@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { getFeedbackHighlights } from "../api/feedback";
 import type { SubjectNode } from "../api/types";
 import { dueReviewsPath, dueTopicIds, subjectFeedbackPath, weakTopicsPath } from "../lib/feedbackLinks";
+import { scoreNumber } from "../lib/feedbackHierarchy";
 import {
   subjectBlurb,
   subjectCardCounts,
@@ -94,6 +95,10 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
   const blurb = subjectBlurb(subject);
   const complete = total > 0 && pct >= 100;
   const resume = subjectResumeTarget(subject);
+  const showWeakTopics = topics.some((topic) => {
+    const score = scoreNumber(topic.overall_quiz?.best_score_percent);
+    return score !== null && score < 70;
+  });
   const [dueTopics, setDueTopics] = useState<string[]>([]);
 
   useEffect(() => {
@@ -103,8 +108,11 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
       .then((highlights) => {
         if (cancelled || !highlights) return;
         const next = dueTopicIds(subject.topics, highlights.due_reviews);
-        if (next.length === 0) return;
-        setDueTopics(next);
+        setDueTopics((current) =>
+          current.length === next.length && current.every((id, index) => id === next[index])
+            ? current
+            : next,
+        );
       })
       .catch(() => {
         if (!cancelled) setDueTopics([]);
@@ -196,11 +204,13 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
                     <span className="pill-btn__action">Due reviews</span>
                   </span>
                 </Link>
-                <Link className="pill-btn" to={weakTopicsPath(subject.id)}>
-                  <span className="pill-btn__face">
-                    <span className="pill-btn__action">Weak topics</span>
-                  </span>
-                </Link>
+                {showWeakTopics ? (
+                  <Link className="pill-btn" to={weakTopicsPath(subject.id)}>
+                    <span className="pill-btn__face">
+                      <span className="pill-btn__action">Weak topics</span>
+                    </span>
+                  </Link>
+                ) : null}
               </nav>
             </>
           )}

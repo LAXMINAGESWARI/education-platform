@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 
 import { getSubjectEngagementRates, type EngagementRate } from "../api/engagement";
 import { getFeedbackSubject } from "../api/feedback";
@@ -16,6 +16,7 @@ import {
   momentumGain,
   scoreNumber,
 } from "../lib/feedbackHierarchy";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 function TopicSummaryTable({
   topics,
@@ -111,6 +112,7 @@ function SelfCheck({
 
 export function SubjectFeedbackPage() {
   const { subjectId = "" } = useParams();
+  const location = useLocation();
   const [detail, setDetail] = useState<FeedbackSubjectDetail | null>(null);
   const [confidence, setConfidence] = useState<ConfidenceLevel | null>(null);
   const [engagement, setEngagement] = useState<EngagementRate[]>([]);
@@ -138,6 +140,11 @@ export function SubjectFeedbackPage() {
       cancelled = true;
     };
   }, [subjectId]);
+
+  useEffect(() => {
+    if (!detail || location.hash !== "#needs-attention") return;
+    return revealElementByIdWhenSettled("needs-attention");
+  }, [detail, location.hash]);
 
   if (!detail && !error) {
     return (
@@ -176,14 +183,15 @@ export function SubjectFeedbackPage() {
         <p className="feedback-summary__kicker">Subject</p>
         <p className="feedback-card__score">{formatScore(detail.score_percent)}</p>
         {trend && <p className="feedback-card__trend">{trend}</p>}
-        <p
+        <h2
           id="needs-attention"
+          tabIndex={-1}
           className={detail.topics_needing_attention.length > 0 ? "progress-label" : "sr-only"}
         >
           {detail.topics_needing_attention.length > 0
             ? `Needs attention: ${detail.topics_needing_attention.join(", ")}`
             : "No topics need attention right now."}
-        </p>
+        </h2>
         <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />
         <SubjectEngagement rates={engagement} />
         <FocusLine focus={detail.focus} />

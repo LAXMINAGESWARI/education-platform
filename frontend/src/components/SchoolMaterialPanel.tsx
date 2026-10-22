@@ -111,7 +111,7 @@ function TopicInfoPills({
   if (score == null && slide == null && !due) return null;
 
   return (
-    <ul className="meta-row topic-card__pills" aria-label={`${topic.title} progress`}>
+    <ul className="meta-row topic-card__pills" role="list" aria-label={`${topic.title} progress`}>
       {score != null ? (
         <li>
           <ScoreBadge value={score} />
