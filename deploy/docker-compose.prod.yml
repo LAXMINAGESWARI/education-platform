@@ -139,7 +139,8 @@ services:
     restart: unless-stopped
     init: true
     command: ["python", "-m", "education_platform.workers"]
-    stop_grace_period: 30s
+    # Longer than WORKER_SHUTDOWN_GRACE_SECONDS (25) so the lease release can commit.
+    stop_grace_period: 40s
     env_file:
       - path: .env
         required: false

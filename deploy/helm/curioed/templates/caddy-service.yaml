@@ -1,0 +1,20 @@
+{{- if .Values.caddyAlias.enabled }}
+# ExternalName is a CNAME. The tunnel dials caddy:80, CoreDNS follows the
+# CNAME to Traefik's Service, and that Service's port 80 is the web entrypoint.
+# k3s Traefik exposes port 80 (name web) on Service/traefik in kube-system.
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy-alias
+spec:
+  type: ExternalName
+  externalName: {{ .Values.caddyAlias.externalName }}
+  ports:
+    - name: web
+      port: 80
+      targetPort: 80
+      protocol: TCP
+{{- end }}

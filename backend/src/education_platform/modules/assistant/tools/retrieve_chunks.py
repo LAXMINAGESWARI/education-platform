@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from education_platform.core.config import get_settings
-from education_platform.db.url import to_sync_url
+from education_platform.db.session import get_sync_engine
 from education_platform.modules.assistant.contracts import (
     RetrieveChunksArgs,
     RetrieveChunksResult,
@@ -29,54 +28,55 @@ RETRIEVE_CHUNK_EXCERPT_MAX = 4000
 
 
 def _load_chunk_payloads(hits: list[SimilarChunk]) -> list[RetrievedChunk]:
+    """Load chunk text through the shared sync engine.
+
+    That engine uses the application database URL and role. ``reset_engine()``
+    drops it for tests, and the app lifespan disposes it on shutdown.
+    """
     if not hits:
         return []
-    settings = get_settings()
-    engine = create_engine(to_sync_url(settings.database_url), pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            results: list[RetrievedChunk] = []
-            for hit in hits:
-                label = "Source"
-                excerpt = ""
-                page_number: int | None = None
-                if hit.doc_kind == "knowledge_document_version":
-                    knowledge_chunk = session.get(KnowledgeChunk, hit.chunk_id)
-                    if knowledge_chunk is None:
-                        continue
-                    excerpt = knowledge_chunk.text
-                    page_number = knowledge_chunk.page_number
-                    knowledge_version = session.get(KnowledgeDocumentVersion, hit.version_id)
-                    if knowledge_version is not None:
-                        doc = session.get(KnowledgeDocument, knowledge_version.document_id)
-                        if doc is not None:
-                            label = doc.title
-                elif hit.doc_kind == "source_material_version":
-                    source_chunk = session.get(SourceChunk, hit.chunk_id)
-                    if source_chunk is None:
-                        continue
-                    excerpt = source_chunk.text
-                    page_number = source_chunk.page_number
-                    source_version = session.get(SourceMaterialVersion, hit.version_id)
-                    label = "Curriculum material" if source_version is not None else "Curriculum"
-                else:
+    engine = get_sync_engine()
+    with Session(engine) as session:
+        results: list[RetrievedChunk] = []
+        for hit in hits:
+            label = "Source"
+            excerpt = ""
+            page_number: int | None = None
+            if hit.doc_kind == "knowledge_document_version":
+                knowledge_chunk = session.get(KnowledgeChunk, hit.chunk_id)
+                if knowledge_chunk is None:
                     continue
-                if not excerpt.strip():
+                excerpt = knowledge_chunk.text
+                page_number = knowledge_chunk.page_number
+                knowledge_version = session.get(KnowledgeDocumentVersion, hit.version_id)
+                if knowledge_version is not None:
+                    doc = session.get(KnowledgeDocument, knowledge_version.document_id)
+                    if doc is not None:
+                        label = doc.title
+            elif hit.doc_kind == "source_material_version":
+                source_chunk = session.get(SourceChunk, hit.chunk_id)
+                if source_chunk is None:
                     continue
-                results.append(
-                    RetrievedChunk(
-                        id=str(hit.chunk_id),
-                        label=label,
-                        excerpt=excerpt[:RETRIEVE_CHUNK_EXCERPT_MAX],
-                        page_number=page_number,
-                        doc_kind=hit.doc_kind,
-                        doc_id=str(hit.doc_id),
-                        distance=float(hit.distance),
-                    )
+                excerpt = source_chunk.text
+                page_number = source_chunk.page_number
+                source_version = session.get(SourceMaterialVersion, hit.version_id)
+                label = "Curriculum material" if source_version is not None else "Curriculum"
+            else:
+                continue
+            if not excerpt.strip():
+                continue
+            results.append(
+                RetrievedChunk(
+                    id=str(hit.chunk_id),
+                    label=label,
+                    excerpt=excerpt[:RETRIEVE_CHUNK_EXCERPT_MAX],
+                    page_number=page_number,
+                    doc_kind=hit.doc_kind,
+                    doc_id=str(hit.doc_id),
+                    distance=float(hit.distance),
                 )
-            return results
-    finally:
-        engine.dispose()
+            )
+        return results
 
 
 async def retrieve_chunks_handler(

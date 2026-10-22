@@ -1,0 +1,21 @@
+# Optional LAN NodePort for Traefik. Not applied by the CurioEd chart.
+#
+# k3s installs Traefik with a HelmChart named traefik in kube-system. A Service
+# in the curioed namespace cannot select those pods: selectors do not cross
+# namespaces. This HelmChartConfig sets a nodePort on the existing Traefik
+# Service port 80 (the web entrypoint). k3s keeps that Service as LoadBalancer
+# via svclb, and a nodePort on the same port is reachable on the LAN.
+#
+# Apply only when you want http://<pc-lan-ip>:30080 :
+#   sudo cp deploy/k8s/traefik-nodeport.yaml /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+# Confirm with: sudo k3s kubectl get svc -n kube-system traefik
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        nodePort: 30080

@@ -7,6 +7,7 @@ metadata:
     {{- include "curioed.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker-llm
 spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   replicas: {{ .Values.workers.llm.replicas }}
   selector:
     matchLabels:
@@ -20,6 +21,10 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.workers.llm.terminationGracePeriodSeconds }}
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.workers.llm.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "workers") }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -32,28 +37,23 @@ spec:
         - name: worker
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.workers.llm.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          # Same probe choice as the docling worker. No DB liveness.
+          # SIGTERM is handled only after Coder's worker image is deployed.
           args:
             - python
             - -m
             - education_platform.workers
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
+            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.worker "worker" true "shutdownGrace" .Values.workers.llm.shutdownGraceSeconds) | nindent 12 }}
           volumeMounts:
             {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.workers.llm.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.workers.llm.resources | nindent 12 }}
-          readinessProbe:
-            exec:
-              command: ["python", "/app/deploy/db_ping.py"]
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 6
-          livenessProbe:
-            exec:
-              command: ["python", "/app/deploy/db_ping.py"]
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 6
       volumes:
         {{- include "curioed.dataVolumes" . | nindent 8 }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.workers.llm.securityContext) | nindent 8 }}
 {{- end }}

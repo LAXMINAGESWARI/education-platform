@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches:
+      - cursor/k8s-autoscaling
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -63,8 +66,8 @@ jobs:
       PYTEST_SHARD: ${{ matrix.shard }}
       PYTEST_SHARD_COUNT: "2"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
       - run: uv sync --all-groups --locked
@@ -191,8 +194,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
@@ -203,14 +206,63 @@ jobs:
 
   helm:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.17.3
+      - name: Install kubeconform, helm-unittest, and shellcheck
+        run: |
+          curl -sSL -o kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tgz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.8.2
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
       - name: Lint and render the CurioEd chart
         run: deploy/helm/curioed/render-check.sh
+      - name: kubeconform default, all-on, prod, and loadtest
+        run: |
+          set -eu
+          chart=deploy/helm/curioed
+          conform() {
+            kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.31.0 -summary
+          }
+          tag=(--set api.image.tag=ci --set web.image.tag=ci)
+          helm template curioed "$chart" -n curioed "${tag[@]}" | conform
+          helm template curioed "$chart" -n curioed \
+            --set workers.llm.enabled=true \
+            --set curriculumSeed.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set priorityClass.enabled=true \
+            --set keda.llm.enabled=true \
+            --set keda.docling.enabled=true \
+            --set web.autoscaling.enabled=true \
+            "${tag[@]}" \
+            | conform
+          helm template curioed "$chart" -n curioed -f "$chart/values-prod.yaml" | conform
+          helm template curioed "$chart" -n curioed-loadtest -f "$chart/values-loadtest.yaml" | conform
+      - name: helm-unittest
+        run: helm unittest deploy/helm/curioed
+      - name: shellcheck
+        run: shellcheck deploy/k8s/*.sh deploy/loadtest/collect.sh
+      - name: Autodeploy checkout
+        run: deploy/k8s/k8s-autodeploy_test.sh
+      # aquasecurity/setup-trivy v0.3.1. Trivy v0.58.1 was removed and its install URL 404s.
+      - name: Install Trivy
+        continue-on-error: true
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.0
+      - name: Scan base images
+        continue-on-error: true
+        run: |
+          trivy image --exit-code 0 --severity HIGH,CRITICAL \
+            python:3.12-slim-bookworm \
+            nginx:1.27-alpine \
+            cloudflare/cloudflared:2026.10.1 \
+            ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
 
   quality:
     runs-on: ubuntu-latest

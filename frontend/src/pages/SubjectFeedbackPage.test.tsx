@@ -306,6 +306,110 @@ describe("feedback hierarchy", () => {
     );
   });
 
+  it("filters due reviews to the subject in the query", async () => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({
+      due_reviews: [
+        {
+          subtopic_id: "st-math",
+          subtopic_name: "Fractions practice",
+          topic_name: "Fractions",
+          days_since_last_attempt: 10,
+          due_interval_days: 7,
+          remediation: null,
+        },
+        {
+          subtopic_id: "st-sci",
+          subtopic_name: "Forces practice",
+          topic_name: "Forces",
+          days_since_last_attempt: 9,
+          due_interval_days: 7,
+          remediation: null,
+        },
+      ],
+      trajectories: [],
+    });
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      subjects: [
+        {
+          id: "math-1",
+          code: "MATH",
+          name: "Mathematics",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-1",
+              title: "Fractions",
+              slug: "fractions",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-math",
+                  title: "Fractions practice",
+                  slug: "fractions-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: "sci-1",
+          code: "SCI",
+          name: "Science",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-2",
+              title: "Forces",
+              slug: "forces",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-sci",
+                  title: "Forces practice",
+                  slug: "forces-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/feedback?subject=math-1&section=due"]}>
+        <FeedbackSubjectPickerPage />
+      </MemoryRouter>,
+    );
+
+    const due = await screen.findByRole("region", { name: "Due for review" });
+    expect(due).toHaveAttribute("id", "feedback-due");
+    expect(due).toHaveTextContent("1 subtopic is past the review interval.");
+    expect(due).toHaveTextContent("Fractions practice");
+    expect(due).not.toHaveTextContent("Forces practice");
+  });
+
   it("lists topics in order and leaves an unattempted topic blank", async () => {
     const user = userEvent.setup();
     render(
@@ -324,7 +428,7 @@ describe("feedback hierarchy", () => {
     expect(screen.getByRole("region", { name: "Subject summary" })).toHaveTextContent(
       "You're doing well in Mensuration.",
     );
-    expect(screen.getByText("Needs attention: Algebra")).toBeInTheDocument();
+    expect(screen.getByText("Needs attention: Algebra")).toHaveAttribute("id", "needs-attention");
     const links = screen.getAllByRole("link");
     const topicLinks = links.filter((link) => link.getAttribute("href")?.includes("/topics/"));
     expect(topicLinks.map((link) => link.textContent)).toEqual(["Mensuration", "Decimals"]);

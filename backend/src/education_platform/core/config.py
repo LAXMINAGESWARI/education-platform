@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from education_platform.db.url import with_credentials
@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     cors_origin_regex: str = ""
     materials_dir: Path = _DEFAULT_MATERIALS_DIR
     database_url: str = _DEFAULT_DATABASE_URL
+    # Application-role QueuePool. Worst case per pool is size + max_overflow.
+    # Timeout and recycle also apply to the text-to-SQL reader pool.
+    # Overflow 10 and recycle -1 match SQLAlchemy and compose when the env
+    # vars are unset. Kubernetes sets DB_MAX_OVERFLOW=5,
+    # TEXT_TO_SQL_DB_MAX_OVERFLOW=5, and DB_POOL_RECYCLE_SECONDS=1800.
+    db_pool_size: int = Field(default=5, ge=1)
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_timeout_seconds: float = 30.0
+    db_pool_recycle_seconds: int = -1
     # Budget for the readiness SELECT 1. Compose's /health check allows 5s
     # (deploy/docker-compose.prod.yml); keep this shorter so the probe returns
     # an HTTP status before that client timeout.
@@ -78,6 +87,9 @@ class Settings(BaseSettings):
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300
+    # After SIGTERM, finish the current job for this long, then requeue its lease.
+    # Stays under Kubernetes' default terminationGracePeriodSeconds of 30.
+    worker_shutdown_grace_seconds: float = Field(default=25.0, ge=0)
     # Stronger than the writer default (gpt-4o-mini) and a different model id, so the
     # check is not grading items in the same voice that wrote them. Override with
     # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
@@ -117,6 +129,9 @@ class Settings(BaseSettings):
     # never used once the env var is set.
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
+    # Reader-role pool. Timeout and recycle follow the DB_POOL_* settings above.
+    text_to_sql_db_pool_size: int = Field(default=5, ge=1)
+    text_to_sql_db_max_overflow: int = Field(default=10, ge=0)
 
     # LLM gateway. Defaults keep every caller on its existing client. Set a
     # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.

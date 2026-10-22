@@ -40,9 +40,10 @@ _NUMBERED_SECTION = re.compile(r"^\d+(?:\.\d+)+\.?\s+\S")
 _EXERCISE_HEADING = re.compile(r"^exercises?(?:\s+\d+(?:\.\d+)*)?$", re.IGNORECASE)
 _TRAILING_PUNCT = re.compile(r"[\s:.;,!?]+$")
 _WHITESPACE = re.compile(r"\s+")
-# Activity boxes, worked examples, exercises, summaries, and captions are not
-# concepts. Their chunk groups stay addressable by the original heading and are
-# claimed by the concept section they fold into.
+# Whole textbook headings only. Each alternative is anchored, so a real concept
+# such as "Summary Statistics", "Exercise Physiology", "Newton's Method", or
+# "Solution of a Quadratic Equation by Factorisation" is not a heading.
+# Open suffixes (solution…, …'s method, table N…) are not used.
 _ACTIVITY_NOISE = re.compile(
     r"^(?:"
     r"try\s+this(?:\s+out)?"
@@ -52,13 +53,10 @@ _ACTIVITY_NOISE = re.compile(
     r"|think[\s,]+discuss(?:[\s,]+and[\s,]+write)?"
     r"|(?:solved\s+)?examples?(?:\s+\d+(?:\.\d+)*)?"
     r"|exercises?(?:\s+\d+(?:\.\d+)*)?"
-    r"|solution\b.*"
     r"|method\s+\d+"
-    r"|.+['\u2019]s\s+method"
     r"|summary"
     r"|what\s+have\s+(?:we|you)\s+discussed"
     r"|figure\s+it\s+out"
-    r"|(?:fig(?:ure)?|table)\.?\s+\d+\b.*"
     r")$",
     re.IGNORECASE,
 )
@@ -186,21 +184,41 @@ def heading_key(heading: str) -> str:
 
 
 def is_activity_noise_heading(heading: str) -> bool:
-    """Activity boxes, examples, solutions, exercises, summaries, and captions.
+    """Whole textbook headings: exercises, examples, summaries, and activity boxes.
 
     Answer keys are not included: those are dropped, not folded into a concept.
+    A heading matches only when the whole label is one of the known boxes, so
+    ``EXERCISE 9.2`` matches and ``Exercise Physiology`` does not.
     """
     return _ACTIVITY_NOISE.match(heading_key(heading)) is not None
 
 
 def is_outline_noise_heading(heading: str) -> bool:
-    """Non-concept headings. Not a subtopic of their own."""
+    """Non-concept headings. Not a subtopic of their own.
+
+    Same textbook boxes as ``is_activity_noise_heading``, plus answer-key labels
+    (``Ans.``, ``Page No.``, ``Hint:``). Stored concept titles are left alone.
+    """
     key = heading_key(heading)
     if not key:
         return False
     if _APPENDIX_HEADING.match(key) or _HINT_HEADING.match(heading.strip()):
         return True
     return is_activity_noise_heading(key)
+
+
+def nearest_concept_position(index: int, concept_positions: Sequence[int]) -> int | None:
+    """Concept a noise heading folds into: the previous one, else the next.
+
+    ``None`` when the outline has no concept to fold into.
+    """
+    earlier = [position for position in concept_positions if position < index]
+    if earlier:
+        return earlier[-1]
+    later = [position for position in concept_positions if position > index]
+    if later:
+        return later[0]
+    return None
 
 
 def normalize_outline_title(heading: str) -> str:
@@ -465,8 +483,9 @@ def source_sections(rows: Iterable[tuple[str | None, str, int]]) -> list[SourceS
     text and joins the previous sibling under the same parent.     A Hint:
     chunk is not a section: the label is removed and the text joins the
     next sibling under the same parent, or the previous sibling when the
-    next heading has a different parent. Worked examples and method headings
-    ("Method 1", "Ridhima's method") are not sections. Everything from the
+    next heading has a different parent. Worked examples and numbered method
+    headings ("Method 1") are not sections. A named method such as "Ridhima's
+    method" or "Newton's Method" is a section. Everything from the
     first answer-key heading ("Ans.", "Page No.") onward is dropped.
     """
     sections: list[SourceSection] = []

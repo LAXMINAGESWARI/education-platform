@@ -290,7 +290,7 @@ export type FeedbackSubjectDetail = {
   trend_delta: string | number | null;
   topics_needing_attention: string[];
   summary: string;
-  summary_status: "ready" | "fallback";
+  summary_status: FeedbackSummaryStatus;
   topics: FeedbackTopicScore[];
   concepts_mastered: number;
   concepts_attempted: number;

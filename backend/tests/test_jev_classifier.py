@@ -473,9 +473,9 @@ async def test_nan_noul_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_guard_rejects_noul_outside_0_1() -> None:
+async def test_guard_rejects_infinite_and_out_of_range_noul() -> None:
     settings = Settings(openrouter_api_key="test-key")
-    for raw in ("1.5", "-0.1"):
+    for raw in ("Infinity", "-Infinity", "1.5", "-0.1"):
 
         def handler(_request: httpx.Request, raw: str = raw) -> httpx.Response:
             body = '{"answers": {"decision": {"type": "noul", "noul": ' + raw + "}}}"
@@ -484,7 +484,7 @@ async def test_guard_rejects_noul_outside_0_1() -> None:
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with pytest.raises(JudgeResponseError, match="outside 0-1"):
+            with pytest.raises(JudgeResponseError, match="infinite|outside 0-1"):
                 await post_decisions(
                     state="hello",
                     questions={"decision": DATA_INJECTION},

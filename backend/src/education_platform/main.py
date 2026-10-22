@@ -9,6 +9,7 @@ from education_platform.core.config import get_settings
 from education_platform.core.errors import DomainError
 from education_platform.core.health import readiness_response
 from education_platform.db import models as _models
+from education_platform.db.session import dispose_engines
 from education_platform.modules.academics.router import router as academics_router
 from education_platform.modules.assessments.router import router as assessments_router
 from education_platform.modules.assistant.router import router as assistant_router
@@ -34,6 +35,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Curriculum loading is a one-off job, not part of API startup.
     warn_judge_mode_at_startup()
     yield
+    await dispose_engines()
 
 
 def cors_origin_regex(origin_regex: str) -> str | None:
