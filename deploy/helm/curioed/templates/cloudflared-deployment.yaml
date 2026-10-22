@@ -1,3 +1,4 @@
+{{- if .Values.cloudflared.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,10 +9,16 @@ metadata:
   annotations:
     curioed.io/tunnel-origin: {{ .Values.cloudflared.origin | quote }}
 spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   replicas: {{ .Values.cloudflared.replicas }}
   selector:
     matchLabels:
       {{- include "curioed.selectorLabels" (dict "root" . "component" "cloudflared") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       annotations:
@@ -21,6 +28,11 @@ spec:
         app.kubernetes.io/component: cloudflared
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.cloudflared.terminationGracePeriodSeconds }}
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.cloudflared.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "workers") }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -40,10 +52,23 @@ spec:
         - name: cloudflared
           image: {{ include "curioed.imageRef" .Values.cloudflared.image }}
           imagePullPolicy: {{ .Values.cloudflared.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.cloudflared.securityContext "add" list) | nindent 10 }}
           args:
             - tunnel
             - --no-autoupdate
+            - --metrics
+            - 0.0.0.0:{{ .Values.cloudflared.metricsPort }}
             - run
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.cloudflared.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
@@ -52,3 +77,4 @@ spec:
                   key: {{ .Values.secrets.tunnel.tokenKey }}
           resources:
             {{- toYaml .Values.cloudflared.resources | nindent 12 }}
+{{- end }}

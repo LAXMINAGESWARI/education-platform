@@ -1,0 +1,59 @@
+suite: horizontal pod autoscalers
+templates:
+  - api-hpa.yaml
+  - web-hpa.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: renders the api HPA and keeps the web HPA off
+    template: api-hpa.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: HorizontalPodAutoscaler
+      - equal:
+          path: spec.minReplicas
+          value: 1
+      - equal:
+          path: spec.maxReplicas
+          value: 4
+      - equal:
+          path: spec.metrics[0].resource.target.averageUtilization
+          value: 65
+      - equal:
+          path: spec.behavior.scaleUp.stabilizationWindowSeconds
+          value: 0
+      - equal:
+          path: spec.behavior.scaleDown.stabilizationWindowSeconds
+          value: 300
+      - isNull:
+          path: spec.minAvailable
+  - it: drops the api HPA when the KEDA prometheus trigger is on
+    template: api-hpa.yaml
+    set:
+      keda.api.enabled: true
+      keda.api.serverAddress: http://prometheus.monitoring.svc:9090
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders the web HPA only behind its flag
+    template: web-hpa.yaml
+    set:
+      web.autoscaling.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: curioed-web
+      - equal:
+          path: spec.minReplicas
+          value: 1
+      - equal:
+          path: spec.maxReplicas
+          value: 3

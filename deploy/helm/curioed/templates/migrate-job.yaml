@@ -22,6 +22,7 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.migrate.securityContext) | nindent 6 }}
       {{- with include "curioed.imagePullSecrets" . | trim }}
       {{- nindent 6 . }}
       {{- end }}
@@ -32,7 +33,9 @@ spec:
         - name: migrate
           image: {{ include "curioed.imageRef" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.migrate.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
           command: ["sh", "/scripts/migrate-wrapper.sh"]
+          {{- include "curioed.envFrom" . | nindent 10 }}
           env:
             {{- include "curioed.appEnv" . | nindent 12 }}
             - name: BACKUP_DIR
@@ -56,6 +59,7 @@ spec:
               mountPath: /scripts
             - name: backups
               mountPath: /backups
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.migrate.securityContext) | nindent 12 }}
           resources:
             {{- toYaml .Values.migrate.resources | nindent 12 }}
       volumes:
@@ -65,4 +69,5 @@ spec:
         - name: backups
           persistentVolumeClaim:
             claimName: {{ include "curioed.backupClaim" . }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.migrate.securityContext) | nindent 8 }}
 {{- end }}

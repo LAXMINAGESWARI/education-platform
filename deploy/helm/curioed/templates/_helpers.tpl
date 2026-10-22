@@ -85,7 +85,8 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{- define "curioed.imageRef" -}}
-{{- printf "%s:%s" .repository (.tag | default "unreleased") }}
+{{- $tag := required (printf "image.tag is required for %s. Pass a commit SHA or pinned tag with --set. ci is only a test tag, not a published image. Do not use latest or unreleased." .repository) .tag -}}
+{{- printf "%s:%s" .repository $tag -}}
 {{- end }}
 
 {{- define "curioed.validate" -}}
@@ -115,6 +116,165 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- if .Values.cnpg.backup.enabled }}
 {{- fail "cnpg.backup.enabled is not supported yet. Off-site Barman needs object storage. The migrate hook pg_dump is the backup that runs before Alembic." }}
+{{- end }}
+{{- range $image := list .Values.api.image .Values.web.image .Values.cloudflared.image }}
+{{- if eq ($image.tag | default "") "latest" }}
+{{- fail (printf "image tag for %s must be a digest or pinned tag, not latest" $image.repository) }}
+{{- end }}
+{{- end }}
+{{- if contains ":latest" .Values.cnpg.image }}
+{{- fail "cnpg.image must not use the latest tag" }}
+{{- end }}
+{{- if lt (int .Values.api.limitConcurrency) 1 }}
+{{- fail "api.limitConcurrency must be at least 1" }}
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (eq .Values.networkPolicy.postgres.mode "cidr") (not .Values.networkPolicy.postgres.cidr) }}
+{{- fail "networkPolicy.postgres.cidr is required when postgres.mode is cidr" }}
+{{- end }}
+{{- if and .Values.keda.api.enabled (not .Values.keda.api.serverAddress) }}
+{{- fail "keda.api.serverAddress is required when the API Prometheus trigger is enabled" }}
+{{- end }}
+{{- if and .Values.keda.llm.enabled (not .Values.workers.llm.enabled) }}
+{{- fail "keda.llm.enabled requires workers.llm.enabled, and both stay off until WORKER_QUEUES exists" }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+{{- $mode := .Values.networkPolicy.postgres.mode }}
+{{- if not (or (eq $mode "cnpg") (eq $mode "cidr")) }}
+{{- fail "networkPolicy.postgres.mode must be cnpg or cidr" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* .security is the workload identity. Omit user, group, and fsGroup when null. */}}
+{{- define "curioed.podSecurityContext" -}}
+securityContext:
+  runAsNonRoot: {{ .security.runAsNonRoot }}
+  {{- with .security.runAsUser }}
+  runAsUser: {{ . | int64 }}
+  {{- end }}
+  {{- with .security.runAsGroup }}
+  runAsGroup: {{ . | int64 }}
+  {{- end }}
+  {{- with .security.fsGroup }}
+  fsGroup: {{ . | int64 }}
+  {{- end }}
+  seccompProfile:
+    type: {{ .root.Values.podSecurity.seccompProfile }}
+{{- end }}
+
+{{/* Per-workload bool wins. Otherwise the chart-level podSecurity flag. */}}
+{{- define "curioed.readOnlyRootFilesystem" -}}
+{{- if kindIs "bool" .security.readOnlyRootFilesystem -}}
+{{- .security.readOnlyRootFilesystem -}}
+{{- else -}}
+{{- .root.Values.podSecurity.readOnlyRootFilesystem -}}
+{{- end -}}
+{{- end }}
+
+{{/* Writable dirs for a read-only root. Nginx also needs its cache and pid dir. */}}
+{{- define "curioed.tmpVolumeMounts" -}}
+{{- if eq (include "curioed.readOnlyRootFilesystem" .) "true" }}
+- name: tmp
+  mountPath: /tmp
+{{- if .nginx }}
+- name: nginx-cache
+  mountPath: /var/cache/nginx
+- name: nginx-run
+  mountPath: /var/run
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "curioed.tmpVolumes" -}}
+{{- if eq (include "curioed.readOnlyRootFilesystem" .) "true" }}
+- name: tmp
+  emptyDir: {}
+{{- if .nginx }}
+- name: nginx-cache
+  emptyDir: {}
+- name: nginx-run
+  emptyDir: {}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "curioed.containerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: {{ .root.Values.podSecurity.allowPrivilegeEscalation }}
+  runAsNonRoot: {{ .security.runAsNonRoot }}
+  {{- with .security.runAsUser }}
+  runAsUser: {{ . | int64 }}
+  {{- end }}
+  {{- with .security.runAsGroup }}
+  runAsGroup: {{ . | int64 }}
+  {{- end }}
+  readOnlyRootFilesystem: {{ include "curioed.readOnlyRootFilesystem" . | trim }}
+  capabilities:
+    drop:
+      {{- toYaml .root.Values.podSecurity.dropCapabilities | nindent 6 }}
+    {{- with .add }}
+    add:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}
+
+{{- define "curioed.priorityClassName" -}}
+{{- if .root.Values.priorityClass.enabled -}}
+{{- printf "%s-%s" (include "curioed.fullname" .root) .tier -}}
+{{- end -}}
+{{- end }}
+
+{{- define "curioed.keepAnnotation" -}}
+helm.sh/resource-policy: keep
+{{- end }}
+
+{{- define "curioed.platformConfigName" -}}
+{{- printf "%s-platform" (include "curioed.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "curioed.platformEnvData" -}}
+{{- $platform := dict }}
+{{- range $key, $value := .Values.config.platformEnv }}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $key) }}
+{{- fail (printf "config.platformEnv key %q is not an env name" $key) }}
+{{- end }}
+{{- $_ := set $platform $key (toString $value) }}
+{{- end }}
+{{- range $key, $value := .Values.config.extraEnv }}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $key) }}
+{{- fail (printf "config.extraEnv key %q is not an env name" $key) }}
+{{- end }}
+{{- $_ := set $platform $key (toString $value) }}
+{{- end }}
+{{- range $key, $value := $platform }}
+{{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "curioed.envFrom" -}}
+envFrom:
+  - configMapRef:
+      name: {{ include "curioed.platformConfigName" . }}
+{{- end }}
+
+{{- define "curioed.dbPoolEnv" -}}
+- name: DB_POOL_SIZE
+  value: {{ .pool.size | quote }}
+- name: DB_MAX_OVERFLOW
+  value: {{ .pool.maxOverflow | quote }}
+- name: DB_POOL_TIMEOUT_SECONDS
+  value: {{ .pool.timeoutSeconds | quote }}
+- name: DB_POOL_RECYCLE_SECONDS
+  value: {{ .pool.recycleSeconds | quote }}
+{{- if .textToSql }}
+- name: TEXT_TO_SQL_DB_POOL_SIZE
+  value: {{ .pool.textToSqlSize | quote }}
+- name: TEXT_TO_SQL_DB_MAX_OVERFLOW
+  value: {{ .pool.textToSqlMaxOverflow | quote }}
+{{- end }}
+{{- if .worker }}
+- name: WORKER_SHUTDOWN_GRACE_SECONDS
+  value: {{ (.shutdownGrace | default .pool.shutdownGraceSeconds) | quote }}
 {{- end }}
 {{- end }}
 
@@ -231,4 +391,11 @@ podAffinity:
     secretKeyRef:
       name: {{ .Values.secrets.app.existingSecret }}
       key: {{ .Values.secrets.app.openRouterApiKeyKey }}
+{{- range .Values.config.extraSecretEnv }}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secret }}
+      key: {{ .key }}
+{{- end }}
 {{- end }}
