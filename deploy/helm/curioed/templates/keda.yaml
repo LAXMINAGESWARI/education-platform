@@ -1,0 +1,106 @@
+{{- $llm := and .Values.keda.llm.enabled .Values.workers.llm.enabled }}
+{{- $docling := .Values.keda.docling.enabled }}
+{{- $api := .Values.keda.api.enabled }}
+{{- if or $llm $docling }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "curioed.fullname" . }}-postgres
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: userName
+      name: {{ .Values.keda.auth.existingSecret }}
+      key: {{ .Values.keda.auth.usernameKey }}
+    - parameter: password
+      name: {{ .Values.keda.auth.existingSecret }}
+      key: {{ .Values.keda.auth.passwordKey }}
+{{- end }}
+{{- if $llm }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "curioed.workerLlmName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker-llm
+  annotations:
+    # Stay off until WORKER_QUEUES exists. Today every worker drains every queue.
+    curioed.io/worker-queues: required
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "curioed.workerLlmName" . }}
+  minReplicaCount: {{ .Values.keda.llm.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.llm.maxReplicas }}
+  cooldownPeriod: {{ .Values.keda.llm.cooldownPeriod }}
+  triggers:
+    - type: postgresql
+      authenticationRef:
+        name: {{ include "curioed.fullname" . }}-postgres
+      metadata:
+        host: {{ include "curioed.postgresHost" . | quote }}
+        port: "5432"
+        dbName: {{ .Values.cnpg.database | quote }}
+        sslmode: {{ .Values.keda.auth.sslmode | quote }}
+        query: {{ .Values.keda.llm.query | quote }}
+        targetQueryValue: {{ .Values.keda.llm.targetQueryValue | quote }}
+{{- end }}
+{{- if $docling }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "curioed.workerDoclingName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker-docling
+  annotations:
+    curioed.io/worker-queues: required
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "curioed.workerDoclingName" . }}
+  minReplicaCount: {{ .Values.keda.docling.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.docling.maxReplicas }}
+  cooldownPeriod: {{ .Values.keda.docling.cooldownPeriod }}
+  triggers:
+    - type: postgresql
+      authenticationRef:
+        name: {{ include "curioed.fullname" . }}-postgres
+      metadata:
+        host: {{ include "curioed.postgresHost" . | quote }}
+        port: "5432"
+        dbName: {{ .Values.cnpg.database | quote }}
+        sslmode: {{ .Values.keda.auth.sslmode | quote }}
+        query: {{ .Values.keda.docling.query | quote }}
+        targetQueryValue: {{ .Values.keda.docling.targetQueryValue | quote }}
+{{- end }}
+{{- if $api }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "curioed.apiName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "curioed.apiName" . }}
+  minReplicaCount: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.api.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.api.autoscaling.scaleDownStabilizationSeconds }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.api.serverAddress | quote }}
+        query: {{ .Values.keda.api.query | quote }}
+        threshold: {{ .Values.keda.api.threshold | quote }}
+{{- end }}

@@ -1,0 +1,56 @@
+{{- $items := list
+  (dict
+    "name" (include "curioed.apiName" .)
+    "component" "api"
+    "enabled" .Values.pdb.api.enabled
+    "floor" (ternary (int .Values.api.autoscaling.minReplicas) (int .Values.api.replicaCount) .Values.api.autoscaling.enabled)
+  )
+  (dict
+    "name" (include "curioed.webName" .)
+    "component" "web"
+    "enabled" .Values.pdb.web.enabled
+    "floor" (ternary (int .Values.web.autoscaling.minReplicas) (int .Values.web.replicas) .Values.web.autoscaling.enabled)
+  )
+  (dict
+    "name" (include "curioed.cloudflaredName" .)
+    "component" "cloudflared"
+    "enabled" (and .Values.pdb.cloudflared.enabled .Values.cloudflared.enabled)
+    "floor" (int .Values.cloudflared.replicas)
+  )
+  (dict
+    "name" (include "curioed.workerDoclingName" .)
+    "component" "worker-docling"
+    "enabled" (and .Values.pdb.workerDocling.enabled .Values.workerDocling.enabled)
+    "floor" (int .Values.workerDocling.replicas)
+  )
+}}
+{{- if .Values.workers.llm.enabled }}
+{{- $llmFloor := .Values.workers.llm.replicas }}
+{{- if .Values.keda.llm.enabled }}
+{{- $llmFloor = .Values.keda.llm.minReplicas }}
+{{- end }}
+{{- $items = append $items (dict
+  "name" (include "curioed.workerLlmName" .)
+  "component" "worker-llm"
+  "enabled" .Values.pdb.workerLlm.enabled
+  "floor" (int $llmFloor)
+) }}
+{{- end }}
+{{- $root := . }}
+{{- range $items }}
+{{- if and .enabled (ge (int .floor) 2) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "curioed.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" $root "component" .component) | nindent 6 }}
+{{- end }}
+{{- end }}

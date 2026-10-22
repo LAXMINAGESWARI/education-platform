@@ -1,0 +1,50 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "curioed.clusterName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+  annotations:
+    {{- include "curioed.keepAnnotation" . | nindent 4 }}
+spec:
+  instances: {{ .Values.cnpg.instances }}
+  # The chart does not set a pod securityContext. ghcr.io/cloudnative-pg/postgresql
+  # config User is 26, and the operator runs the pod as that non-root uid.
+  imageName: {{ .Values.cnpg.image | quote }}
+  imagePullPolicy: {{ .Values.cnpg.imagePullPolicy }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.database }}
+      owner: {{ .Values.cnpg.owner }}
+      secret:
+        name: {{ .Values.secrets.database.existingSecret }}
+      # Runs as the Postgres superuser in the application database. The
+      # education owner stays a normal owner. Alembic's later
+      # CREATE EXTENSION IF NOT EXISTS vector is then a no-op.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+  postgresql:
+    parameters:
+      {{- range $key, $value := .Values.cnpg.parameters }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+  storage:
+    size: {{ .Values.cnpg.storage.size }}
+    {{- with .Values.cnpg.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.cnpg.resources | nindent 4 }}
+  {{- with include "curioed.priorityClassName" (dict "root" . "tier" "postgres") }}
+  priorityClassName: {{ . }}
+  {{- end }}
+  managed:
+    roles:
+      - name: {{ .Values.cnpg.readerRole }}
+        ensure: present
+        login: true
+        superuser: false
+        comment: Least-privilege role used by text-to-SQL
+        passwordSecret:
+          name: {{ .Values.secrets.textToSql.existingSecret }}

@@ -6,6 +6,7 @@ from typing import Literal
 from uuid import UUID
 
 from education_platform.modules.generation.schemas import GenerationRunOut
+from education_platform.modules.progress.events import ProgressEvent
 from education_platform.modules.rag.schemas import (
     KnowledgeVersionStatusOut,
     MaterialVersionStatusOut,
@@ -80,8 +81,18 @@ class SnapshotFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class ProgressEventFrame:
+    """Upload progress built from the same snapshot as ``SnapshotFrame``."""
+
+    event_id: EventId
+    event: ProgressEvent
+
+
+@dataclass(frozen=True, slots=True)
 class HeartbeatFrame:
-    pass
+    """SSE comment. ``connected`` flushes headers; ``heartbeat`` is the 15s keepalive."""
+
+    comment: Literal["heartbeat", "connected"] = "heartbeat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,4 +106,4 @@ class ErrorFrame:
     detail: str
 
 
-type ProgressFrame = SnapshotFrame | HeartbeatFrame | CloseFrame | ErrorFrame
+type ProgressFrame = SnapshotFrame | ProgressEventFrame | HeartbeatFrame | CloseFrame | ErrorFrame

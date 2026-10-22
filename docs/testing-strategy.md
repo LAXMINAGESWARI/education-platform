@@ -102,10 +102,11 @@ replay-mode job is a proposal: `ci.yml` does not define it. Before it can run it
   and `CORS_ORIGINS='["http://127.0.0.1:4173"]'`. No `OPENROUTER_API_KEY`.
   `Settings.environment` (`core/config.py`) is an unconstrained `str` defaulting to
   `"development"`. `is_development` is true only when the value lowercases to
-  `development`, so `test` is accepted and `is_development` is false. API startup
-  still calls `seed_demo_student` and `seed_demo_admin`
-  (`modules/materials/seed.py`); both return immediately, so they do not create
-  `student@demo.school` or `admin@demo.school`. Dev-only routes return 403:
+  `development`, so `test` is accepted and `is_development` is false. The seed
+  command calls `seed_demo_student` and `seed_demo_admin`
+  (`modules/materials/seed.py`); both return immediately unless `ENVIRONMENT` is
+  `development`, so they do not create `student@demo.school` or `admin@demo.school`.
+  Dev-only routes return 403:
   `POST /api/v1/auth/provision-student`, `POST /api/v1/me/enrollments/poc-math`,
   `POST /api/v1/me/demo/bootstrap`, and `POST /api/v1/me/demo/reset`.
   The frontend stays on Vite preview's default port 4173 (already
@@ -117,8 +118,9 @@ replay-mode job is a proposal: `ci.yml` does not define it. Before it can run it
 - **Schema + seed data:** `uv run alembic upgrade head`, then the synthetic Al Noor school
   the specs log in as (`frontend/src/auth/demoAccounts.ts`, password `demo1234`):
   `uv run python -m education_platform.modules.synthetic.cli`. Curriculum topics are seeded by
-  the API itself on startup (`main.py::_seed_if_empty` ->
-  `modules/materials/seed.py::seed_approved_materials` from `docs/curriculum/`).
+  `uv run python -m education_platform.modules.materials.seed`
+  (`modules/materials/seed.py::seed_approved_materials` from `docs/curriculum/`).
+  The API does not seed on startup.
 - **Processes:** API via `uv run uvicorn education_platform.main:app --port 8000`; frontend
   via `npm run build && npx vite preview` with `VITE_API_BASE_URL=http://127.0.0.1:8000`;
   `npx playwright install --with-deps chromium`; `PLAYWRIGHT_BASE_URL=http://127.0.0.1:4173`.

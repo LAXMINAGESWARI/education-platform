@@ -24,10 +24,19 @@ export function clearSubtopicLessonCache(): void {
   cache.clear();
 }
 
+/** Map a saved 1-based slide number onto the slides for this lesson. */
+export function slideIndexFromOrdinal(
+  slides: { number: number }[],
+  ordinal: number | null | undefined,
+): number {
+  if (ordinal == null || !Number.isFinite(ordinal) || ordinal <= 1 || slides.length === 0) return 0;
+  const match = slides.findIndex((slide) => slide.number === ordinal);
+  if (match >= 0) return match;
+  return Math.min(slides.length - 1, Math.floor(ordinal) - 1);
+}
+
 export function resumeSlideIndex(lesson: LessonMaterial, slides: LessonSlide[]): number {
-  const ordinal = lesson.progress?.last_unit_ordinal;
-  if (!ordinal || ordinal <= 1) return 0;
-  return Math.min(slides.length - 1, ordinal - 1);
+  return slideIndexFromOrdinal(slides, lesson.progress?.last_unit_ordinal);
 }
 
 export function useSubtopicLesson() {

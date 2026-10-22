@@ -10,7 +10,7 @@ import { slidesForLessonView } from "../lib/lessonSlides";
 import { quizActionLabel } from "../lib/quizAction";
 import { topicPagePath } from "../lib/subjectMaterial";
 import { useTopicLesson } from "../lib/useTopicLesson";
-import { resumeSlideIndex } from "../lib/useSubtopicLesson";
+import { resumeSlideIndex, slideIndexFromOrdinal } from "../lib/useSubtopicLesson";
 import { clearLearningDirectoryCache } from "./HomePage";
 
 export function TopicLessonPage() {
@@ -47,7 +47,16 @@ export function TopicLessonPage() {
     if (nextSlides.length === 0) return;
     positioned.current = true;
     const fromStart = searchParams.get("from") === "start";
-    setSlideIndex(fromStart ? 0 : resumeSlideIndex(lesson, nextSlides));
+    const requested = searchParams.get("slide");
+    if (fromStart) {
+      setSlideIndex(0);
+      return;
+    }
+    if (requested != null && requested !== "" && Number.isFinite(Number(requested))) {
+      setSlideIndex(slideIndexFromOrdinal(nextSlides, Number(requested)));
+      return;
+    }
+    setSlideIndex(resumeSlideIndex(lesson, nextSlides));
   }, [lesson, searchParams]);
 
   useEffect(() => {

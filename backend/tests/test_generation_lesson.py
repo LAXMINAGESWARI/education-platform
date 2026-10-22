@@ -328,7 +328,7 @@ def test_stitch_recap_lists_concepts_and_drops_activity_headings() -> None:
     assert "- Introduction" in recap
     assert "- Area of a polygon" in recap
     assert "TRY THESE" not in recap
-    assert "Aman" not in recap
+    assert "Solution: Aman's method" in recap
     assert "EXERCISE" not in recap
     assert "DO THIS" not in recap
     assert "THINK" not in recap
