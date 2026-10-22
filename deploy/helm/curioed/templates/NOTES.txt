@@ -1,0 +1,22 @@
+CurioEd chart {{ .Chart.Version }} rendered in namespace {{ .Release.Namespace }}.
+This chart does not deploy itself. The Images workflow only pushes container images.
+
+Create these Secrets before the pods can start. Do not commit their values.
+  {{ .Values.secrets.app.existingSecret }}
+    keys: {{ .Values.secrets.app.jwtSecretKey }}, {{ .Values.secrets.app.textToSqlPasswordKey }}, {{ .Values.secrets.app.openRouterApiKeyKey }}
+  {{ .Values.secrets.database.existingSecret }}
+    type kubernetes.io/basic-auth, username {{ .Values.cnpg.owner }}
+  {{ .Values.secrets.textToSql.existingSecret }}
+    type kubernetes.io/basic-auth, username {{ .Values.cnpg.readerRole }}
+    password must match {{ .Values.secrets.app.textToSqlPasswordKey }}
+  {{ .Values.secrets.tunnel.existingSecret }}
+    key: {{ .Values.secrets.tunnel.tokenKey }}
+
+Point the Cloudflare public hostname at {{ .Values.cloudflared.origin }}.
+
+The migrate Job (weight {{ .Values.migrate.weight }}) and curriculum seed Job (weight {{ .Values.curriculumSeed.weight }})
+are {{ .Values.migrate.hooks }} hooks. On a first install they run before this chart's
+database exists. Install once with --set migrate.enabled=false --set curriculumSeed.enabled=false,
+wait until the CloudNativePG cluster is ready, then helm upgrade without those overrides.
+
+API probes: {{ .Values.api.probes.livePath }} and {{ .Values.api.probes.readyPath }} on port {{ .Values.api.service.port }}.

@@ -14,6 +14,7 @@ from education_platform.modules.judge import models as judge_models
 from education_platform.modules.materials import models as materials_models
 from education_platform.modules.rag import models as rag_models
 from education_platform.modules.self_evaluation import models as self_evaluation_models
+from education_platform.modules.text_to_sql import models as text_to_sql_models
 
 __all__ = [
     "academics_models",
@@ -30,4 +31,5 @@ __all__ = [
     "materials_models",
     "rag_models",
     "self_evaluation_models",
+    "text_to_sql_models",
 ]

@@ -81,6 +81,8 @@ class PostgresSnapshotReader:
         principal: Principal,
         version_id: UUID,
     ) -> MaterialVersionStatusOut | KnowledgeVersionStatusOut:
+        # No write. Material and knowledge status apply effective_ingest_stage,
+        # so this snapshot and those GETs show the same stage for one row.
         row = (
             await session.execute(
                 select(SourceMaterialVersion, SourceMaterial)

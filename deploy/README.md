@@ -55,7 +55,7 @@ Demo accounts after a synthetic seed use the password `demo1234`. The table is i
 ./deploy/selfhost.sh down
 ```
 
-`up` builds, migrates, and prints the public URL in quick mode. `down` stops the containers and keeps the Postgres volume.
+`up` builds, migrates, loads the markdown curriculum, and prints the public URL in quick mode. `down` stops the containers and keeps the Postgres volume.
 
 ### Keep the PC awake
 
@@ -170,9 +170,14 @@ prints her identifier. If you change the section or student counts, use the
 `S-` number from that log as the email: `student{that number}@alnoor.school`.
 
 `student@demo.school` is created only when `ENVIRONMENT=development`. Leave
-`ENVIRONMENT=production` on the VM. The API still loads the markdown curriculum
-into **POC Demo School** on startup when that tree is empty. The synthetic
-school is a second institution, **Al Noor International**.
+`ENVIRONMENT=production` on the VM. After migrations, the `seed` service runs
+`python -m education_platform.modules.materials.seed` and loads the markdown
+curriculum into **POC Demo School**. `./deploy/deploy.sh` and
+`./deploy/selfhost.sh` run that service on every deploy. The API does not load
+it on startup. Run it by hand with
+`docker compose --project-name education-platform-prod --env-file deploy/.env -f deploy/docker-compose.prod.yml run --rm --no-deps seed`
+after migrate has succeeded. The synthetic school is a second institution,
+**Al Noor International**.
 
 `SEED_SYNTHETIC=true` skips the seed when that institution already exists, so
 later deploys do not wipe it. Set `SEED_SYNTHETIC=always` in `deploy/.env`, run
@@ -298,7 +303,8 @@ cd /opt/education-platform
 ```
 
 The script is safe to run again. It fetches `main`, builds the images, migrates,
-recreates the app containers, and prunes unused images. Postgres is not
+loads the markdown curriculum, recreates the app containers, and prunes unused
+images. Postgres is not
 recreated, so the data volume stays. The first build downloads PyTorch CPU and
 Docling and takes a while. Later builds are incremental.
 
@@ -329,8 +335,9 @@ curl --fail --silent https://DOMAIN/health
 curl --fail --silent --output /dev/null --write-out '%{http_code}\n' https://DOMAIN/
 ```
 
-`/health` returns `{"status":"ok"}`. `/` returns `200` and the SPA. Sign in at
-`https://DOMAIN/login` with the accounts above.
+`/health` checks Postgres and returns `{"status":"ok","db":"ok"}`, or HTTP 503
+with `{"status":"degraded","db":"error"}` when that check fails. `/` returns
+`200` and the SPA. Sign in at `https://DOMAIN/login` with the accounts above.
 
 ## Update and redeploy
 

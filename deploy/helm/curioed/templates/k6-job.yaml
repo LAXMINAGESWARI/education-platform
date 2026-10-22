@@ -1,0 +1,54 @@
+{{- if .Values.loadtest.k6.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "curioed.fullname" . }}-k6
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k6
+data:
+  k6-api.js: |
+{{ .Files.Get "files/k6-api.js" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "curioed.fullname" . }}-k6
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k6
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: k6
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.loadtest.k6.securityContext) | nindent 6 }}
+      containers:
+        - name: k6
+          image: {{ .Values.loadtest.k6.image }}
+          imagePullPolicy: IfNotPresent
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.loadtest.k6.securityContext "add" list) | nindent 10 }}
+          args: ["run", "/scripts/k6-api.js"]
+          env:
+            - name: API_URL
+              value: {{ printf "http://%s:%v" (include "curioed.apiName" .) .Values.api.service.port | quote }}
+            - name: WEB_URL
+              value: {{ printf "http://%s:%v" (include "curioed.webName" .) .Values.web.service.port | quote }}
+            - name: DEMO_PASSWORD
+              value: {{ .Values.loadtest.k6.demoPassword | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            {{- toYaml .Values.loadtest.k6.resources | nindent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "curioed.fullname" . }}-k6
+{{- end }}

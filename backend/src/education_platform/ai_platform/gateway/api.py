@@ -11,7 +11,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -89,6 +89,39 @@ async def complete(
     return Completion(text=text, parsed_json=parsed, usage=usage, served_model=served)
 
 
+async def complete_stream(
+    step: str,
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    ctx: CallContext,
+    on_delta: Callable[[str], Awaitable[None]],
+) -> Completion:
+    """Stream provider chunks through ``on_delta`` and meter one usage row at the end.
+
+    ``complete(..., stream=True)`` still buffers. This is the variant that yields
+    each text delta as it arrives. A retry does not run after a delta was emitted.
+    """
+    cfg = ctx.settings or get_settings()
+    profile = _checked_profile(step, ctx, cfg)
+    started = time.perf_counter()
+    try:
+        text, usage, served = await _execute_async(
+            profile,
+            messages,
+            cfg,
+            response_format=None,
+            stream=True,
+            on_delta=on_delta,
+        )
+    except Exception as exc:
+        await _schedule_meter(_error_record(profile, exc, _latency_ms(started)))
+        if isinstance(exc, OpenRouterError):
+            raise
+        raise OpenRouterError(_failure_message(exc)) from exc
+    await _schedule_meter(_ok_record(profile, usage, served, _latency_ms(started)))
+    return Completion(text=text, parsed_json=None, usage=usage, served_model=served)
+
+
 def complete_sync(
     step: str,
     messages: Sequence[Mapping[str, Any]],
@@ -127,6 +160,7 @@ async def _execute_async(
     *,
     response_format: Mapping[str, Any] | None,
     stream: bool,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, TokenUsage, str]:
     breaker = breaker_for(
         profile.step,
@@ -143,6 +177,14 @@ async def _execute_async(
     attempts = profile.max_retries + 1
     deadline = _monotonic() + profile.timeout_seconds
     settled = False
+    emitted = False
+
+    async def emit(text: str) -> None:
+        nonlocal emitted
+        emitted = True
+        if on_delta is not None:
+            await on_delta(text)
+
     try:
         for attempt in range(attempts):
             remaining = deadline - _monotonic()
@@ -160,6 +202,7 @@ async def _execute_async(
                         skipped_primary=skipped,
                         response_format=response_format,
                         stream=stream,
+                        on_delta=emit if on_delta is not None else None,
                         timeout=_attempt_timeout(
                             profile.timeout_seconds,
                             remaining,
@@ -167,7 +210,7 @@ async def _execute_async(
                         ),
                     )
             except Exception as exc:
-                if _can_retry(exc, attempt, attempts, deadline):
+                if not emitted and _can_retry(exc, attempt, attempts, deadline):
                     await _async_sleep(_capped_delay(attempt, exc, settings, deadline))
                     continue
                 _note_primary(
@@ -266,6 +309,7 @@ async def _once_async(
     response_format: Mapping[str, Any] | None,
     stream: bool,
     timeout: float,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, TokenUsage, str]:
     kwargs = _request_kwargs(
         profile,
@@ -278,7 +322,7 @@ async def _once_async(
     )
     create = client.chat.completions.create
     if stream:
-        return await _read_async_stream(await create(**kwargs))
+        return await _read_async_stream(await create(**kwargs), on_delta=on_delta)
     return _read_completion(await create(**kwargs), selected)
 
 
@@ -365,12 +409,18 @@ def _read_completion(response: Any, selected: str) -> tuple[str, TokenUsage, str
     return str(content), usage_from_provider(getattr(response, "usage", None)), served_model
 
 
-async def _read_async_stream(stream: Any) -> tuple[str, TokenUsage, str]:
+async def _read_async_stream(
+    stream: Any, *, on_delta: Callable[[str], Awaitable[None]] | None = None
+) -> tuple[str, TokenUsage, str]:
     parts: list[str] = []
     served = ""
     usage = TokenUsage()
     async for chunk in stream:
+        before = len(parts)
         served, usage = _take_chunk(chunk, parts, served, usage)
+        if on_delta is not None:
+            for part in parts[before:]:
+                await on_delta(part)
     if not parts:
         raise OpenRouterError("OpenRouter returned an empty completion")
     return "".join(parts), usage, served

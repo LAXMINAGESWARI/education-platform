@@ -1,0 +1,73 @@
+{{- if .Values.migrate.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "curioed.migrateName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ .Values.migrate.hooks | quote }}
+    helm.sh/hook-weight: {{ .Values.migrate.weight | quote }}
+    helm.sh/hook-delete-policy: {{ .Values.migrate.deletePolicy | quote }}
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.migrate.securityContext) | nindent 6 }}
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "curioed.imageRef" .Values.api.image }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.migrate.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          command: ["sh", "/scripts/migrate-wrapper.sh"]
+          {{- include "curioed.envFrom" . | nindent 10 }}
+          env:
+            {{- include "curioed.appEnv" . | nindent 12 }}
+            - name: BACKUP_DIR
+              value: /backups
+            - name: MIGRATE_DATABASE_WAIT_SECONDS
+              value: {{ .Values.migrate.databaseWaitSeconds | quote }}
+            - name: SEED_SYNTHETIC
+              value: {{ .Values.config.seedSynthetic | quote }}
+            - name: SYNTHETIC_INSTITUTION
+              value: {{ .Values.config.syntheticInstitution | quote }}
+            - name: SYNTHETIC_STUDENTS_PER_SECTION
+              value: {{ .Values.config.syntheticStudentsPerSection | quote }}
+            - name: SYNTHETIC_SECTIONS_PER_GRADE
+              value: {{ .Values.config.syntheticSectionsPerGrade | quote }}
+            - name: SYNTHETIC_TERM_WEEKS
+              value: {{ .Values.config.syntheticTermWeeks | quote }}
+            - name: SYNTHETIC_SEED
+              value: {{ .Values.config.syntheticSeed | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+            - name: backups
+              mountPath: /backups
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.migrate.securityContext) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "curioed.migrateName" . }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ include "curioed.backupClaim" . }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.migrate.securityContext) | nindent 8 }}
+{{- end }}

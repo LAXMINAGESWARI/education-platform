@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.core.errors import DomainError
@@ -26,6 +27,11 @@ from education_platform.modules.materials.models import (
     SourceChunk,
     SourceMaterial,
     SourceMaterialVersion,
+)
+from education_platform.modules.progress.stage_store import (
+    EffectiveIngestStage,
+    effective_ingest_stage,
+    mark_upload_received,
 )
 from education_platform.modules.rag import storage
 from education_platform.modules.rag.contracts import parse_required_roles
@@ -168,6 +174,7 @@ async def get_material_version_status(
         )
         or 0
     )
+    visible = await _visible_ingest_stage(session, version)
     return MaterialVersionStatusOut(
         id=version.id,
         source_material_id=version.source_material_id,
@@ -177,6 +184,12 @@ async def get_material_version_status(
         failure_reason=version.failure_reason,
         chunk_count=chunk_count,
         blob_content_type=version.blob_content_type,
+        stage=visible.stage,
+        stage_seq=visible.stage_seq,
+        stage_current=visible.stage_current,
+        stage_total=visible.stage_total,
+        stage_message=visible.stage_message,
+        stage_updated_at=visible.stage_updated_at,
     )
 
 
@@ -230,6 +243,7 @@ async def upload_knowledge_document(
         blob_content_type=content_type,
         checksum=checksum,
     )
+    mark_upload_received(version)
     session.add(version)
     await session.flush()
 
@@ -383,6 +397,7 @@ async def get_knowledge_version_status(
         )
         or 0
     )
+    visible = await _visible_ingest_stage(session, version)
     return KnowledgeVersionStatusOut(
         id=version.id,
         document_id=version.document_id,
@@ -391,4 +406,42 @@ async def get_knowledge_version_status(
         failure_reason=version.failure_reason,
         chunk_count=chunk_count,
         blob_content_type=version.blob_content_type,
+        stage=visible.stage,
+        stage_seq=visible.stage_seq,
+        stage_current=visible.stage_current,
+        stage_total=visible.stage_total,
+        stage_message=visible.stage_message,
+        stage_updated_at=visible.stage_updated_at,
+    )
+
+
+async def _visible_ingest_stage(
+    session: AsyncSession,
+    version: SourceMaterialVersion | KnowledgeDocumentVersion,
+) -> EffectiveIngestStage:
+    """Apply the shared lease predicate. This read does not update the row."""
+    job = await session.scalar(
+        select(IngestJob)
+        .where(
+            or_(
+                IngestJob.source_material_version_id == version.id,
+                IngestJob.knowledge_document_version_id == version.id,
+            ),
+            IngestJob.status.in_((IngestJobStatus.QUEUED, IngestJobStatus.RUNNING)),
+        )
+        .order_by(IngestJob.created_at.desc())
+        .limit(1)
+    )
+    status = None if job is None else job.status.value
+    return effective_ingest_stage(
+        stage=version.stage,
+        stage_seq=int(version.stage_seq or 0),
+        stage_current=version.stage_current,
+        stage_total=version.stage_total,
+        stage_message=version.stage_message,
+        stage_updated_at=version.stage_updated_at,
+        job_status=status,
+        attempts=0 if job is None else int(job.attempts or 0),
+        locked_until=None if job is None else job.locked_until,
+        now=datetime.now(UTC),
     )

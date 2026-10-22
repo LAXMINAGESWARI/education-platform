@@ -9,12 +9,14 @@ from education_platform.core.errors import DomainError
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
 from education_platform.modules.progress.close import should_close
+from education_platform.modules.progress.events import progress_for_snapshot
 from education_platform.modules.progress.snapshots import PostgresSnapshotReader
 from education_platform.modules.progress.types import (
     CloseFrame,
     ErrorFrame,
     EventId,
     HeartbeatFrame,
+    ProgressEventFrame,
     ProgressFrame,
     ProgressSnapshot,
     ProgressSubject,
@@ -52,6 +54,7 @@ async def subscribe(
     waiter = wakes or PostgresWakeWaiter()
     last = last_event_id
     heal = True
+    opened = False
     try:
         await waiter.wait(subject, timeout=0)
         while True:
@@ -69,7 +72,17 @@ async def subscribe(
             closing = should_close(snapshot)
             if last is None or eid != last:
                 last = eid
+                opened = True
                 yield SnapshotFrame(event_id=eid, snapshot=snapshot, close_after=closing)
+                progress = progress_for_snapshot(snapshot)
+                if progress is not None:
+                    yield ProgressEventFrame(event_id=eid, event=progress)
+            elif not opened and not closing:
+                # Opening resume already has this id, so the next wait would be
+                # the 15s heartbeat. A comment here lets the router flush
+                # headers before that wait. Later unchanged polls stay quiet.
+                opened = True
+                yield HeartbeatFrame(comment="connected")
             if closing:
                 yield CloseFrame(reason="terminal")
                 return

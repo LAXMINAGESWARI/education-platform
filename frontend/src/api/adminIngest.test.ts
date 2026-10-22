@@ -92,5 +92,13 @@ describe("adminIngest helpers", () => {
     const docs = await listKnowledgeDocuments();
     expect(docs).toHaveLength(1);
     expect(docs[0]?.title).toBe("Handbook");
+    expect(apiRequest).toHaveBeenCalledWith("/admin/knowledge-documents", undefined);
+  });
+
+  it("forwards an abort signal when listing knowledge documents", async () => {
+    vi.mocked(apiRequest).mockResolvedValue([]);
+    const abort = new AbortController();
+    await listKnowledgeDocuments(abort.signal);
+    expect(apiRequest).toHaveBeenCalledWith("/admin/knowledge-documents", { signal: abort.signal });
   });
 });

@@ -1,0 +1,78 @@
+suite: cloudflared rollout
+templates:
+  - cloudflared-deployment.yaml
+  - pdb.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: rolls with a metrics readiness probe and grace above 30s
+    template: cloudflared-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 1
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 40
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /ready
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: metrics
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: 0.0.0.0:2000
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: cloudflare/cloudflared:2026.10.1
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65532
+  - it: budgets cloudflared when two replicas are requested
+    template: pdb.yaml
+    asserts:
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-cloudflared
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - isNull:
+          path: spec.minAvailable
+  - it: omits the cloudflared budget below two replicas
+    template: pdb.yaml
+    set:
+      cloudflared.replicas: 0
+    asserts:
+      - hasDocuments:
+          count: 1
+      - containsDocument:
+          any: true
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: curioed-web
