@@ -1,0 +1,55 @@
+{{- if .Values.migrate.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "curioed.migrateName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ .Values.migrate.hooks | quote }}
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: {{ .Values.migrate.deletePolicy | quote }}
+data:
+  migrate-wrapper.sh: |
+    #!/bin/sh
+    # Wait until Postgres answers, then run the same script Compose uses.
+    # migrate.sh takes a pg_dump and only then runs Alembic.
+    set -eu
+    echo "Waiting for Postgres before the backup"
+    python - <<'PY'
+    import os
+    import time
+
+    import psycopg
+
+    from education_platform.core.config import get_settings
+    from education_platform.db.url import to_sync_url
+
+    def libpq(url: str) -> str:
+        prefix = "postgresql+psycopg://"
+        if url.startswith(prefix):
+            return "postgresql://" + url[len(prefix):]
+        return url
+
+    wait = int(os.environ.get("MIGRATE_DATABASE_WAIT_SECONDS", "180"))
+    url = libpq(to_sync_url(get_settings().database_url))
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            with psycopg.connect(url, connect_timeout=5) as conn:
+                conn.execute("SELECT 1")
+            break
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise SystemExit(
+                    f"Postgres was not ready after {wait}s ({type(exc).__name__}). "
+                    "A pre-install hook runs before this chart creates the database. "
+                    "Install once with --set migrate.enabled=false, wait for the "
+                    "CloudNativePG cluster, then helm upgrade."
+                ) from None
+            time.sleep(5)
+    PY
+    echo "Postgres answered. Backing up, then running Alembic."
+    exec /app/deploy/migrate.sh
+{{- end }}

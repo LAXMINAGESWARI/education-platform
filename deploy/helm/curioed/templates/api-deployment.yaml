@@ -1,0 +1,108 @@
+{{- include "curioed.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curioed.apiName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  {{- if .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.autoscaling.minReplicas }}
+  {{- else }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+        curioed.io/uploads: "true"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.api.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "api") }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      affinity:
+        {{- include "curioed.uploadsAffinity" . | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "curioed.imageRef" .Values.api.image }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          # The image entrypoint execs these args as the process. That skips
+          # the script's JWT check and directory create. The Secret still
+          # supplies JWT_SECRET for the application itself.
+          args:
+            - uvicorn
+            - education_platform.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --proxy-headers
+            - --forwarded-allow-ips=*
+            - --limit-concurrency
+            - {{ .Values.api.limitConcurrency | quote }}
+            - --timeout-graceful-shutdown
+            - {{ .Values.api.gracefulShutdownSeconds | quote }}
+          # Traefik drops the pod from endpoints during this sleep. Uvicorn
+          # then closes SSE streams. Clients reconnect with Last-Event-ID.
+          # Pod grace stays above the sleep plus the graceful shutdown.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.api.preStopSleepSeconds | quote }}]
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.port }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.api.securityContext "add" .Values.api.addCapabilities) | nindent 10 }}
+          {{- include "curioed.envFrom" . | nindent 10 }}
+          env:
+            {{- include "curioed.appEnv" . | nindent 12 }}
+            {{- include "curioed.dbPoolEnv" (dict "pool" .Values.dbPool.api "textToSql" true) | nindent 12 }}
+          volumeMounts:
+            {{- include "curioed.dataVolumeMounts" . | nindent 12 }}
+            {{- include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.api.securityContext) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.probes.livePath }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.startupPeriodSeconds }}
+            timeoutSeconds: 2
+            failureThreshold: {{ .Values.api.probes.startupFailureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.livePath }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.readyPath }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: {{ .Values.api.probes.readinessTimeoutSeconds }}
+            failureThreshold: 3
+      volumes:
+        {{- include "curioed.dataVolumes" . | nindent 8 }}
+        {{- include "curioed.tmpVolumes" (dict "root" . "security" .Values.api.securityContext) | nindent 8 }}

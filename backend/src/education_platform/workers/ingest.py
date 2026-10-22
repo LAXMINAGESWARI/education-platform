@@ -72,6 +72,12 @@ from education_platform.modules.rag.models import (
     KnowledgeDocumentVersionStatus,
 )
 from education_platform.modules.rag.vector_store import VectorRow, delete_by_version, upsert_rows
+from education_platform.workers.lease import (
+    close_session,
+    commit_owned,
+    exceeded_max_attempts_message,
+    prepare_leased_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +485,7 @@ def _fail_job(session: Session, job: IngestJob, reason: str) -> None:
     job.status = IngestJobStatus.FAILED
     job.error = reason
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
 
 def _note_stage(
@@ -535,7 +541,7 @@ def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
     job = session.get(IngestJob, job_id)
     if job is None:
         return
-    reason = f"Worker lost this job {job.attempts} times"
+    reason = exceeded_max_attempts_message(int(job.max_attempts))
     if job.source_material_version_id is not None:
         version = session.get(SourceMaterialVersion, job.source_material_version_id)
         if version is not None:
@@ -549,7 +555,7 @@ def fail_exhausted_ingest_job(session: Session, job_id: UUID) -> None:
     job.status = IngestJobStatus.FAILED
     job.error = reason[:2000]
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
 
 def _institution_for_material(session: Session, material: SourceMaterial) -> UUID | None:
@@ -627,6 +633,7 @@ def process_ingest_job_sync(
 ) -> None:
     parse = parse_pdf or parse_pdf_with_docling
     session = _sync_session()
+    prepare_leased_writes(session)
     try:
         job = session.get(IngestJob, UUID(ingest_job_id))
         if job is None:
@@ -641,11 +648,11 @@ def process_ingest_job_sync(
             logger.error("Ingest job %s failed claim validation: %s", ingest_job_id, exc)
             job.status = IngestJobStatus.FAILED
             job.error = f"Invalid ingest job claim: {exc}"[:2000]
-            session.commit()
+            commit_owned(session)
             return
 
         job.status = IngestJobStatus.RUNNING
-        session.commit()
+        commit_owned(session)
 
         try:
             if claim.source_material_version_id is not None:
@@ -674,9 +681,9 @@ def process_ingest_job_sync(
             job.status = IngestJobStatus.FAILED
             job.error = reason
             _wake_ingest(session, job)
-            session.commit()
+            commit_owned(session)
     finally:
-        session.close()
+        close_session(session)
 
 
 def _embed_texts(
@@ -784,7 +791,7 @@ def _process_source_material(
     version.lifecycle_status = SourceMaterialVersionStatus.PROCESSING
     version.failure_reason = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
     prepared = _parsed_chunks(session, job, version, parse, claim)
     if prepared is None:
@@ -855,7 +862,7 @@ def _process_knowledge_document(
     version.lifecycle_status = KnowledgeDocumentVersionStatus.PROCESSING
     version.failure_reason = None
     _wake_ingest(session, job)
-    session.commit()
+    commit_owned(session)
 
     prepared = _parsed_chunks(session, job, version, parse, claim)
     if prepared is None:

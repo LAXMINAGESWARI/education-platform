@@ -59,7 +59,12 @@ from education_platform.modules.generation.models import (
     ReviewRoundClosure,
     ReviewRoundRow,
 )
-from education_platform.modules.generation.outline import MIN_LEAF_QUESTIONS, allocate_quotas
+from education_platform.modules.generation.outline import (
+    MIN_LEAF_QUESTIONS,
+    allocate_quotas,
+    is_outline_noise_heading,
+    nearest_concept_position,
+)
 from education_platform.modules.generation.types import (
     IN_FLIGHT_PHASES,
     PATCH_OUTLINE_GONE,
@@ -640,8 +645,13 @@ async def accept_outline(
     node_rows = await _load_nodes(session, run.id)
     by_id = {node.id: node for node in node_rows}
 
+    concept_nodes: list[tuple[int, Subtopic]] = []
+    noise_nodes: list[tuple[int, Any]] = []
     for index, domain_node in enumerate(run.outline.nodes):
         row = by_id[domain_node.id]
+        if is_outline_noise_heading(domain_node.title):
+            noise_nodes.append((index, row))
+            continue
         if domain_node.force_create or domain_node.matched_subtopic_id is None:
             slug = _unique_slug(_slugify(domain_node.slug or domain_node.title), used_slugs)
             max_sequence += 1
@@ -665,6 +675,26 @@ async def accept_outline(
         await _insert_outcome_stubs(session, subtopic.id, domain_node.proposed_outcomes)
         row.quota = quotas[index]
         row.accepted_subtopic_id = subtopic.id
+        concept_nodes.append((index, subtopic))
+
+    if noise_nodes and not concept_nodes:
+        raise GenerationError(
+            "Outline has no concept headings to accept.",
+            status_code=409,
+        )
+    concept_positions = [index for index, _subtopic in concept_nodes]
+    concepts_by_index = dict(concept_nodes)
+    for index, row in noise_nodes:
+        position = nearest_concept_position(index, concept_positions)
+        if position is None:
+            raise GenerationError(
+                "Outline has no concept headings to accept.",
+                status_code=409,
+            )
+        # Keep the heading's chunks on the concept they fold into. Do not store
+        # the heading itself as a subtopic.
+        row.quota = quotas[index]
+        row.accepted_subtopic_id = concepts_by_index[position].id
 
     stored = await _load_run_row(session, run_id)
     stored.phase = RunPhase.GENERATING

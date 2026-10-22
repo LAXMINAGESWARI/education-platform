@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from education_platform.core.config import get_settings
+from education_platform.db.session import create_general_sync_engine
 from education_platform.db.url import to_sync_url
 from education_platform.modules.assessments.models import (
     Question,
@@ -121,7 +122,7 @@ def load_stored_report(run_id: UUID) -> ComparisonReport:
 
 
 def _session() -> Session:
-    engine = create_engine(to_sync_url(get_settings().database_url))
+    engine = create_general_sync_engine(to_sync_url(get_settings().database_url))
     return sessionmaker(bind=engine)()
 
 
