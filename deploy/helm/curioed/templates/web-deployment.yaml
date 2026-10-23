@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curioed.webName" . }}
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  {{- if .Values.web.autoscaling.enabled }}
+  replicas: {{ .Values.web.autoscaling.minReplicas }}
+  {{- else }}
+  replicas: {{ .Values.web.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "curioed.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      {{- include "curioed.podSecurityContext" (dict "root" . "security" .Values.web.securityContext) | nindent 6 }}
+      {{- with include "curioed.priorityClassName" (dict "root" . "tier" "web") }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with include "curioed.imagePullSecrets" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      {{- with include "curioed.scheduling" . | trim }}
+      {{- nindent 6 . }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "curioed.imageRef" .Values.web.image }}
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          {{- include "curioed.containerSecurityContext" (dict "root" . "security" .Values.web.securityContext "add" .Values.web.addCapabilities) | nindent 10 }}
+          {{- $webMounts := include "curioed.tmpVolumeMounts" (dict "root" . "security" .Values.web.securityContext "nginx" true) | trim }}
+          {{- if $webMounts }}
+          volumeMounts:
+            {{- $webMounts | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.service.port }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      {{- $webVolumes := include "curioed.tmpVolumes" (dict "root" . "security" .Values.web.securityContext "nginx" true) | trim }}
+      {{- if $webVolumes }}
+      volumes:
+        {{- $webVolumes | nindent 8 }}
+      {{- end }}

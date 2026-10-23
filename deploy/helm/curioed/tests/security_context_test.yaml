@@ -1,0 +1,238 @@
+suite: configurable identity and read-only root
+templates:
+  - api-deployment.yaml
+  - web-deployment.yaml
+  - worker-docling-deployment.yaml
+  - worker-llm-deployment.yaml
+  - migrate-job.yaml
+  - seed-job.yaml
+  - llm-mock.yaml
+  - demo-data-job.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: api accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: api-deployment.yaml
+    set:
+      api.securityContext.runAsUser: 10001
+      api.securityContext.runAsGroup: 10001
+      api.securityContext.fsGroup: 10001
+      api.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+  - it: web accepts a uid and mounts nginx writable dirs when the root is read-only
+    template: web-deployment.yaml
+    set:
+      web.securityContext.runAsUser: 101
+      web.securityContext.runAsGroup: 101
+      web.securityContext.fsGroup: 101
+      web.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 101
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 101
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 101
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          value:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - NET_BIND_SERVICE
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: nginx-cache
+            mountPath: /var/cache/nginx
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: nginx-run
+            mountPath: /var/run
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+  - it: docling accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: worker-docling-deployment.yaml
+    set:
+      workerDocling.securityContext.runAsUser: 10001
+      workerDocling.securityContext.runAsGroup: 10001
+      workerDocling.securityContext.fsGroup: 10001
+      workerDocling.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+  - it: the llm worker accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: worker-llm-deployment.yaml
+    set:
+      workers.llm.enabled: true
+      workers.llm.securityContext.runAsUser: 10001
+      workers.llm.securityContext.runAsGroup: 10001
+      workers.llm.securityContext.fsGroup: 10001
+      workers.llm.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+  - it: migrate accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: migrate-job.yaml
+    set:
+      migrate.securityContext.runAsUser: 10001
+      migrate.securityContext.runAsGroup: 10001
+      migrate.securityContext.fsGroup: 10001
+      migrate.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+  - it: the curriculum seed accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: seed-job.yaml
+    set:
+      curriculumSeed.enabled: true
+      curriculumSeed.securityContext.runAsUser: 10001
+      curriculumSeed.securityContext.runAsGroup: 10001
+      curriculumSeed.securityContext.fsGroup: 10001
+      curriculumSeed.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+  - it: llm-mock accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: llm-mock.yaml
+    documentIndex: 2
+    set:
+      llmMock.enabled: true
+      llmMock.securityContext.runAsUser: 10001
+      llmMock.securityContext.runAsGroup: 10001
+      llmMock.securityContext.fsGroup: 10001
+      llmMock.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+  - it: demo-data accepts a uid and mounts emptyDir /tmp when the root is read-only
+    template: demo-data-job.yaml
+    documentIndex: 1
+    set:
+      demoData.enabled: true
+      demoData.securityContext.runAsUser: 10001
+      demoData.securityContext.runAsGroup: 10001
+      demoData.securityContext.fsGroup: 10001
+      demoData.securityContext.readOnlyRootFilesystem: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp

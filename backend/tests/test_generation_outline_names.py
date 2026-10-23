@@ -12,6 +12,7 @@ from education_platform.modules.generation.outline import (
     is_activity_noise_heading,
     is_outline_noise_heading,
     match_existing_subtopics,
+    nearest_concept_position,
     normalize_outline_title,
     outline_clusters,
     outline_from_headings,
@@ -63,14 +64,12 @@ _NOISE_HEADINGS = (
     "DO THIS",
     "EXAMPLE 1",
     "EXAMPLE 2",
-    "Solution: Aman's method:",
     "EXERCISE 9.1",
     "EXERCISE 9.2",
     "What have we discussed?",
-    "Figure 9.3 A pentagon",
-    "Table 9.1",
     "SUMMARY",
     "Figure it Out",
+    "Method 1",
 )
 
 
@@ -89,9 +88,31 @@ def test_noise_headings_are_not_concepts() -> None:
         "9.2 Area of a trapezium",
     ):
         assert not is_activity_noise_heading(heading), heading
-    assert is_activity_noise_heading("Tadang's method:")
-    assert is_activity_noise_heading("Ridhima's method:")
+    for concept in (
+        "Solution of a Quadratic Equation by Factorisation",
+        "Newton's Method",
+        "Summary Statistics",
+        "Exercise Physiology",
+        "Tadang's method:",
+        "Ridhima's method:",
+        "Solution: Aman's method:",
+        "Figure 9.3 A pentagon",
+        "Table 9.1",
+    ):
+        assert not is_activity_noise_heading(concept), concept
+        assert not is_outline_noise_heading(concept), concept
     assert is_activity_noise_heading("Method 1")
+    for heading in (
+        "WHAT HAVE WE DISCUSSED?",
+        "EXERCISE 9.2",
+        "exercise 9.2",
+        "Exercise 9.2.",
+        "TRY THESE",
+        "Summary",
+        "Think, Discuss and Write",
+        "Do This",
+    ):
+        assert is_outline_noise_heading(heading), heading
 
 
 def test_normalize_outline_title_cleans_mensuration_names() -> None:
@@ -168,6 +189,7 @@ def test_mensuration_outline_drops_noise_and_stays_in_range() -> None:
     assert titles == [
         "Introduction",
         "Area of a trapezium",
+        "Solution: Aman's method",
         "Area of a general quadrilateral",
         "Area of a polygon",
         "Surface area of a cuboid",
@@ -202,15 +224,18 @@ def test_chunk_coverage_is_unchanged_after_normalization() -> None:
         "chunk-trapezium",
         "chunk-do-trapezium",
         "chunk-example-trapezium",
-        "chunk-solution-aman",
         "chunk-exercise-9-1",
     )
     assert "9.2 Area of a trapezium" in trapezium.source_headings
     assert "EXERCISE 9.1" in trapezium.source_headings
-    assert "Solution: Aman's method:" in trapezium.source_headings
+    solution = by_title["Solution: Aman's method"]
+    assert assigned[solution.id] == ("chunk-solution-aman",)
+    assert "Solution: Aman's method:" in solution.source_headings
     assert trapezium.title != "9.2 Area of a trapezium"
     assert assigned[by_title["Introduction"].id] == ("chunk-intro", "chunk-try-intro")
     assert assigned[by_title["Surface area of a cuboid"].id] == (
+        "chunk-figure-pentagon",
+        "chunk-table-9-1",
         "chunk-cuboid-area",
         "chunk-exercise-9-2",
     )
@@ -218,6 +243,7 @@ def test_chunk_coverage_is_unchanged_after_normalization() -> None:
     assert titles == [
         "Introduction",
         "Area of a trapezium",
+        "Solution: Aman's method",
         "Area of a general quadrilateral",
         "Area of a polygon",
         "Surface area of a cuboid",
@@ -271,14 +297,14 @@ def test_repeated_boxes_follow_reading_order_and_keep_numbered_sections() -> Non
         "DO THIS",
         "THINK, DISCUSS AND WRITE",
         "EXERCISE 9.1",
-        "Ridhima's method:",
-        "Solution: Aman's method:",
     ):
         assert noise.casefold() not in folded
         assert normalize_outline_title(noise).casefold() not in folded
     assert all(ref.parent_title is None for ref in refs)
     assert titles == [
         "Area of a polygon",
+        "Solution: Aman's method",
+        "Ridhima's method",
         "Solid shapes",
         "Surface area of a cuboid",
         "Surface area of a cube",
@@ -288,8 +314,6 @@ def test_repeated_boxes_follow_reading_order_and_keep_numbered_sections() -> Non
         "Volume of a cylinder",
         "Volume and capacity",
     ]
-    # Each solid measure is its own concept, so this chapter sits one over the target.
-    assert 3 <= len(titles) <= MAX_OUTLINE_NODES + 1
     assert len({title.casefold() for title in titles}) == len(titles)
 
     by_node = {node.title: node for node in outline.nodes}
@@ -298,12 +322,11 @@ def test_repeated_boxes_follow_reading_order_and_keep_numbered_sections() -> Non
         "intro",
         "polygon",
         "try-page-2",
-        "aman",
-        "ridhima",
         "exercise-9-1",
     )
-    assert by_node["Area of a polygon"].token_mass == 115 + 191 + 40 + 100 + 133 + 200
-    assert "Ridhima's method:" in polygon.source_headings
+    assert by_node["Area of a polygon"].token_mass == 115 + 191 + 40 + 200
+    assert assigned[by_title["Solution: Aman's method"].id] == ("aman",)
+    assert assigned[by_title["Ridhima's method"].id] == ("ridhima",)
     assert assigned[by_title["Surface area of a cuboid"].id] == (
         "surface-intro",
         "cuboid-surface",
@@ -436,3 +459,9 @@ def test_teacher_title_edit_keeps_chunk_keys() -> None:
     assert node.title != normalize_outline_title(raw_title)
     assert node.source_headings == keys
     assert node.slug == "9-1-introduction"
+
+
+def test_noise_heading_folds_into_the_previous_concept() -> None:
+    assert nearest_concept_position(1, [0, 2]) == 0
+    assert nearest_concept_position(0, [1]) == 1
+    assert nearest_concept_position(0, []) is None

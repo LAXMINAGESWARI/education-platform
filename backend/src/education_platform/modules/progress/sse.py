@@ -7,6 +7,7 @@ from education_platform.modules.progress.types import (
     CloseFrame,
     ErrorFrame,
     HeartbeatFrame,
+    ProgressEventFrame,
     ProgressFrame,
     SnapshotFrame,
 )
@@ -27,8 +28,15 @@ async def iter_sse(frames: AsyncIterator[ProgressFrame]) -> AsyncIterator[bytes]
                 f"data: {frame.snapshot.model_dump_json()}\n\n"
             ).encode()
             continue
+        if isinstance(frame, ProgressEventFrame):
+            yield (
+                f"id: {frame.event_id.value}\n"
+                f"event: progress\n"
+                f"data: {frame.event.model_dump_json()}\n\n"
+            ).encode()
+            continue
         if isinstance(frame, HeartbeatFrame):
-            yield b": heartbeat\n\n"
+            yield f": {frame.comment}\n\n".encode()
             continue
         if isinstance(frame, CloseFrame):
             payload = json.dumps({"reason": frame.reason}, separators=(",", ":"))

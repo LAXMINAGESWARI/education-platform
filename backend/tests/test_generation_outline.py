@@ -250,7 +250,7 @@ def test_hegp106_outline_stays_in_source_order_with_real_masses() -> None:
     assert "Figure it Out" not in titles
     assert "Mind the mistake, mend the mistake" in titles
     assert "This way or that way, all ways lead to the bay" in titles
-    assert "Aditya's method" not in titles
+    assert "Aditya's method" in titles
     assert "Method 4" not in titles
     assert "SUMMARY" not in titles
     assert "Step y" in titles
@@ -275,17 +275,14 @@ def test_hegp106_outline_stays_in_source_order_with_real_masses() -> None:
     assert pattern_2.token_mass == 256 + 56
     assert pattern_2.source_headings == ("Pattern 2", "Hint:")
     bay = by_title["This way or that way, all ways lead to the bay"]
-    assert bay.token_mass == 74 + 353 + 66 + 94 + 48 + 74 + 159 + 315
+    assert bay.token_mass == 74 + 353
     assert bay.source_headings == (
         "6.4 This Way or That Way, All Ways Lead to the Bay",
         "Method 4",
-        "Tadang's method:",
-        "Yusuf's method:",
-        "Anusha's method:",
-        "Vaishnavi's method:",
-        "Aditya's method:",
-        "SUMMARY",
     )
+    aditya = by_title["Aditya's method"]
+    assert aditya.token_mass == 159 + 315
+    assert aditya.source_headings == ("Aditya's method:", "SUMMARY")
     dropped = {"Page No. 138", "Ans.", "Ans. Let a and b be two numbers."}
     owners: dict[str, str] = {}
     for node in grounded.nodes:
@@ -468,7 +465,8 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
         ("Pattern 1", _P62),
         ("Why is this identity true?", _P62),
         ("6.3 Mind the Mistake, Mend the Mistake", None),
-        (_P64, None),
+        ("Tadang's method:", None),
+        ("Aditya's method:", None),
     ]
     by_heading = {cluster.heading: cluster for cluster in clusters}
     assert by_heading[_P61].token_mass == 0
@@ -492,13 +490,17 @@ def test_hegp106_numbered_sections_become_the_outline() -> None:
     assert why.token_mass == 107 + 59
     assert why.sample_texts == ("sridharacharya", "because")
     assert by_heading["Square of the Sum/Difference of Two Numbers"].token_mass == 2288
-    bay = by_heading[_P64]
-    assert bay.token_mass == 80 + 5 + 66 + 168 + 327
-    assert bay.sample_texts == ("intro", "m1", "tadang")
-    assert bay.source_headings == (
+    tadang = by_heading["Tadang's method:"]
+    assert tadang.token_mass == 66 + 80 + 5
+    assert tadang.sample_texts == ("intro", "m1", "tadang")
+    assert tadang.source_headings == (
+        f"{_P64} > Tadang's method:",
         _P64,
         f"{_P64} > Method 1",
-        f"{_P64} > Tadang's method:",
+    )
+    aditya = by_heading["Aditya's method:"]
+    assert aditya.token_mass == 168 + 327
+    assert aditya.source_headings == (
         f"{_P64} > Aditya's method:",
         "SUMMARY",
     )

@@ -1,7 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import type {
   GenerationOutlineNode,
   GenerationQaItem,
@@ -48,6 +50,7 @@ import {
   listGenerationSteps,
   listTopicGenerationRuns,
   subscribeGenerationRun,
+  submitTopicGenerationRun,
   publishGenerationRun,
   rejectGenerationItems,
   retryGenerationRun,
@@ -240,6 +243,7 @@ describe("TopicGenerationUpload", () => {
     vi.mocked(discardGenerationRun).mockReset();
     vi.mocked(retryGenerationRun).mockReset();
     vi.mocked(subscribeGenerationRun).mockReset();
+    vi.mocked(submitTopicGenerationRun).mockReset();
     vi.mocked(getGenerationRun).mockReset();
     vi.mocked(getGenerationReview).mockReset();
     vi.mocked(closeReviewRound).mockReset();
@@ -819,4 +823,273 @@ describe("TopicGenerationUpload", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("region", { name: "Indexing PDF" })).not.toBeInTheDocument();
   });
+
+  it("shows Reconnecting while the run stream retries and clears it on the first frame", async () => {
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    let reconnected: (() => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
+      reconnected = options?.onReconnected;
+      return new Promise(() => undefined);
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
+    act(() => {
+      reconnected?.();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows Reconnecting and then the give-up error", async () => {
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    let fail: ((error: unknown) => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      options?.onReconnecting?.({ attempt: 4, delayMs: 8_000 });
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
+
+  it("reserves the reconnect row and retries the generation stream", async () => {
+    const user = userEvent.setup();
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(getGenerationRun).mockResolvedValue(run({ phase: "outlining", outline: null }));
+    let fail: ((error: unknown) => void) | undefined;
+    let reconnect: (() => void) | undefined;
+    let calls = 0;
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      calls += 1;
+      if (calls === 1) {
+        reconnect = () => options?.onReconnecting?.({ attempt: 1, delayMs: 1_000 });
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      }
+      return new Promise(() => undefined);
+    });
+
+    renderPanel();
+
+    const slot = await screen.findByTestId("progress-reconnect");
+    const stepper = screen.getByRole("list", { name: "Generation progress" });
+    expect(slot).toHaveAttribute("data-reserve", "fixed");
+    expect(slot).toHaveAttribute("data-active", "false");
+    expect(stepper.previousElementSibling).toBe(slot);
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Indexing PDF");
+
+    act(() => {
+      reconnect?.();
+    });
+    expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(within(slot).getByRole("status")).toHaveAttribute("aria-live", "polite");
+    expect(slot.querySelector("[data-motion='reduced']")).not.toBeNull();
+    expect(stepper.previousElementSibling).toBe(slot);
+
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Lost the connection to progress updates. Try again.");
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(stepper.previousElementSibling).toBe(slot);
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(subscribeGenerationRun).toHaveBeenCalledTimes(2);
+    });
+    expect(getGenerationRun).toHaveBeenCalledWith("run-1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Determining outline");
+    expect(screen.getByTestId("progress-reconnect")).toBe(slot);
+  });
+
+  it("retries again after a second give-up", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(getGenerationRun).mockResolvedValue(run({ phase: "indexing", outline: null }));
+    let fail: ((error: unknown) => void) | undefined;
+    vi.mocked(subscribeGenerationRun).mockImplementation(() => {
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    });
+
+    renderPanel();
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      fail?.(new ProgressReconnectError(8, 50_000, new TypeError("connection reset")));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Lost the connection to progress updates. Try again.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["published", "published"],
+    ["outline_review", "outline_review"],
+  ] as const)(
+    "does not open a new stream when Retry finds a %s run",
+    async (_label, phase) => {
+      const user = userEvent.setup();
+      vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+        run({ phase: "indexing", outline: null }),
+      ]);
+      vi.mocked(getGenerationRun).mockResolvedValue(run({ phase }));
+      if (phase === "outline_review") {
+        vi.mocked(getGenerationReview).mockResolvedValue(workspace());
+      }
+      let fail: ((error: unknown) => void) | undefined;
+      vi.mocked(subscribeGenerationRun).mockImplementation(() => {
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      });
+
+      renderPanel();
+      await waitFor(() => expect(subscribeGenerationRun).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        fail?.(new ProgressReconnectError(8, 45_000, new TypeError("connection reset")));
+      });
+      await user.click(await screen.findByRole("button", { name: "Retry" }));
+
+      await waitFor(() => expect(getGenerationRun).toHaveBeenCalledWith("run-1"));
+      expect(subscribeGenerationRun).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not follow a topic upload after the form unmounts", async () => {
+    const user = userEvent.setup();
+    let resolveUpload: (value: { run_id: string; topic_id: string; phase: "indexing" }) => void =
+      () => undefined;
+    vi.mocked(submitTopicGenerationRun).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+
+    const view = renderPanel();
+    await screen.findByRole("button", { name: /upload topic pdf/i });
+    const file = new File(["%PDF-1.4"], "unit.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText(/pdf file/i), { target: { files: [file] } });
+    await user.click(screen.getByRole("button", { name: /upload topic pdf/i }));
+    await waitFor(() => {
+      expect(submitTopicGenerationRun).toHaveBeenCalled();
+    });
+
+    view.unmount();
+    await act(async () => {
+      resolveUpload({ run_id: "run-new", topic_id: "topic-1", phase: "indexing" });
+    });
+
+    expect(subscribeGenerationRun).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a retry after the form unmounts", async () => {
+    const user = userEvent.setup();
+    let resolveRetry: (value: ReturnType<typeof run>) => void = () => undefined;
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "discarded", outline: null, failure_reason: null }),
+    ]);
+    vi.mocked(retryGenerationRun).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRetry = resolve;
+        }),
+    );
+
+    const view = renderPanel();
+    await user.click(await screen.findByRole("button", { name: /Unit source/i }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(retryGenerationRun).toHaveBeenCalledWith("run-1");
+    });
+
+    view.unmount();
+    await act(async () => {
+      resolveRetry(run({ phase: "outlining", outline: null }));
+    });
+
+    expect(subscribeGenerationRun).not.toHaveBeenCalled();
+  });
+
+  it("shows 16 of 64 chunks from an embedding progress frame", async () => {
+    vi.mocked(listTopicGenerationRuns).mockResolvedValue([
+      run({ phase: "indexing", outline: null }),
+    ]);
+    vi.mocked(subscribeGenerationRun).mockImplementation((_runId, options) => {
+      options?.onProgress?.(embeddingProgress("run-1"));
+      return new Promise(() => undefined);
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("16 of 64 chunks")).toBeInTheDocument();
+    const meter = screen.getByRole("progressbar", { name: "16 of 64 chunks" });
+    expect(meter).toHaveAttribute("value", "16");
+    expect(meter).toHaveAttribute("max", "64");
+  });
 });
+
+function embeddingProgress(subjectId: string): ProgressEnvelope {
+  return {
+    v: 1,
+    kind: "upload",
+    subject_id: subjectId,
+    seq: 4,
+    stage: "embedding",
+    status: "running",
+    percent: 60,
+    current: 16,
+    total: 64,
+    unit: "chunk",
+    message: "Embedding 16 of 64 chunks.",
+    updated_at: "2026-10-20T10:15:03+00:00",
+  };
+}

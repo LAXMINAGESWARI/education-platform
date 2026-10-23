@@ -1,5 +1,6 @@
 import { apiRequest } from "./client";
-import { versionSubject, watchProgress } from "./progress";
+import { versionSubject, watchProgress, type ProgressReconnectNotice } from "./progress";
+import type { ProgressEnvelope } from "./progressEnvelope";
 import type {
   IngestLifecycleStatus,
   KnowledgeDocumentAccepted,
@@ -46,13 +47,22 @@ export async function getMaterialVersionStatus(
 
 export type StreamWatchOptions = {
   signal?: AbortSignal;
+  onProgress?: (progress: ProgressEnvelope) => void;
+  onReconnecting?: (notice: ProgressReconnectNotice) => void;
+  /** Fires on the first frame of a connection, including the first connect. */
+  onReconnected?: () => void;
 };
 
 export async function watchMaterialVersionStatus(
   versionId: string,
   options: StreamWatchOptions = {},
 ): Promise<MaterialVersionStatus> {
-  const snapshot = await watchProgress(versionSubject(versionId), { signal: options.signal });
+  const snapshot = await watchProgress(versionSubject(versionId), {
+    signal: options.signal,
+    onProgress: options.onProgress,
+    onReconnecting: options.onReconnecting,
+    onReconnected: options.onReconnected,
+  });
   return snapshot as MaterialVersionStatus;
 }
 
@@ -79,10 +89,12 @@ export async function uploadKnowledgeDocument(
   });
 }
 
-export async function listKnowledgeDocuments(): Promise<KnowledgeDocumentListItem[]> {
+export async function listKnowledgeDocuments(
+  signal?: AbortSignal,
+): Promise<KnowledgeDocumentListItem[]> {
   const data = await apiRequest<
     KnowledgeDocumentListItem[] | { items: KnowledgeDocumentListItem[] }
-  >("/admin/knowledge-documents");
+  >("/admin/knowledge-documents", signal === undefined ? undefined : { signal });
   return Array.isArray(data) ? data : data.items;
 }
 
@@ -106,6 +118,11 @@ export async function watchKnowledgeDocumentVersionStatus(
   versionId: string,
   options: StreamWatchOptions = {},
 ): Promise<KnowledgeDocumentVersionStatus> {
-  const snapshot = await watchProgress(versionSubject(versionId), { signal: options.signal });
+  const snapshot = await watchProgress(versionSubject(versionId), {
+    signal: options.signal,
+    onProgress: options.onProgress,
+    onReconnecting: options.onReconnecting,
+    onReconnected: options.onReconnected,
+  });
   return snapshot as KnowledgeDocumentVersionStatus;
 }

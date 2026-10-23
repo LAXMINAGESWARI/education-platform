@@ -114,6 +114,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from education_platform.db.session import get_session_factory
 from education_platform.modules.audit.service import AuditAction, record_event
+from education_platform.modules.text_to_sql.meter import meter_payload
 from education_platform.modules.text_to_sql.state import (
     AUDIT_ERROR,
     TextToSQLState,
@@ -180,13 +181,17 @@ def _build_payload(state: TextToSQLState) -> dict[str, Any]:
         # execute_sql only ever sets this key to True, so its absence always means no
         # truncation occurred, never "unknown."
         "row_cap_truncated": audit_entry.get("row_cap_truncated", False),
-        # injection_guard's stage: heuristic, unconfigured, jev, jev_error, gpt,
-        # or gpt_error. question_validator records off_topic_probability and does
-        # not replace this field. Absent only when that node never ran.
+        # heuristic, unconfigured, jev, jev_gpt, jev_error, gpt, or gpt_error.
+        # jev_gpt means Jev passed and the GPT check also ran and allowed.
+        # A refusal names the classifier that refused. Jev errors stay jev_error
+        # and do not call GPT. HTTP 402 allow stays on the injection stage.
         "guard_stage": audit_entry.get("guard_stage"),
         "injection_probability": audit_entry.get("injection_probability"),
         "off_topic_probability": audit_entry.get("off_topic_probability"),
         "retry_count": state.get("retry_count", 0),
+        "pipeline": state.get("pipeline") or "legacy",
+        "stream_request_id": state.get("stream_request_id"),
+        **meter_payload(state.get("retry_count", 0)),
         "outcome": "refused" if error else "answered",
         "error_category": error_category(error),
         "error_detail": error,

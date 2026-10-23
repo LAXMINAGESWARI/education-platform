@@ -2872,6 +2872,10 @@ a.list-item__title:hover {
     display: flex;
   }
 
+  :root {
+    --sticky-header-block: 4.25rem;
+  }
+
   .main {
     padding: 1.1rem 1rem calc(2.5rem + env(safe-area-inset-bottom));
   }
@@ -3934,6 +3938,63 @@ button.admin-published-row {
   font-size: 0.9rem;
 }
 
+.progress-reconnect {
+  display: flex;
+  align-items: center;
+  height: 2rem;
+  flex: none;
+}
+
+.progress-reconnect__live {
+  margin: 0;
+}
+
+.progress-reconnect__pill {
+  margin: 0;
+  max-width: 100%;
+}
+
+.progress-reconnect__spinner,
+.progress-reconnect__mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  flex: none;
+  box-sizing: border-box;
+}
+
+.progress-reconnect__spinner {
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.progress-reconnect__mark {
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.progress-stream-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.85rem;
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.progress-stream-error__message {
+  margin: 0;
+  flex: 1 1 12rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-reconnect__spinner {
+    animation: none;
+  }
+}
+
 .admin-upload__target {
   margin: 0 0 0.65rem;
 }
@@ -4094,7 +4155,13 @@ button.admin-published-row {
   gap: 0.2rem;
   justify-items: center;
   text-align: center;
+  width: 100%;
+  margin: 0;
   padding: 1.35rem 1rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
@@ -4821,6 +4888,57 @@ button.admin-published-row {
 
 .assistant-chat__input:disabled {
   opacity: 0.65;
+}
+
+.assistant-chat__live,
+.assistant-chat__stages {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  max-width: min(100%, 40rem);
+}
+
+.assistant-chat__stage-message {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.assistant-chat__percent {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.assistant-chat__meter,
+.upload-progress__meter {
+  width: min(100%, 16rem);
+  height: 0.45rem;
+  accent-color: var(--accent);
+}
+
+.upload-progress {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.upload-progress__count {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.assistant-chat__table-wrap {
+  max-width: 100%;
+}
+
+.assistant-chat__provenance {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.assistant-chat__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 @media (max-width: 40rem) {
@@ -5991,9 +6109,32 @@ body {
   pointer-events: none;
 }
 
+/* A fixed toast covers the title. The inline prompt is in normal flow and does not. */
+body:has(.pwa-toasts:not(.pwa-toasts--inline):has(.pwa-toast)) {
+  --install-banner-block: 7.75rem;
+}
+
 /* The phone bar is in the DOM on desktop too, hidden with display. Clear it whenever it exists. */
 body:has(.topbar) .pwa-toasts {
   top: calc(4.25rem + env(safe-area-inset-top));
+}
+
+/* In the page column the banner takes its own height, so it cannot cover the title. */
+.pwa-toasts--inline,
+body:has(.topbar) .pwa-toasts--inline {
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+  z-index: auto;
+  width: auto;
+  margin: 0;
+  padding: 0.75rem 1rem 0;
+  align-items: stretch;
+}
+
+.pwa-toasts--inline:not(:has(.pwa-toast)) {
+  display: none;
 }
 
 .pwa-toast {

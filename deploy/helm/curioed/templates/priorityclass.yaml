@@ -1,0 +1,21 @@
+{{- if .Values.priorityClass.enabled }}
+{{- $classes := list
+  (dict "tier" "postgres" "value" .Values.priorityClass.postgres "description" "CurioEd Postgres")
+  (dict "tier" "api" "value" .Values.priorityClass.api "description" "CurioEd API")
+  (dict "tier" "web" "value" .Values.priorityClass.web "description" "CurioEd web")
+  (dict "tier" "workers" "value" .Values.priorityClass.workers "description" "CurioEd workers and cloudflared")
+}}
+{{- range $classes }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ printf "%s-%s" (include "curioed.fullname" $) .tier }}
+  labels:
+    {{- include "curioed.labels" $ | nindent 4 }}
+value: {{ .value | int64 }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: {{ .description }}
+{{- end }}
+{{- end }}

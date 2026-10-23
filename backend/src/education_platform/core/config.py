@@ -1,6 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from education_platform.db.url import with_credentials
@@ -35,6 +37,19 @@ class Settings(BaseSettings):
     cors_origin_regex: str = ""
     materials_dir: Path = _DEFAULT_MATERIALS_DIR
     database_url: str = _DEFAULT_DATABASE_URL
+    # Application-role QueuePool. Worst case per pool is size + max_overflow.
+    # Timeout and recycle also apply to the text-to-SQL reader pool.
+    # Overflow 10 and recycle -1 match SQLAlchemy and compose when the env
+    # vars are unset. Kubernetes sets DB_MAX_OVERFLOW=5,
+    # TEXT_TO_SQL_DB_MAX_OVERFLOW=5, and DB_POOL_RECYCLE_SECONDS=1800.
+    db_pool_size: int = Field(default=5, ge=1)
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_timeout_seconds: float = 30.0
+    db_pool_recycle_seconds: int = -1
+    # Budget for the readiness SELECT 1. Compose's /health check allows 5s
+    # (deploy/docker-compose.prod.yml); keep this shorter so the probe returns
+    # an HTTP status before that client timeout.
+    health_ready_timeout_seconds: float = 2.0
     jwt_secret: str = "dev-only-change-me-use-32bytes-min!!"
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 60
@@ -58,18 +73,23 @@ class Settings(BaseSettings):
     # Chat-guard Decisions API. The timeout keeps the name from 858747d /
     # 565e0a3 (jev_guard_timeout_seconds) so it stays distinct from the lesson
     # judge's 30s jev_timeout_seconds. The block threshold is its own setting
-    # (GUARD_JEV_BLOCK_THRESHOLD). guard_jev_model is blank unless
-    # GUARD_JEV_MODEL is set; the guard then posts jev_model.
+    # (GUARD_JEV_BLOCK_THRESHOLD). GUARD_JEV_MODEL defaults to the same model
+    # string the guard already posts, and does not follow JEV_MODEL.
+    # JEV_DECISIONS_URL overrides the Decisions route for both the lesson judge
+    # and the chat guard. Blank derives it from OPENROUTER_BASE_URL.
     jev_decisions_url: str = ""
-    jev_guard_timeout_seconds: float = 5.0
+    jev_guard_timeout_seconds: float = 8.0
     # Noul probability that replaces the old classifier's boolean ``true``.
     guard_jev_block_threshold: float = 0.6
-    guard_jev_model: str = ""
+    guard_jev_model: str = "typesafe/jev-1.14"
     # Refusal audits omit message text until an owner turns this on.
     guard_audit_store_preview: bool = False
     adk_model: str = "openrouter/openai/gpt-4o-mini"
     adk_max_review_rounds: int = 4
     worker_lease_seconds: int = 300
+    # After SIGTERM, finish the current job for this long, then requeue its lease.
+    # Stays under Kubernetes' default terminationGracePeriodSeconds of 30.
+    worker_shutdown_grace_seconds: float = Field(default=25.0, ge=0)
     # Stronger than the writer default (gpt-4o-mini) and a different model id, so the
     # check is not grading items in the same voice that wrote them. Override with
     # BLIND_SOLVER_MODEL. Keep it different from ADK_MODEL.
@@ -109,18 +129,41 @@ class Settings(BaseSettings):
     # never used once the env var is set.
     text_to_sql_db_user: str = "text_to_sql_reader"
     text_to_sql_db_password: str = "text_to_sql_reader"
+    # Reader-role pool. Timeout and recycle follow the DB_POOL_* settings above.
+    text_to_sql_db_pool_size: int = Field(default=5, ge=1)
+    text_to_sql_db_max_overflow: int = Field(default=10, ge=0)
 
     # LLM gateway. Defaults keep every caller on its existing client. Set a
     # per-feature boolean or list the feature in AI_GATEWAY_FEATURES.
     ai_gateway_features: str = ""
     ai_gateway_policy_chat: bool = False
     ai_gateway_text_to_sql: bool = False
+    # Teacher ask pipeline. "lean" runs guards, intent, and speculative SQL
+    # together and repairs at most once. Only these two values are valid; an
+    # unknown value fails when Settings is constructed.
+    text_to_sql_pipeline: Literal["legacy", "lean"] = "legacy"
+
+    @field_validator("text_to_sql_pipeline", mode="before")
+    @classmethod
+    def _normalize_text_to_sql_pipeline(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    # Lean guards: one Jev request for injection and off-topic when true.
+    # False keeps the two separate calls so the guard eval can compare them.
+    text_to_sql_guard_batch: bool = True
+    # How long a streamed ask keeps its terminal frames. A reconnect inside
+    # this window replays them and does not execute SQL again.
+    text_to_sql_stream_ttl_seconds: float = 600
     ai_gateway_generation: bool = False
     ai_gateway_feedback: bool = False
     ai_gateway_review_chat: bool = False
     ai_gateway_authoring: bool = False
     ai_gateway_timeout_chat_answer_seconds: float = 30.0
     ai_gateway_timeout_sql_generate_seconds: float = 20.0
+    # Guard steps read ``jev_guard_timeout_seconds``. This field stays so an old
+    # env file still parses; the gateway does not use it.
     ai_gateway_timeout_guard_seconds: float = 8.0
     ai_gateway_timeout_generation_seconds: float = 120.0
     ai_gateway_timeout_feedback_seconds: float = 20.0
@@ -144,9 +187,9 @@ class Settings(BaseSettings):
 
     @property
     def resolved_guard_jev_model(self) -> str:
-        """Decisions model the chat guard posts. Blank follows ``jev_model``."""
+        """Decisions model the chat guard posts. Independent of ``jev_model``."""
         chosen = self.guard_jev_model.strip()
-        return chosen or self.jev_model
+        return chosen or "typesafe/jev-1.14"
 
     @property
     def text_to_sql_database_url(self) -> str:

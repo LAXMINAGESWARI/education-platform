@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { useAuth } from "../auth/AuthContext";
 import { MobileNav } from "./MobileNav";
+import { PwaPromptHost } from "./PwaPrompts";
 import { PushButton } from "./PushButton";
 import { RouteMotion } from "./RouteMotion";
 
@@ -153,6 +154,8 @@ export function TeacherShell() {
               </PushButton>
             }
           />
+
+          <PwaPromptHost />
 
           <main className="main">
             <RouteMotion>

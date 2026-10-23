@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ProgressReconnectError } from "../../api/progress";
+import { TEXT_TO_SQL_STAGE_ORDER } from "../../api/stageOrder";
 import * as textToSqlApi from "../../api/textToSql";
 import { ApiError } from "../../api/types";
 import { RequireAuth } from "../../auth/RequireAuth";
@@ -11,9 +13,14 @@ import { ROLE_TEACHER } from "../../auth/roles";
 import { TeacherShell } from "../../components/TeacherShell";
 import { AssistantPage } from "./AssistantPage";
 
-vi.mock("../../api/textToSql", () => ({
-  askQuestion: vi.fn(),
-}));
+vi.mock("../../api/textToSql", async () => {
+  const actual = await vi.importActual<typeof import("../../api/textToSql")>("../../api/textToSql");
+  return {
+    ...actual,
+    askQuestion: vi.fn(),
+    askQuestionStream: vi.fn(),
+  };
+});
 
 const authState = vi.hoisted(() => ({
   user: null as null | { id: string; roles: string[]; full_name: string },
@@ -43,6 +50,10 @@ describe("AssistantPage", () => {
   beforeEach(() => {
     Element.prototype.scrollIntoView = vi.fn();
     vi.mocked(textToSqlApi.askQuestion).mockReset();
+    vi.mocked(textToSqlApi.askQuestionStream).mockReset();
+    vi.mocked(textToSqlApi.askQuestionStream).mockRejectedValue(
+      new ApiError("Not Found", 404, null),
+    );
   });
 
   it("submitting a question renders a new thread entry with the answer and a visible confidence indicator", async () => {
@@ -269,6 +280,301 @@ describe("AssistantPage", () => {
 
       resolveAnswer({ natural_answer: "Done.", confidence: "high", provenance: null });
       await waitFor(() => expect(screen.getByLabelText("Suggested questions")).toBeEnabled());
+    });
+  });
+
+  describe("streaming ask", () => {
+    const REQUEST_ID = "2f1c0c2e-7b1a-4e0a-9c3d-1a2b3c4d5e6f";
+
+    function progress(
+      stage: textToSqlApi.TextToSqlStage,
+      status: textToSqlApi.TextToSqlStageStatus,
+      message: string | null,
+      percent: number | null = null,
+    ): textToSqlApi.TextToSqlProgress {
+      return {
+        v: 1,
+        kind: "text_to_sql",
+        subject_id: REQUEST_ID,
+        seq: 1,
+        stage,
+        status,
+        percent,
+        current: null,
+        total: null,
+        unit: null,
+        message,
+        updated_at: "2026-10-20T00:00:00Z",
+      };
+    }
+
+    async function ask(user: ReturnType<typeof userEvent.setup>, question = "How many students do I teach?") {
+      await user.type(screen.getByLabelText("Question"), question);
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+    }
+
+    it("shows the stage stepper, streamed answer, and percent", async () => {
+      let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        handlers?.onProgress?.(progress("checking", "running", "Checking your question"));
+        handlers?.onProgress?.(progress("understanding", "running", "Understanding your question", 40));
+        handlers?.onAnswerDelta?.("You teach ");
+        handlers?.onAnswerDelta?.("10.");
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      expect(screen.getByRole("list", { name: "Answer progress" })).toBeInTheDocument();
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Checking").closest("li")).toHaveAttribute("aria-current", "step");
+      const current = screen.getByText("Understanding").closest("li");
+      expect(current).toHaveTextContent("In progress");
+      expect(current).toHaveAttribute("aria-current", "step");
+      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.queryByText("40%")).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(screen.getByText("You teach 10.")).toBeInTheDocument();
+
+      release({
+        kind: "final",
+        requestId: REQUEST_ID,
+        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+      });
+      await waitFor(() => expect(screen.getByText("High confidence")).toBeInTheDocument());
+      expect(textToSqlApi.askQuestion).not.toHaveBeenCalled();
+    });
+
+    it("renders the result table", async () => {
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation(async (_question, handlers) => {
+        handlers?.onProgress?.(progress("running", "running", "Looking up the data"));
+        handlers?.onTable?.({
+          columns: ["Full name", "Mastery percent"],
+          rows: [["Aisha Rahman", 82]],
+        });
+        return {
+          kind: "final",
+          requestId: REQUEST_ID,
+          answer: { natural_answer: "Aisha Rahman is at 82%.", confidence: "high", provenance: null },
+        };
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user, "Show me the struggling students.");
+
+      expect(await screen.findByRole("table", { name: "Query results" })).toBeInTheDocument();
+      expect(screen.getByRole("columnheader", { name: "Full name" })).toBeInTheDocument();
+      expect(screen.getByRole("cell", { name: "Aisha Rahman" })).toBeInTheDocument();
+      expect(screen.getByRole("cell", { name: "82" })).toBeInTheDocument();
+      expect(screen.getByText("Aisha Rahman is at 82%.")).toBeInTheDocument();
+    });
+
+    it("shows a refusal without a retry alert", async () => {
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation(async (_question, handlers) => {
+        handlers?.onProgress?.(progress("checking", "failed", null));
+        return {
+          kind: "refusal",
+          requestId: REQUEST_ID,
+          message:
+            "I can only help with questions about your school's students, classes, attendance, or curriculum data. Try asking something in that scope.",
+        };
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user, "What is the weather?");
+
+      expect(
+        await screen.findByText(/I can only help with questions about your school's students/),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("retries an error from a focused Retry button", async () => {
+      vi.mocked(textToSqlApi.askQuestionStream)
+        .mockResolvedValueOnce({
+          kind: "error",
+          requestId: REQUEST_ID,
+          message: "That took too long to answer — please try again.",
+        })
+        .mockResolvedValueOnce({
+          kind: "final",
+          requestId: REQUEST_ID,
+          answer: { natural_answer: "You teach 10.", confidence: "medium", provenance: null },
+        });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("That took too long to answer — please try again.");
+      const retry = screen.getByRole("button", { name: "Retry" });
+      expect(retry).toHaveAttribute("type", "button");
+      retry.focus();
+      expect(retry).toHaveFocus();
+      await user.click(retry);
+      await waitFor(() => expect(screen.getByText("You teach 10.")).toBeInTheDocument());
+      expect(textToSqlApi.askQuestionStream).toHaveBeenCalledTimes(2);
+      expect(textToSqlApi.askQuestionStream).toHaveBeenNthCalledWith(
+        1,
+        "How many students do I teach?",
+        expect.any(Object),
+      );
+      expect(textToSqlApi.askQuestionStream).toHaveBeenNthCalledWith(
+        2,
+        "How many students do I teach?",
+        expect.any(Object),
+      );
+    });
+
+    it("shows the reconnecting badge and marks the stepper done after a terminal replay", async () => {
+      let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        handlers?.onAnswerDelta?.("Hello");
+        handlers?.onAnswerReset?.();
+        handlers?.onReconnecting?.({ attempt: 1, delayMs: 500 });
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      const slot = screen.getByTestId("progress-reconnect");
+      expect(slot).toHaveAttribute("data-active", "true");
+      expect(await screen.findByText("Reconnecting…", {}, { timeout: 3_000 })).toBeInTheDocument();
+      expect(screen.queryByText("Hello")).not.toBeInTheDocument();
+
+      release({
+        kind: "final",
+        requestId: REQUEST_ID,
+        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+      });
+      await waitFor(() => expect(screen.getByText("You teach 10.")).toBeInTheDocument());
+      expect(screen.getAllByText("Done")).toHaveLength(TEXT_TO_SQL_STAGE_ORDER.length);
+      expect(screen.queryByText("Pending")).not.toBeInTheDocument();
+    });
+
+    it("shows the give-up message with Retry", async () => {
+      vi.mocked(textToSqlApi.askQuestionStream).mockRejectedValue(
+        new ProgressReconnectError(3, 60_000, new TypeError("connection reset")),
+      );
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Lost the connection to progress updates. Try again.");
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+
+    it("falls back to the non-streaming ask when the stream endpoint is missing", async () => {
+      let release: (value: textToSqlApi.AskResponse) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockRejectedValue(
+        new ApiError("Not Found", 404, null),
+      );
+      vi.mocked(textToSqlApi.askQuestion).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Checking")).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+      release({ natural_answer: "Fallback answer.", confidence: "high", provenance: null });
+      expect(await screen.findByText("Fallback answer.")).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
+      expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("How many students do I teach?");
+    });
+
+    it("keeps the current stages visible while the audit delays the first answer", async () => {
+      let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        handlers?.onProgress?.(progress("checking", "running", "Checking your question"));
+        handlers?.onProgress?.(progress("understanding", "running", "Understanding your question"));
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText("You teach 10.")).not.toBeInTheDocument();
+
+      release({
+        kind: "final",
+        requestId: REQUEST_ID,
+        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+      });
+      expect(await screen.findByText("You teach 10.")).toBeInTheDocument();
+    });
+
+    it("cancels an in-flight ask", async () => {
+      let signal: AbortSignal | undefined;
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        signal = handlers?.signal;
+        return new Promise(() => undefined);
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user);
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(signal?.aborted).toBe(true);
+      expect(screen.getByText("Cancelled.")).toBeInTheDocument();
+      expect(screen.getByLabelText("Question")).toBeEnabled();
+    });
+
+    it("aborts the stream when the page unmounts", async () => {
+      let signal: AbortSignal | undefined;
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+        signal = handlers?.signal;
+        return new Promise(() => undefined);
+      });
+      const user = userEvent.setup();
+      const view = renderPage();
+      await ask(user);
+      await waitFor(() => expect(signal).toBeInstanceOf(AbortSignal));
+      view.unmount();
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("marks every earlier stage done when the stream skips to running", async () => {
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation(async (_question, handlers) => {
+        handlers?.onProgress?.(progress("running", "running", "Looking up the data"));
+        return {
+          kind: "final",
+          requestId: REQUEST_ID,
+          answer: { natural_answer: "Done.", confidence: "high", provenance: null },
+        };
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await ask(user, "Show me the struggling students.");
+
+      const writing = await screen.findByText("Writing the query");
+      expect(writing.closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Validating").closest("li")).toHaveTextContent("Done");
+      expect(screen.getByText("Running").closest("li")).toHaveTextContent("In progress");
+      expect(screen.getByText("Running").closest("li")).toHaveAttribute("aria-current", "step");
+      expect(screen.getByText("Summarising").closest("li")).toHaveTextContent("Pending");
     });
   });
 });

@@ -1,0 +1,104 @@
+suite: optional network policy priority class and keda
+templates:
+  - networkpolicy.yaml
+  - priorityclass.yaml
+  - keda.yaml
+  - api-hpa.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: does not render network policy by default
+    template: networkpolicy.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: does not render priority classes by default
+    template: priorityclass.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: does not render keda by default
+    template: keda.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: keeps the api HPA when keda is off
+    template: api-hpa.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: HorizontalPodAutoscaler
+  - it: renders default deny and postgres egress when network policy is on
+    template: networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - containsDocument:
+          any: true
+          kind: NetworkPolicy
+          apiVersion: networking.k8s.io/v1
+          name: curioed-default-deny
+      - containsDocument:
+          any: true
+          kind: NetworkPolicy
+          apiVersion: networking.k8s.io/v1
+          name: curioed-postgres
+      - documentIndex: 0
+        equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+            - Egress
+  - it: renders priority classes only when enabled
+    template: priorityclass.yaml
+    set:
+      priorityClass.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 4
+      - documentIndex: 0
+        equal:
+          path: value
+          value: 1000000
+      - equal:
+          path: globalDefault
+          value: false
+  - it: renders worker ScaledObjects without an api HPA companion in this set
+    template: keda.yaml
+    set:
+      workers.llm.enabled: true
+      keda.llm.enabled: true
+      keda.docling.enabled: true
+    asserts:
+      - containsDocument:
+          any: true
+          kind: TriggerAuthentication
+          apiVersion: keda.sh/v1alpha1
+          name: curioed-postgres
+      - containsDocument:
+          any: true
+          kind: ScaledObject
+          apiVersion: keda.sh/v1alpha1
+          name: curioed-worker-llm
+      - containsDocument:
+          any: true
+          kind: ScaledObject
+          apiVersion: keda.sh/v1alpha1
+          name: curioed-worker-docling
+      - documentIndex: 1
+        equal:
+          path: spec.cooldownPeriod
+          value: 600
+      - documentIndex: 1
+        equal:
+          path: spec.maxReplicaCount
+          value: 4
+      - documentIndex: 2
+        equal:
+          path: spec.maxReplicaCount
+          value: 1
