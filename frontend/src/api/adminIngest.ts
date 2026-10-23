@@ -1,5 +1,6 @@
 import { apiRequest } from "./client";
 import { versionSubject, watchProgress, type ProgressReconnectNotice } from "./progress";
+import type { ProgressEnvelope } from "./progressEnvelope";
 import type {
   IngestLifecycleStatus,
   KnowledgeDocumentAccepted,
@@ -46,8 +47,9 @@ export async function getMaterialVersionStatus(
 
 export type StreamWatchOptions = {
   signal?: AbortSignal;
+  onProgress?: (progress: ProgressEnvelope) => void;
   onReconnecting?: (notice: ProgressReconnectNotice) => void;
-  /** Fires when the socket opens, including the first connect, before any frame is read. */
+  /** Fires on the first frame of a connection, including the first connect. */
   onReconnected?: () => void;
 };
 
@@ -57,6 +59,7 @@ export async function watchMaterialVersionStatus(
 ): Promise<MaterialVersionStatus> {
   const snapshot = await watchProgress(versionSubject(versionId), {
     signal: options.signal,
+    onProgress: options.onProgress,
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected,
   });
@@ -117,6 +120,7 @@ export async function watchKnowledgeDocumentVersionStatus(
 ): Promise<KnowledgeDocumentVersionStatus> {
   const snapshot = await watchProgress(versionSubject(versionId), {
     signal: options.signal,
+    onProgress: options.onProgress,
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected,
   });

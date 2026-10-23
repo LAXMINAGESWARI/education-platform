@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
 
 import { getFeedbackHighlights, getFeedbackOverview } from "../api/feedback";
 import { fetchLearningDirectory } from "../api/materials";
@@ -12,18 +13,23 @@ import {
   type DueReviewRow,
 } from "../components/FeedbackEntriesTable";
 import { formatScore, scoreNumber } from "../lib/feedbackHierarchy";
+import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
 type ReviewTarget = { subjectId: string; subjectName: string };
 
 export function FeedbackSubjectPickerPage() {
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<FeedbackOverview | null>(null);
   const [dueReviews, setDueReviews] = useState<ReviewNudgeOut[]>([]);
   const [reviewTargets, setReviewTargets] = useState<Map<string, ReviewTarget>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [dueLoaded, setDueLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setDueLoaded(false);
     void getFeedbackOverview()
       .then((data) => {
         if (!cancelled) {
@@ -55,6 +61,9 @@ export function FeedbackSubjectPickerPage() {
           setDueReviews([]);
           setReviewTargets(new Map());
         }
+      })
+      .finally(() => {
+        if (!cancelled) setDueLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -71,12 +80,24 @@ export function FeedbackSubjectPickerPage() {
           topicName: nudge.topic_name,
           daysSinceLastAttempt: nudge.days_since_last_attempt,
           dueIntervalDays: nudge.due_interval_days,
+          subjectId: target?.subjectId ?? null,
           subjectName: target?.subjectName ?? null,
           href: target ? `/subjects/${target.subjectId}/feedback` : null,
         };
       }),
     [dueReviews, reviewTargets],
   );
+  const subjectFilter = searchParams.get("subject");
+  const visibleDue = subjectFilter
+    ? dueRows.filter((row) => row.subjectId === subjectFilter)
+    : dueRows;
+  const showDue = visibleDue.length > 0 || searchParams.get("section") === "due";
+
+  useEffect(() => {
+    const wantsDue = location.hash === "#feedback-due" || searchParams.get("section") === "due";
+    if (!wantsDue || !overview || !dueLoaded) return;
+    return revealElementByIdWhenSettled("feedback-due");
+  }, [dueLoaded, location.hash, overview, searchParams, showDue]);
 
   const attempted = overview?.subjects.filter((subject) => scoreNumber(subject.score_percent) !== null).length ?? 0;
   const quizzes =
@@ -101,7 +122,10 @@ export function FeedbackSubjectPickerPage() {
             <button
               type="button"
               className="btn btn--sm btn--outline"
-              onClick={() => setAttempt((value) => value + 1)}
+              onClick={() => {
+                setError(null);
+                setAttempt((value) => value + 1);
+              }}
             >
               Try again
             </button>
@@ -170,18 +194,23 @@ export function FeedbackSubjectPickerPage() {
             )}
           </section>
 
-          {dueRows.length > 0 && (
-            <section className="panel panel--static catalog-panel" aria-labelledby="feedback-due-heading">
+          {showDue && (
+            <section
+              id="feedback-due"
+              className="panel panel--static catalog-panel"
+              aria-labelledby="feedback-due-heading"
+            >
               <header className="catalog-panel__head">
-                <h2 id="feedback-due-heading" className="section-title">
+                <h2 id="feedback-due-heading" className="section-title" tabIndex={-1}>
                   Due for review
                 </h2>
                 <p>
-                  {dueRows.length} {dueRows.length === 1 ? "lesson is" : "lessons are"} past the
-                  review interval.
+                  {visibleDue.length === 0
+                    ? "No subtopics are due for review in this subject."
+                    : `${visibleDue.length} ${visibleDue.length === 1 ? "subtopic is" : "subtopics are"} past the review interval.`}
                 </p>
               </header>
-              <DueReviewsTable rows={dueRows} />
+              {visibleDue.length > 0 ? <DueReviewsTable rows={visibleDue} /> : null}
             </section>
           )}
         </>

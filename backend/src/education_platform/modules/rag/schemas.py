@@ -26,6 +26,12 @@ class MaterialVersionStatusOut(BaseModel):
     failure_reason: str | None
     chunk_count: int
     blob_content_type: str | None = None
+    stage: str | None = None
+    stage_seq: int = 0
+    stage_current: int | None = None
+    stage_total: int | None = None
+    stage_message: str | None = None
+    stage_updated_at: datetime | None = None
 
 
 class KnowledgeDocumentVersionSummary(BaseModel):
@@ -75,3 +81,9 @@ class KnowledgeVersionStatusOut(BaseModel):
     failure_reason: str | None
     chunk_count: int
     blob_content_type: str | None = None
+    stage: str | None = None
+    stage_seq: int = 0
+    stage_current: int | None = None
+    stage_total: int | None = None
+    stage_message: str | None = None
+    stage_updated_at: datetime | None = None

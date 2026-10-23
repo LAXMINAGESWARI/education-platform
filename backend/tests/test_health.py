@@ -42,32 +42,10 @@ def test_default_ready_timeout_fits_compose_healthcheck() -> None:
     assert settings.health_ready_timeout_seconds < _COMPOSE_HEALTHCHECK_TIMEOUT_SECONDS
 
 
-def test_startup_seed_failure_still_serves_live(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    def explode(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("seed failed")
-
-    monkeypatch.setattr("education_platform.main.seed_approved_materials", explode)
-
-    with (
-        caplog.at_level(logging.ERROR, logger="education_platform.main"),
-        TestClient(app) as http,
-    ):
-        response = http.get("/health/live")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-    assert "Startup seeding failed; continuing" in caplog.text
-    assert "seed failed" in caplog.text
-
-
 def test_health_live_is_200_without_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
     def forbid_database(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("liveness probe used the database")
 
-    monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
     monkeypatch.setattr("education_platform.core.health.ping_database", forbid_database)
 
     with TestClient(app) as http:
@@ -153,7 +131,6 @@ def test_ready_is_503_against_an_unreachable_database(monkeypatch: pytest.Monkey
     monkeypatch.setenv("HEALTH_READY_TIMEOUT_SECONDS", "1")
     get_settings.cache_clear()
     reset_engine()
-    monkeypatch.setattr("education_platform.main._seed_if_empty", lambda: None)
     started = time.perf_counter()
     try:
         with TestClient(app) as http:

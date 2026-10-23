@@ -225,7 +225,7 @@ def test_registry_defaults_match_todays_models() -> None:
         blind_solver_model="openai/gpt-4.1",
         ai_gateway_timeout_chat_answer_seconds=12,
         ai_gateway_timeout_sql_generate_seconds=9,
-        ai_gateway_timeout_guard_seconds=3,
+        jev_guard_timeout_seconds=3,
         ai_gateway_timeout_generation_seconds=45,
         ai_gateway_timeout_feedback_seconds=6,
     )

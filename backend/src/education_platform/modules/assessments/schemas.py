@@ -265,7 +265,7 @@ class FeedbackSubjectDetail(BaseModel):
     trend_delta: Decimal | None
     topics_needing_attention: list[str]
     summary: str
-    summary_status: Literal["ready", "fallback"]
+    summary_status: Literal["ready", "pending", "fallback"]
     topics: list[FeedbackTopicScore]
     concepts_mastered: int = 0
     concepts_attempted: int = 0

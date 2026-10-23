@@ -45,6 +45,8 @@ status matrix.
 Deferred product surfaces live under [`future-scope/`](./future-scope/README.md), starting with
 [teacher workspace and academic planning](./future-scope/teacher-workspace-and-planning.md).
 
+Shared stream contract: [progress events](./progress-events.md) (upload, generation, text-to-SQL, policy chat).
+
 Later design topics still to document:
 
 - Document ingestion and knowledge indexing — see [research/ai-rag-integration.md](../research/ai-rag-integration.md)

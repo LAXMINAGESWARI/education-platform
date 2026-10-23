@@ -1,4 +1,11 @@
 import { apiStream } from "./client";
+import { parseProgressEnvelope, type ProgressEnvelope } from "./progressEnvelope";
+import {
+  subscribeSse,
+  type ProgressReconnectNotice,
+  type SseFrame,
+} from "./sseReconnect";
+import { noteProgressSeq, resetProgressCursor } from "./stageOrder";
 import { ApiError } from "./types";
 import type {
   GenerationRun,
@@ -8,6 +15,23 @@ import type {
   RunPhase,
 } from "./types";
 
+export type {
+  ProgressReconnectNotice,
+} from "./sseReconnect";
+
+export {
+  PROGRESS_CONNECT_TIMEOUT_MS,
+  PROGRESS_HEALTHY_BACKOFF_RESET_MS,
+  PROGRESS_RECONNECT_FACTOR,
+  PROGRESS_RECONNECT_INITIAL_MS,
+  PROGRESS_RECONNECT_MAX_ATTEMPTS,
+  PROGRESS_RECONNECT_MAX_ELAPSED_MS,
+  PROGRESS_RECONNECT_MAX_MS,
+  PROGRESS_STALL_TIMEOUT_MS,
+  ProgressReconnectError,
+  progressReconnectDelayMs,
+} from "./sseReconnect";
+
 export type ProgressSubject =
   | { kind: "run"; id: string }
   | { kind: "version"; id: string };
@@ -15,34 +39,6 @@ export type ProgressSubject =
 export type ProgressSnapshot = GenerationRun | MaterialVersionStatus | KnowledgeDocumentVersionStatus;
 
 export type StreamCloseReason = "terminal";
-
-export const PROGRESS_RECONNECT_INITIAL_MS = 1_000;
-
-export const PROGRESS_RECONNECT_MAX_MS = 30_000;
-
-export const PROGRESS_RECONNECT_FACTOR = 2;
-
-/** Failed tries since the last healthy frame before the subscription rejects. */
-export const PROGRESS_RECONNECT_MAX_ATTEMPTS = 8;
-
-/** Reject when the next wait would push this outage past one minute. */
-export const PROGRESS_RECONNECT_MAX_ELAPSED_MS = 60_000;
-
-/**
- * How long one progress connect may sit before it counts as a retryable failure.
- * A Last-Event-ID resume holds the response headers until the first frame, and the
- * server heartbeat is 15s, so a quiet healthy resume can take that long. 20s clears
- * that wait without letting one hung socket consume the whole minute-long outage budget.
- */
-export const PROGRESS_CONNECT_TIMEOUT_MS = 20_000;
-
-export type ProgressReconnectNotice = {
-  /** 1-based count of failures in the current outage. */
-  attempt: number;
-  delayMs: number;
-};
-
-const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 const TERMINAL_RUN_PHASES = new Set<RunPhase>(["published", "failed", "discarded"]);
 
@@ -62,17 +58,6 @@ export function versionSubject(id: string): ProgressSubject {
   return { kind: "version", id };
 }
 
-/** Pre-retry wait for 0-based `attempt`. `random` in [0, 1] selects [50%, 100%] of the capped delay. */
-export function progressReconnectDelayMs(attempt: number, random: number): number {
-  const exponent = Math.min(Math.max(0, attempt), 16);
-  const exponential = Math.min(
-    PROGRESS_RECONNECT_MAX_MS,
-    PROGRESS_RECONNECT_INITIAL_MS * PROGRESS_RECONNECT_FACTOR ** exponent,
-  );
-  const unit = Math.min(1, Math.max(0, random));
-  return Math.floor(exponential * (0.5 + unit * 0.5));
-}
-
 function progressPath(subject: ProgressSubject): string {
   switch (subject.kind) {
     case "run":
@@ -86,165 +71,12 @@ function progressPath(subject: ProgressSubject): string {
   }
 }
 
-type SseEvent = {
-  event: string;
-  data: string;
-  id?: string;
-};
-
 class ProgressEventError extends ApiError {
   constructor(message: string, status: number, body: unknown) {
     super(message, status, body);
     // Keep the public error name stable for callers that read `error.name`.
     this.name = "ApiError";
   }
-}
-
-export class ProgressReconnectError extends Error {
-  readonly attempts: number;
-  readonly elapsedMs: number;
-
-  constructor(attempts: number, elapsedMs: number, cause: unknown) {
-    super("Lost the connection to progress updates. Try again.", { cause });
-    this.name = "ProgressReconnectError";
-    this.attempts = attempts;
-    this.elapsedMs = elapsedMs;
-  }
-}
-
-class ProgressHandlerError extends Error {
-  readonly causeError: unknown;
-
-  constructor(causeError: unknown) {
-    super("Progress snapshot handler failed");
-    this.name = "ProgressHandlerError";
-    this.causeError = causeError;
-  }
-}
-
-function abortError(): DOMException {
-  return new DOMException("Aborted", "AbortError");
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function isRetryableStreamError(error: unknown): boolean {
-  if (
-    isAbortError(error) ||
-    error instanceof ProgressEventError ||
-    error instanceof ProgressHandlerError
-  ) {
-    return false;
-  }
-  if (error instanceof SyntaxError) {
-    return false;
-  }
-  if (error instanceof ApiError) {
-    return RETRYABLE_HTTP_STATUS.has(error.status);
-  }
-  return error instanceof Error;
-}
-
-function isTerminalSnapshot(snapshot: ProgressSnapshot): boolean {
-  if ("lifecycle_status" in snapshot) {
-    return TERMINAL_VERSION_STATUSES.has(snapshot.lifecycle_status);
-  }
-  return TERMINAL_RUN_PHASES.has(snapshot.phase);
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.reject(abortError());
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(finish, ms);
-    function finish() {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }
-    function onAbort() {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      reject(abortError());
-    }
-    signal?.addEventListener("abort", onAbort);
-  });
-}
-
-async function* readSse(
-  body: ReadableStream<Uint8Array>,
-  signal?: AbortSignal,
-): AsyncGenerator<SseEvent> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      if (signal?.aborted) {
-        throw abortError();
-      }
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() ?? "";
-      for (const block of blocks) {
-        const parsed = parseSseBlock(block);
-        if (parsed !== null) {
-          yield parsed;
-        }
-      }
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // The stream already failed or the lock was released by the failed read.
-    }
-  }
-}
-
-function parseSseBlock(block: string): SseEvent | null {
-  let event = "message";
-  let id: string | undefined;
-  let sawComment = false;
-  const dataLines: string[] = [];
-  for (const line of block.split("\n")) {
-    if (line.startsWith(":")) {
-      sawComment = true;
-      continue;
-    }
-    if (line.startsWith("event:")) {
-      event = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith("id:")) {
-      id = line.slice(3).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-  if (dataLines.length === 0) {
-    if (sawComment) {
-      return { event: "heartbeat", data: "" };
-    }
-    return null;
-  }
-  return { event, data: dataLines.join("\n"), id };
 }
 
 function progressEventError(data: string): ProgressEventError {
@@ -270,185 +102,97 @@ function parseSnapshot(data: string): ProgressSnapshot {
   return parsed as ProgressSnapshot;
 }
 
-function notifyReconnected(onReconnected: (() => void) | undefined): void {
-  try {
-    onReconnected?.();
-  } catch (error) {
-    throw new ProgressHandlerError(error);
+function isTerminalSnapshot(snapshot: ProgressSnapshot): boolean {
+  if ("lifecycle_status" in snapshot) {
+    return TERMINAL_VERSION_STATUSES.has(snapshot.lifecycle_status);
   }
+  return TERMINAL_RUN_PHASES.has(snapshot.phase);
 }
 
-function progressAttempt(parent: AbortSignal | undefined): {
-  signal: AbortSignal;
-  connected: () => void;
-  finish: () => void;
-  timedOut: () => boolean;
-} {
-  const controller = new AbortController();
-  let didTimeout = false;
-  let open = false;
-  let finished = false;
-  const timer = setTimeout(() => {
-    didTimeout = true;
-    if (!open) {
-      controller.abort();
-    }
-  }, PROGRESS_CONNECT_TIMEOUT_MS);
+type SubscribeOptions = {
+  signal?: AbortSignal;
+  lastEventId?: string;
+  onSnapshot: (snapshot: ProgressSnapshot) => void;
+  onProgress?: (progress: ProgressEnvelope) => void;
+  onReconnecting?: (notice: ProgressReconnectNotice) => void;
+  /** Fires on the first frame of a connection, including the first connect. */
+  onReconnected?: () => void;
+};
 
-  function onParentAbort(): void {
-    controller.abort();
-  }
-
-  if (parent?.aborted) {
-    controller.abort();
-  } else {
-    parent?.addEventListener("abort", onParentAbort);
-  }
-
-  return {
-    signal: controller.signal,
-    timedOut: () => didTimeout && parent?.aborted !== true,
-    connected: () => {
-      open = true;
-      clearTimeout(timer);
-    },
-    finish: () => {
-      if (finished) {
-        return;
+function handleProgressFrame(
+  frame: SseFrame,
+  options: SubscribeOptions,
+  lastEventId: { current: string | undefined },
+): "stop" | void {
+  switch (frame.event) {
+    case "heartbeat":
+      return;
+    case "snapshot": {
+      const snapshot = parseSnapshot(frame.data);
+      if (frame.id) {
+        lastEventId.current = frame.id;
       }
-      finished = true;
-      open = true;
-      clearTimeout(timer);
-      parent?.removeEventListener("abort", onParentAbort);
-    },
-  };
+      options.onSnapshot(snapshot);
+      if (isTerminalSnapshot(snapshot)) {
+        return "stop";
+      }
+      return;
+    }
+    case "close":
+      return "stop";
+    case "error":
+      throw progressEventError(frame.data);
+    default:
+      return;
+  }
 }
 
 export async function subscribeProgress(
   subject: ProgressSubject,
-  options: {
-    signal?: AbortSignal;
-    lastEventId?: string;
-    onSnapshot: (snapshot: ProgressSnapshot) => void;
-    onReconnecting?: (notice: ProgressReconnectNotice) => void;
-    /** Fires when the socket opens, including the first connect, before any frame is read. */
-    onReconnected?: () => void;
-  },
+  options: SubscribeOptions,
 ): Promise<void> {
-  let lastEventId = options.lastEventId;
-  let attempt = 0;
-  let failures = 0;
-  let outageStartedAt: number | null = null;
-
-  while (!options.signal?.aborted) {
-    let disconnected: unknown;
-    const attemptSignal = progressAttempt(options.signal);
-    try {
-      let res: Response;
+  const lastEventId = { current: options.lastEventId };
+  let cursor = resetProgressCursor();
+  await subscribeSse({
+    signal: options.signal,
+    open: (signal) =>
+      apiStream(progressPath(subject), {
+        signal,
+        lastEventId: lastEventId.current,
+      }),
+    onReconnecting: (notice) => {
+      cursor = resetProgressCursor();
+      options.onReconnecting?.(notice);
+    },
+    onReconnected: options.onReconnected,
+    resetsBackoff: (frame) => frame.event === "snapshot",
+    onFrame: (frame) => {
+      if (frame.event !== "progress") {
+        return handleProgressFrame(frame, options, lastEventId);
+      }
+      let envelope: ProgressEnvelope;
       try {
-        res = await apiStream(progressPath(subject), {
-          signal: attemptSignal.signal,
-          lastEventId,
-        });
+        envelope = parseProgressEnvelope(frame.data);
       } catch (error) {
-        if (options.signal?.aborted) {
-          throw abortError();
-        }
-        if (attemptSignal.timedOut()) {
-          throw new TypeError("Progress connect timed out");
-        }
+        if (error instanceof SyntaxError) return;
         throw error;
       }
-      attemptSignal.connected();
-      if (res.body === null) {
-        throw new ApiError("Progress stream had no body", 502, null);
-      }
-      notifyReconnected(options.onReconnected);
-      let connectionHealthy = false;
-      for await (const item of readSse(res.body, options.signal)) {
-        if (!connectionHealthy) {
-          // A 2xx response plus the first frame, heartbeat included, ends the outage.
-          // The backoff exponent stays until a snapshot, so a one-frame proxy cannot spin.
-          connectionHealthy = true;
-          failures = 0;
-          outageStartedAt = null;
-        }
-        switch (item.event) {
-          case "heartbeat":
-            break;
-          case "snapshot": {
-            const snapshot = parseSnapshot(item.data);
-            if (item.id) {
-              lastEventId = item.id;
-            }
-            try {
-              options.onSnapshot(snapshot);
-            } catch (error) {
-              throw new ProgressHandlerError(error);
-            }
-            attempt = 0;
-            failures = 0;
-            outageStartedAt = null;
-            if (isTerminalSnapshot(snapshot)) {
-              return;
-            }
-            break;
-          }
-          case "close":
-            return;
-          case "error":
-            throw progressEventError(item.data);
-          default:
-            break;
-        }
-      }
-      disconnected = new TypeError("Progress stream ended");
-    } catch (error) {
-      if (error instanceof ProgressHandlerError) {
-        throw error.causeError;
-      }
-      if (isAbortError(error) || options.signal?.aborted) {
-        throw abortError();
-      }
-      if (!isRetryableStreamError(error)) {
-        throw error;
-      }
-      disconnected = error;
-    } finally {
-      attemptSignal.finish();
-    }
-
-    if (options.signal?.aborted) {
-      throw abortError();
-    }
-
-    failures += 1;
-    if (outageStartedAt === null) {
-      outageStartedAt = Date.now();
-    }
-    const elapsedMs = Date.now() - outageStartedAt;
-    const waitMs = progressReconnectDelayMs(attempt, Math.random());
-    if (
-      failures >= PROGRESS_RECONNECT_MAX_ATTEMPTS ||
-      elapsedMs + waitMs > PROGRESS_RECONNECT_MAX_ELAPSED_MS
-    ) {
-      throw new ProgressReconnectError(failures, elapsedMs, disconnected);
-    }
-    options.onReconnecting?.({ attempt: failures, delayMs: waitMs });
-    attempt += 1;
-    await sleep(waitMs, options.signal);
-  }
-
-  throw abortError();
+      const noted = noteProgressSeq(cursor, envelope.seq);
+      cursor = noted.cursor;
+      if (noted.accept) options.onProgress?.(envelope);
+    },
+  });
 }
+
 
 export async function watchProgress(
   subject: ProgressSubject,
   options: {
     signal?: AbortSignal;
     onSnapshot?: (snapshot: ProgressSnapshot) => void;
+    onProgress?: (progress: ProgressEnvelope) => void;
     onReconnecting?: (notice: ProgressReconnectNotice) => void;
-    /** Fires when the socket opens, including the first connect, before any frame is read. */
+    /** Fires on the first frame of a connection, including the first connect. */
     onReconnected?: () => void;
   } = {},
 ): Promise<ProgressSnapshot> {
@@ -457,6 +201,7 @@ export async function watchProgress(
     signal: options.signal,
     onReconnecting: options.onReconnecting,
     onReconnected: options.onReconnected,
+    onProgress: options.onProgress,
     onSnapshot: (snapshot) => {
       last = snapshot;
       options.onSnapshot?.(snapshot);
@@ -466,4 +211,298 @@ export async function watchProgress(
     throw new ApiError("Progress stream closed without a snapshot", 502, null);
   }
   return last;
+}
+
+export type ProgressKind = "upload" | "generation" | "text_to_sql" | "policy_chat";
+
+export type ProgressStatus = "running" | "done" | "failed";
+
+export type ProgressUnit = "page" | "chunk";
+
+export type UploadStage =
+  | "received"
+  | "parsing"
+  | "chunking"
+  | "embedding"
+  | "extracting_topics"
+  | "done"
+  | "failed";
+
+export type GenerationStage =
+  | "indexing"
+  | "outlining"
+  | "outline_review"
+  | "generating"
+  | "qa_review"
+  | "published"
+  | "failed"
+  | "discarded";
+
+export type TextToSqlStage =
+  | "checking"
+  | "understanding"
+  | "writing_query"
+  | "validating"
+  | "running"
+  | "summarising";
+
+export type PolicyChatStage = "checking" | "searching" | "summarising";
+
+type StageProgressBase = {
+  v: 1;
+  subject_id: string;
+  seq: number;
+  status: ProgressStatus;
+  percent: number | null;
+  current: number | null;
+  total: number | null;
+  unit: ProgressUnit | null;
+  message: string | null;
+  updated_at: string;
+};
+
+export type UploadProgress = StageProgressBase & { kind: "upload"; stage: UploadStage };
+
+export type GenerationProgress = StageProgressBase & { kind: "generation"; stage: GenerationStage };
+
+export type TextToSqlProgress = StageProgressBase & { kind: "text_to_sql"; stage: TextToSqlStage };
+
+export type PolicyChatProgress = StageProgressBase & { kind: "policy_chat"; stage: PolicyChatStage };
+
+export type StageProgress = UploadProgress | GenerationProgress | TextToSqlProgress | PolicyChatProgress;
+
+export type AnswerDelta = { text: string };
+
+export type ProgressTable = { columns: string[]; rows: unknown[][] };
+
+export type TextToSqlFinal = {
+  natural_answer: string;
+  confidence: string | null;
+  provenance: string | null;
+};
+
+export type PolicyCitation = { id: string; label: string; excerpt: string };
+
+export type PolicyChatFinal = { content: string; citations: PolicyCitation[] };
+
+export type ProgressRefusal = { message: string };
+
+/** Parsed SSE payload for the shared progress schema. The UI does not consume this yet. */
+export type ProgressEvent =
+  | { event: "progress"; data: StageProgress }
+  | { event: "answer_delta"; data: AnswerDelta }
+  | { event: "table"; data: ProgressTable }
+  | { event: "final"; data: TextToSqlFinal | PolicyChatFinal }
+  | { event: "refusal"; data: ProgressRefusal };
+
+const UPLOAD_STAGES: readonly UploadStage[] = [
+  "received",
+  "parsing",
+  "chunking",
+  "embedding",
+  "extracting_topics",
+  "done",
+  "failed",
+];
+
+const GENERATION_STAGES: readonly GenerationStage[] = [
+  "indexing",
+  "outlining",
+  "outline_review",
+  "generating",
+  "qa_review",
+  "published",
+  "failed",
+  "discarded",
+];
+
+const TEXT_TO_SQL_STAGES: readonly TextToSqlStage[] = [
+  "checking",
+  "understanding",
+  "writing_query",
+  "validating",
+  "running",
+  "summarising",
+];
+
+const POLICY_STAGES: readonly PolicyChatStage[] = ["checking", "searching", "summarising"];
+
+const PROGRESS_STATUSES: readonly ProgressStatus[] = ["running", "done", "failed"];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStage<T extends string>(value: unknown, allowed: readonly T[]): value is T {
+  return typeof value === "string" && allowed.some((item) => item === value);
+}
+
+function stagesFor(kind: ProgressKind): readonly string[] {
+  switch (kind) {
+    case "upload":
+      return UPLOAD_STAGES;
+    case "generation":
+      return GENERATION_STAGES;
+    case "text_to_sql":
+      return TEXT_TO_SQL_STAGES;
+    case "policy_chat":
+      return POLICY_STAGES;
+    default: {
+      const _never: never = kind;
+      return _never;
+    }
+  }
+}
+
+function isKind(value: unknown): value is ProgressKind {
+  return value === "upload" || value === "generation" || value === "text_to_sql" || value === "policy_chat";
+}
+
+function nullableInt(value: unknown): number | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function parseUnit(value: unknown): ProgressUnit | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (value === "page" || value === "chunk") {
+    return value;
+  }
+  return undefined;
+}
+
+function parseStageProgress(value: Record<string, unknown>): StageProgress | null {
+  if (value.v !== 1 || !isKind(value.kind) || typeof value.subject_id !== "string") {
+    return null;
+  }
+  if (typeof value.seq !== "number" || !Number.isInteger(value.seq) || value.seq < 1) {
+    return null;
+  }
+  if (!isStage(value.status, PROGRESS_STATUSES)) {
+    return null;
+  }
+  if (!isStage(value.stage, stagesFor(value.kind))) {
+    return null;
+  }
+  const percent = nullableInt(value.percent);
+  const current = nullableInt(value.current);
+  const total = nullableInt(value.total);
+  if (percent === undefined || current === undefined || total === undefined) {
+    return null;
+  }
+  if (percent !== null && (percent < 0 || percent > 100)) {
+    return null;
+  }
+  const unit = parseUnit(value.unit);
+  if (unit === undefined) {
+    return null;
+  }
+  const message = value.message === null ? null : typeof value.message === "string" ? value.message : undefined;
+  if (message === undefined || typeof value.updated_at !== "string") {
+    return null;
+  }
+  const base = {
+    v: 1 as const,
+    subject_id: value.subject_id,
+    seq: value.seq,
+    status: value.status,
+    percent,
+    current,
+    total,
+    unit,
+    message,
+    updated_at: value.updated_at,
+  };
+  switch (value.kind) {
+    case "upload":
+      if (!isStage(value.stage, UPLOAD_STAGES)) {
+        return null;
+      }
+      return { ...base, kind: value.kind, stage: value.stage };
+    case "generation":
+      if (!isStage(value.stage, GENERATION_STAGES)) {
+        return null;
+      }
+      return { ...base, kind: value.kind, stage: value.stage };
+    case "text_to_sql":
+      if (!isStage(value.stage, TEXT_TO_SQL_STAGES)) {
+        return null;
+      }
+      return { ...base, kind: value.kind, stage: value.stage };
+    case "policy_chat":
+      if (!isStage(value.stage, POLICY_STAGES)) {
+        return null;
+      }
+      return { ...base, kind: value.kind, stage: value.stage };
+    default: {
+      const _never: never = value.kind;
+      return _never;
+    }
+  }
+}
+
+function parseFinal(value: Record<string, unknown>): TextToSqlFinal | PolicyChatFinal | null {
+  if (typeof value.natural_answer === "string") {
+    const confidence = value.confidence === null ? null : value.confidence;
+    const provenance = value.provenance === null ? null : value.provenance;
+    if (
+      (confidence === null || typeof confidence === "string") &&
+      (provenance === null || typeof provenance === "string")
+    ) {
+      return { natural_answer: value.natural_answer, confidence, provenance };
+    }
+    return null;
+  }
+  if (typeof value.content !== "string" || !Array.isArray(value.citations)) {
+    return null;
+  }
+  const citations: PolicyCitation[] = [];
+  for (const item of value.citations) {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.label !== "string" || typeof item.excerpt !== "string") {
+      return null;
+    }
+    citations.push({ id: item.id, label: item.label, excerpt: item.excerpt });
+  }
+  return { content: value.content, citations };
+}
+
+export function parseProgressEvent(eventName: string, raw: unknown): ProgressEvent | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  switch (eventName) {
+    case "progress": {
+      const data = parseStageProgress(raw);
+      return data === null ? null : { event: "progress", data };
+    }
+    case "answer_delta":
+      return typeof raw.text === "string" ? { event: "answer_delta", data: { text: raw.text } } : null;
+    case "table": {
+      if (!Array.isArray(raw.columns) || !raw.columns.every((column) => typeof column === "string")) {
+        return null;
+      }
+      if (!Array.isArray(raw.rows) || !raw.rows.every((row) => Array.isArray(row))) {
+        return null;
+      }
+      return {
+        event: "table",
+        data: { columns: raw.columns, rows: raw.rows },
+      };
+    }
+    case "final": {
+      const data = parseFinal(raw);
+      return data === null ? null : { event: "final", data };
+    }
+    case "refusal":
+      return typeof raw.message === "string" ? { event: "refusal", data: { message: raw.message } } : null;
+    default:
+      return null;
+  }
 }

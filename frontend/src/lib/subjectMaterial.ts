@@ -129,6 +129,52 @@ export function topicLessonPath(subjectId: string, topicId: string): string {
   return `/subjects/${subjectId}/topics/${topicId}/lesson`;
 }
 
+/** Lesson URL. An opened lesson includes the saved slide so the page can open there. */
+export function topicLessonResumePath(
+  subjectId: string,
+  topicId: string,
+  progress?: MaterialProgress | null,
+): string {
+  const path = topicLessonPath(subjectId, topicId);
+  const ordinal = progress?.last_unit_ordinal;
+  if (progress?.status === "opened" && ordinal != null && ordinal > 0) {
+    return `${path}?slide=${ordinal}`;
+  }
+  return path;
+}
+
+export type SubjectResume = {
+  topicId: string;
+  topicTitle: string;
+  href: string;
+  slide: number | null;
+};
+
+/** The topic lesson the student most recently left open, with its saved slide. */
+export function subjectResumeTarget(subject: SubjectNode): SubjectResume | null {
+  const open = subject.topics.filter(
+    (topic) =>
+      Boolean(topic.has_topic_lesson) &&
+      !topic.topic_lesson_completed &&
+      topic.topic_lesson_progress?.status === "opened",
+  );
+  if (open.length === 0) return null;
+  open.sort((left, right) => {
+    const leftOpened = Date.parse(left.topic_lesson_progress?.last_opened_at ?? "") || 0;
+    const rightOpened = Date.parse(right.topic_lesson_progress?.last_opened_at ?? "") || 0;
+    return rightOpened - leftOpened;
+  });
+  const topic = open[0];
+  if (!topic) return null;
+  const slide = topic.topic_lesson_progress?.last_unit_ordinal ?? null;
+  return {
+    topicId: topic.id,
+    topicTitle: topic.title,
+    href: topicLessonResumePath(subject.id, topic.id, topic.topic_lesson_progress),
+    slide: slide != null && slide > 0 ? slide : null,
+  };
+}
+
 export function topicHistoryPath(subjectId: string, topicId: string): string {
   return `/subjects/${subjectId}/topics/${topicId}/history`;
 }

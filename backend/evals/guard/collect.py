@@ -276,6 +276,263 @@ class Collection:
     skipped_jobs: int
 
 
+_DATA_INJECTION_CHECK = "data.jev_injection"
+_DATA_OFF_TOPIC_CHECK = "data.jev_off_topic"
+
+
+def _paired_units(jobs: list[Job]) -> list[Job | tuple[Job, Job]]:
+    """Pair data injection and off-topic checks that share a row. Other jobs stay single."""
+    injection = {job.row.id: job for job in jobs if job.check.key == _DATA_INJECTION_CHECK}
+    units: list[Job | tuple[Job, Job]] = []
+    for job in jobs:
+        if job.check.key == _DATA_OFF_TOPIC_CHECK and job.row.id in injection:
+            continue
+        if job.check.key == _DATA_INJECTION_CHECK:
+            partner = next(
+                (
+                    other
+                    for other in jobs
+                    if other.check.key == _DATA_OFF_TOPIC_CHECK and other.row.id == job.row.id
+                ),
+                None,
+            )
+            if partner is not None:
+                units.append((job, partner))
+                continue
+        units.append(job)
+    return units
+
+
+def _pair_estimate(injection: Job, off_topic: Job, settings: Settings) -> float:
+    body = {
+        "model": settings.resolved_guard_jev_model,
+        "state": guard_state(injection.row.text),
+        "questions": {
+            "injection": injection.check.jev_question,
+            "off_topic": off_topic.check.jev_question,
+        },
+    }
+    return _tokens(body) / 1e6 * INPUT_USD_PER_MILLION
+
+
+def _noul_result(
+    job: Job,
+    settings: Settings,
+    answer: object,
+    *,
+    latency_ms: float,
+    cost_usd: float,
+    cost_source: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    error: str | None = None,
+    status_code: int | None = None,
+) -> CallResult:
+    result = CallResult(
+        check=job.check.key,
+        row_id=job.row.id,
+        model=settings.resolved_guard_jev_model,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        error=error,
+        status_code=status_code,
+    )
+    if error is None:
+        if not isinstance(answer, NoulAnswer):
+            result.error = "Decisions response missing a noul probability"
+        else:
+            result.probability = answer.noul
+    return result
+
+
+async def _call_jev_pair(
+    injection: Job, off_topic: Job, settings: Settings, client: httpx.AsyncClient
+) -> tuple[CallResult, CallResult]:
+    """One ``post_decisions`` for both data questions. Cost stays on the injection row."""
+    started = time.perf_counter()
+    try:
+        response = await post_decisions(
+            state=guard_state(injection.row.text),
+            questions={
+                "injection": injection.check.jev_question,
+                "off_topic": off_topic.check.jev_question,
+            },
+            settings=settings,
+            client=client,
+            model=settings.resolved_guard_jev_model,
+        )
+    except JudgePaymentRequired as exc:
+        latency = (time.perf_counter() - started) * 1000
+        failed = _noul_result(
+            injection,
+            settings,
+            None,
+            latency_ms=latency,
+            cost_usd=0.0,
+            cost_source="estimate",
+            input_tokens=None,
+            output_tokens=None,
+            error=str(exc),
+            status_code=402,
+        )
+        other = _noul_result(
+            off_topic,
+            settings,
+            None,
+            latency_ms=latency,
+            cost_usd=0.0,
+            cost_source="estimate",
+            input_tokens=None,
+            output_tokens=None,
+            error=str(exc),
+            status_code=402,
+        )
+        return failed, other
+    except JudgeError as exc:
+        latency = (time.perf_counter() - started) * 1000
+        status = getattr(exc, "status_code", None)
+        code = status if isinstance(status, int) else None
+        failed = _noul_result(
+            injection,
+            settings,
+            None,
+            latency_ms=latency,
+            cost_usd=0.0,
+            cost_source="estimate",
+            input_tokens=None,
+            output_tokens=None,
+            error=str(exc),
+            status_code=code,
+        )
+        other = _noul_result(
+            off_topic,
+            settings,
+            None,
+            latency_ms=latency,
+            cost_usd=0.0,
+            cost_source="estimate",
+            input_tokens=None,
+            output_tokens=None,
+            error=str(exc),
+            status_code=code,
+        )
+        return failed, other
+    latency = (time.perf_counter() - started) * 1000
+    if response.cost_usd is not None:
+        cost, source = response.cost_usd, "usage.cost"
+    elif response.input_tokens is not None:
+        cost = response.input_tokens / 1e6 * INPUT_USD_PER_MILLION
+        source = "tokens"
+    else:
+        cost, source = _pair_estimate(injection, off_topic, settings), "estimate"
+    charged = _noul_result(
+        injection,
+        settings,
+        response.answers.get("injection"),
+        latency_ms=latency,
+        cost_usd=cost,
+        cost_source=source,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
+    free = _noul_result(
+        off_topic,
+        settings,
+        response.answers.get("off_topic"),
+        latency_ms=latency,
+        cost_usd=0.0,
+        cost_source=source,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
+    return charged, free
+
+
+async def _collect_data_guard_batch(
+    jobs: list[Job],
+    settings: Settings,
+    client: httpx.AsyncClient,
+    *,
+    max_usd: float,
+    concurrency: int,
+    progress: bool,
+) -> Collection:
+    """Same worker rules as ``collect``, with the two data Jev checks sharing one request."""
+    budget = Budget(max_usd=max_usd)
+    units = _paired_units(jobs)
+    queue: asyncio.Queue[Job | tuple[Job, Job]] = asyncio.Queue()
+    for unit in units:
+        queue.put_nowait(unit)
+    results: list[CallResult] = []
+    state: dict[str, Any] = {"aborted": None, "consecutive_errors": 0, "done": 0}
+
+    async def worker() -> None:
+        while state["aborted"] is None:
+            try:
+                unit = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            pair = unit if isinstance(unit, tuple) else None
+            reserve_basis = (
+                _pair_estimate(pair[0], pair[1], settings)
+                if pair is not None
+                else estimate_job(unit, settings)
+            )
+            reserve = reserve_basis * RESERVE_FACTOR
+            try:
+                await budget.reserve(reserve)
+            except BudgetExceeded as exc:
+                state["aborted"] = f"spend cap: {exc}"
+                return
+            if pair is not None:
+                injection_result, off_topic_result = await _call_jev_pair(
+                    pair[0], pair[1], settings, client
+                )
+                produced = [injection_result, off_topic_result]
+                if (
+                    injection_result.error is not None
+                    and injection_result.cost_source == "estimate"
+                ):
+                    injection_result.cost_usd = reserve
+                charged = injection_result.cost_usd
+                lead_error = injection_result.error
+                lead_status = injection_result.status_code
+            else:
+                single = unit if isinstance(unit, Job) else unit[0]
+                call = _call_jev if single.check.model_kind == "jev" else _call_gpt
+                single_result = await call(single, settings, client)
+                if single_result.error is not None and single_result.cost_source == "estimate":
+                    single_result.cost_usd = reserve
+                produced = [single_result]
+                charged = single_result.cost_usd
+                lead_error = single_result.error
+                lead_status = single_result.status_code
+            await budget.settle(reserve, charged)
+            results.extend(produced)
+            state["done"] += len(produced)
+            if lead_status == 402:
+                state["aborted"] = "OpenRouter returned 402 (insufficient credits)"
+            elif lead_error is not None:
+                state["consecutive_errors"] += 1
+                if state["consecutive_errors"] >= MAX_CONSECUTIVE_ERRORS:
+                    state["aborted"] = f"{MAX_CONSECUTIVE_ERRORS} consecutive errors: {lead_error}"
+            else:
+                state["consecutive_errors"] = 0
+            if progress and state["done"] % 50 == 0:
+                print(f"  {state['done']}/{len(jobs)} calls, spent ${budget.spent:.4f}", flush=True)
+
+    await asyncio.gather(*(worker() for _ in range(max(1, concurrency))))
+    return Collection(
+        results=results,
+        spent_usd=budget.spent,
+        aborted=state["aborted"],
+        skipped_jobs=len(jobs) - len(results),
+    )
+
+
 async def collect(
     jobs: list[Job],
     settings: Settings,
@@ -284,8 +541,23 @@ async def collect(
     max_usd: float,
     concurrency: int = 4,
     progress: bool = False,
+    data_guard_batch: bool = False,
 ) -> Collection:
-    """Run ``jobs`` until done, the spend cap, a 402, or a run of consecutive errors."""
+    """Run ``jobs`` until done, the spend cap, a 402, or a run of consecutive errors.
+
+    ``data_guard_batch`` pairs ``data.jev_injection`` with ``data.jev_off_topic`` for the
+    same row into one ``post_decisions`` call. The default leaves every check as its own
+    call.
+    """
+    if data_guard_batch:
+        return await _collect_data_guard_batch(
+            jobs,
+            settings,
+            client,
+            max_usd=max_usd,
+            concurrency=concurrency,
+            progress=progress,
+        )
     budget = Budget(max_usd=max_usd)
     queue: asyncio.Queue[Job] = asyncio.Queue()
     for job in jobs:

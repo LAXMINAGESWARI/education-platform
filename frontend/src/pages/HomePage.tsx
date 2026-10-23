@@ -39,6 +39,8 @@ export function HomePage() {
   const { subjectId } = useParams();
   const [directory, setDirectory] = useState<LearningDirectory | null>(directoryCache);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [fresh, setFresh] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,17 +50,26 @@ export function HomePage() {
         if (!cancelled) {
           directoryCache = data;
           setDirectory(data);
+          setError(null);
+          setFresh(true);
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof ApiError ? err.message : "Could not load subjects.");
+          setFresh(true);
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
+
+  const retrySubject = () => {
+    setError(null);
+    setFresh(false);
+    setAttempt((value) => value + 1);
+  };
 
   const subjects = directory?.subjects ?? [];
   const selected =
@@ -70,11 +81,14 @@ export function HomePage() {
   const placeholders = PLACEHOLDER_SUBJECTS.filter((p) => !knownNames.has(p.name.toLowerCase()));
 
   if (subjectId) {
+    if (!fresh && !selected) {
+      return <SubjectRouteStatus kind="loading" />;
+    }
     if (!directory && !error) {
       return <SubjectRouteStatus kind="loading" />;
     }
-    if (!directory && error) {
-      return <SubjectRouteStatus kind="error" message={error} />;
+    if (error && !selected) {
+      return <SubjectRouteStatus kind="error" message={error} onRetry={retrySubject} />;
     }
     if (!selected) {
       return <SubjectRouteStatus kind="missing" />;

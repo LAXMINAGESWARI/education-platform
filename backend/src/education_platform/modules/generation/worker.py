@@ -146,7 +146,15 @@ from education_platform.modules.judge.protocol import Judge
 from education_platform.modules.materials.models import SourceChunk
 from education_platform.modules.progress.types import run_subject
 from education_platform.modules.progress.wake import publish_wake
-from education_platform.workers.lease import Claimed, Exhausted, claim
+from education_platform.workers.lease import (
+    Claimed,
+    Exhausted,
+    claim,
+    close_session,
+    commit_owned,
+    exceeded_max_attempts_message,
+    prepare_leased_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,14 +206,14 @@ def claim_next_generation_job(session: Session) -> UUID | None:
     job = session.get(GenerationJob, result.job_id)
     if job is not None:
         publish_wake(session, run_subject(job.run_id))
-        session.commit()
+        commit_owned(session)
     return result.job_id
 
 
 def fail_exhausted_generation_job(session: Session, job_id: UUID) -> None:
     job = session.get(GenerationJob, job_id)
-    times = 0 if job is None else job.attempts
-    _fail_job_and_run(session, job_id, f"Worker lost this job {times} times")
+    times = 0 if job is None else int(job.max_attempts)
+    _fail_job_and_run(session, job_id, exceeded_max_attempts_message(times))
 
 
 def _cancelled(session: Session, run: ContentGenerationRun) -> bool:
@@ -226,6 +234,7 @@ def process_generation_job_sync(
     blind_solver: BlindSolver | None = None,
 ) -> None:
     session = sync_session()
+    prepare_leased_writes(session)
     try:
         job = session.get(GenerationJob, job_id)
         if job is None:
@@ -235,11 +244,11 @@ def process_generation_job_sync(
         if run is not None and _cancelled(session, run):
             job.status = GenerationJobStatus.FAILED
             job.error = "Cancelled."
-            session.commit()
+            commit_owned(session)
             return
         job.status = GenerationJobStatus.RUNNING
         publish_wake(session, run_subject(job.run_id))
-        session.commit()
+        commit_owned(session)
         if job.kind is GenerationJobKind.OUTLINE:
             _finish_outline(session, job.run_id, writer=write_outline, job_id=job_id)
             _complete_job(session, job_id, ok_phases=frozenset({RunPhase.OUTLINE_REVIEW}))
@@ -284,7 +293,7 @@ def process_generation_job_sync(
         session.rollback()
         _fail_job_and_run(session, job_id, str(exc)[:2000])
     finally:
-        session.close()
+        close_session(session)
 
 
 def _complete_job(session: Session, job_id: UUID, *, ok_phases: frozenset[RunPhase]) -> None:
@@ -303,7 +312,7 @@ def _complete_job(session: Session, job_id: UUID, *, ok_phases: frozenset[RunPha
         job.error = failed_reason[:2000]
     if run is not None:
         publish_wake(session, run_subject(run.id))
-    session.commit()
+    commit_owned(session)
 
 
 def _fail_job_and_run(session: Session, job_id: UUID, reason: str) -> None:
@@ -318,7 +327,7 @@ def _fail_job_and_run(session: Session, job_id: UUID, reason: str) -> None:
         run.failure_reason = reason[:2000]
     if job is not None:
         publish_wake(session, run_subject(job.run_id))
-    session.commit()
+    commit_owned(session)
 
 
 def _finish_outline(

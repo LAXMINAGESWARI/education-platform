@@ -79,6 +79,7 @@ import re
 from typing import Any, Final
 
 from education_platform.core.config import Settings, get_settings
+from education_platform.core.llm import OpenRouterError
 from education_platform.modules.guard.classifier import (
     DATA_GPT_INJECTION,
     DATA_INJECTION,
@@ -88,6 +89,9 @@ from education_platform.modules.guard.classifier import (
     legacy_gpt_flag,
 )
 from education_platform.modules.judge.errors import JudgeError, JudgePaymentRequired
+from education_platform.modules.text_to_sql.llm import gateway_json
+from education_platform.modules.text_to_sql.meter import note_llm_call
+from education_platform.modules.text_to_sql.pipeline import use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import (
     INJECTION_BLOCKED,
     TextToSQLState,
@@ -145,6 +149,7 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
 
     try:
         # The question text only. Identity stays in state for apply_role_scope.
+        note_llm_call()
         probability = await classify_noul(
             state=guard_state(question),
             question=DATA_INJECTION,
@@ -168,31 +173,90 @@ async def injection_guard(state: TextToSQLState) -> TextToSQLState:
             "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
         }
 
-    # Jev allowed the question. The pre-Jev GPT injection check still runs, and
-    # either flag blocks. A GPT error here fails closed, same as the 402 path.
+    # Jev allowed the question. The same GPT decision the 402 path uses still
+    # runs, and either flag blocks.
+    return await gpt_injection_decision(
+        {**state, "audit_entry": noted},
+        question,
+        settings,
+        jev_passed=True,
+    )
+
+
+async def gpt_injection_decision(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+    *,
+    jev_passed: bool,
+) -> TextToSQLState:
+    """GPT injection verdict. Legacy and the lean batch both call this.
+
+    A flag or a GPT error refuses. When Jev already passed, an allow records
+    ``jev_gpt``. The HTTP 402 path has no Jev probability, so an allow stays
+    on ``gpt``.
+    """
     try:
-        flagged = await legacy_gpt_flag(
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-        )
-    except JudgeError:
+        flagged = await _gpt_injection_flag(state, question, settings)
+    except (JudgeError, OpenRouterError):
+        fields: dict[str, Any] = {"guard_stage": "gpt_error"}
+        if jev_passed:
+            fields["injection_probability"] = (state.get("audit_entry") or {}).get(
+                "injection_probability"
+            )
         return {
             **state,
-            "audit_entry": _note(state, guard_stage="gpt_error", injection_probability=probability),
+            "audit_entry": _note(state, **fields),
             "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
         }
     if flagged:
+        fields = {"guard_stage": "gpt"}
+        if jev_passed:
+            fields["injection_probability"] = (state.get("audit_entry") or {}).get(
+                "injection_probability"
+            )
         return {
             **state,
-            "audit_entry": _note(state, guard_stage="gpt", injection_probability=probability),
+            "audit_entry": _note(state, **fields),
             "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
         }
-    return {
-        **state,
-        "audit_entry": _note(state, guard_stage="jev_gpt", injection_probability=probability),
-    }
+    if jev_passed:
+        return {
+            **state,
+            "audit_entry": _note(
+                state,
+                guard_stage="jev_gpt",
+                injection_probability=(state.get("audit_entry") or {}).get("injection_probability"),
+            ),
+        }
+    return {**state, "audit_entry": _note(state, guard_stage="gpt")}
+
+
+async def _gpt_injection_flag(
+    state: TextToSQLState,
+    question: str,
+    settings: Settings,
+) -> bool:
+    note_llm_call()
+    if use_text_to_sql_gateway(settings, state):
+        data = await gateway_json(
+            "text_to_sql.guard",
+            [
+                {"role": "system", "content": DATA_GPT_INJECTION},
+                {"role": "user", "content": question},
+            ],
+            settings,
+        )
+        flagged = data.get("injection")
+        if not isinstance(flagged, bool):
+            raise JudgeError("GPT classifier omitted injection")
+        return flagged
+    return await legacy_gpt_flag(
+        settings=settings,
+        system=DATA_GPT_INJECTION,
+        user=question,
+        field="injection",
+    )
 
 
 async def _gpt_injection_fallback(
@@ -200,25 +264,5 @@ async def _gpt_injection_fallback(
     question: str,
     settings: Settings,
 ) -> TextToSQLState:
-    """Regex already ran. HTTP 402 uses the pre-Jev GPT classifier."""
-    try:
-        flagged = await legacy_gpt_flag(
-            settings=settings,
-            system=DATA_GPT_INJECTION,
-            user=question,
-            field="injection",
-        )
-    except JudgeError:
-        return {
-            **state,
-            "audit_entry": _note(state, guard_stage="gpt_error"),
-            "error": format_error(INJECTION_BLOCKED, _GUARD_UNAVAILABLE_REPLY),
-        }
-    noted = _note(state, guard_stage="gpt")
-    if flagged:
-        return {
-            **state,
-            "audit_entry": noted,
-            "error": format_error(INJECTION_BLOCKED, _CLASSIFIER_BLOCKED_REPLY),
-        }
-    return {**state, "audit_entry": noted}
+    """Regex already ran. HTTP 402 uses the same GPT injection decision."""
+    return await gpt_injection_decision(state, question, settings, jev_passed=False)

@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import re
 
-from education_platform.core.config import get_settings
+from education_platform.core.config import Settings, get_settings
 from education_platform.modules.assistant.openrouter import OpenRouterError, chat_completion
+from education_platform.modules.text_to_sql.llm import gateway_text
+from education_platform.modules.text_to_sql.meter import note_llm_call
+from education_platform.modules.text_to_sql.pipeline import LEAN, use_text_to_sql_gateway
 from education_platform.modules.text_to_sql.state import LLM_ERROR, TextToSQLState, format_error
 
 _SYSTEM_PROMPT = """You are a SQL generation assistant for CurioEd's \
@@ -197,6 +200,25 @@ commentary before or after it."""
 _FENCE_RE = re.compile(r"```(?:sql)?\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
+def _repair_suffix(prior_sql: str | None, prior_error: str | None) -> str:
+    if not prior_sql and not prior_error:
+        return ""
+    return (
+        "\n\nYour previous attempt was rejected. Fix the specific problem below "
+        "rather than starting over from scratch.\n\n"
+        f"Previous SQL:\n{prior_sql or '(none produced)'}\n\n"
+        f"Rejection reason:\n{prior_error or '(not given)'}"
+    )
+
+
+def _hint_tables(state: TextToSQLState) -> list[str] | None:
+    selected = (state.get("audit_entry") or {}).get("schema_linking_tables_selected")
+    if not isinstance(selected, list) or not selected:
+        return None
+    names = [name for name in selected if isinstance(name, str) and name]
+    return names or None
+
+
 def _build_messages(
     *,
     question: str,
@@ -204,21 +226,42 @@ def _build_messages(
     user_role: str,
     prior_sql: str | None,
     prior_error: str | None,
+    lean: bool = False,
+    hint_tables: list[str] | None = None,
 ) -> list[dict[str, str]]:
+    repair = _repair_suffix(prior_sql, prior_error)
+    if lean:
+        # Stable prefix: system rules, then the full filtered catalog. The question,
+        # optional link hint, and repair text stay in the user turn so a cached
+        # prefix can repeat across questions.
+        user_content = f"Asking user's role: {user_role}\n\nQuestion: {question}"
+        if hint_tables:
+            user_content += (
+                "\n\nTables most likely relevant (hint only; the catalog above is "
+                f"authoritative):\n{', '.join(hint_tables)}"
+            )
+        user_content += repair
+        return [
+            {"role": "system", "content": f"{_SYSTEM_PROMPT}\n\nSchema catalog:\n{schema_context}"},
+            {"role": "user", "content": user_content},
+        ]
     user_content = (
         f"Schema:\n{schema_context}\n\nAsking user's role: {user_role}\n\nQuestion: {question}"
     )
-    if prior_sql or prior_error:
-        user_content += (
-            "\n\nYour previous attempt was rejected. Fix the specific problem below "
-            "rather than starting over from scratch.\n\n"
-            f"Previous SQL:\n{prior_sql or '(none produced)'}\n\n"
-            f"Rejection reason:\n{prior_error or '(not given)'}"
-        )
+    user_content += repair
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
+
+
+async def _complete(
+    messages: list[dict[str, str]], settings: Settings, state: TextToSQLState
+) -> str:
+    note_llm_call()
+    if use_text_to_sql_gateway(settings, state):
+        return await gateway_text("text_to_sql.generate", messages, settings)
+    return await chat_completion(messages, settings=settings, temperature=0.0)
 
 
 def _extract_sql(raw: str) -> str:
@@ -239,17 +282,20 @@ async def generate_sql(state: TextToSQLState) -> TextToSQLState:
     # See the module docstring / design notes doc for the full incident.
     query_source = None if is_retry else state.get("query_source")
 
+    lean = state.get("pipeline") == LEAN
     messages = _build_messages(
         question=state["question"],
         schema_context=state.get("schema_context") or "",
         user_role=state.get("user_role") or "unknown",
         prior_sql=state.get("generated_sql") if is_retry else None,
         prior_error=incoming_error if is_retry else None,
+        lean=lean,
+        hint_tables=_hint_tables(state) if lean else None,
     )
 
     settings = get_settings()
     try:
-        raw = await chat_completion(messages, settings=settings, temperature=0.0)
+        raw = await _complete(messages, settings, state)
     except OpenRouterError as exc:
         return {
             **state,

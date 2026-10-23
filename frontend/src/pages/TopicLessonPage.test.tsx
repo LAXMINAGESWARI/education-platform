@@ -278,6 +278,29 @@ describe("TopicLessonPage", () => {
     expect(screen.getByText("Topic quiz follows the slides.")).toBeInTheDocument();
   });
 
+  it("opens the slide from the resume query", async () => {
+    getTopicMaterial.mockResolvedValue({
+      ...lessonPayload,
+      title: "Mensuration",
+      markdown: ["## Perimeter", "", "Walk the outside.", "", "## Area", "", "Cover the inside."].join(
+        "\n",
+      ),
+      progress: {
+        status: "opened",
+        opened_at: "2026-08-09T21:00:00Z",
+        last_opened_at: "2026-08-09T21:00:00Z",
+        completed_at: null,
+        last_unit_ordinal: 1,
+        source_material_version_id: "ver-topic-1",
+      },
+    });
+
+    renderTopicLesson("/subjects/subj-1/topics/topic-1/lesson?slide=2");
+
+    expect(await screen.findByText("Area", { selector: ".slide-nav__section" })).toBeInTheDocument();
+    expect(document.querySelector(".lesson-overview__scroll")).toHaveAttribute("data-slide-index", "1");
+  });
+
   it("keeps Next slide enabled until the last slide", async () => {
     const user = userEvent.setup();
     getTopicMaterial.mockResolvedValue({

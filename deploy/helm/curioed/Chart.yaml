@@ -1,0 +1,10 @@
+apiVersion: v2
+name: curioed
+description: CurioEd on k3s. Rendering this chart does not deploy it.
+type: application
+version: 0.3.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/aushakanuj/education-platform
+sources:
+  - https://github.com/aushakanuj/education-platform

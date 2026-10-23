@@ -156,6 +156,7 @@ class TextToSQLState(TypedDict, total=False):
 
     # --- Input, set once at graph invocation ---
     question: str  # the user's natural-language question
+    pipeline: str  # "lean" selects the lean prompt, gateway, and one repair
     user_id: str
     user_role: str  # one of: "admin", "teacher", "student", "parent" — drives apply_role_scope
     institution_id: str  # same sourcing discipline as user_id/user_role: populated once,
@@ -216,3 +217,5 @@ class TextToSQLState(TypedDict, total=False):
     # --- Error handling / audit ---
     error: str | None  # set by any node that fails
     audit_entry: dict[str, Any] | None  # structured record written by audit_log
+    pipeline_metrics: dict[str, int]  # timings copied off the meter for the bench
+    stream_request_id: str | None  # client request id for the progress stream; absent on /ask
