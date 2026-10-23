@@ -8,6 +8,7 @@ import {
   noteTextToSqlStage,
   resetProgressCursor,
   stageVisuals,
+  terminalTextToSqlStageReport,
   textToSqlStageVisuals,
   type StageSnapshot,
   type StageVisual,
@@ -95,6 +96,19 @@ describe("textToSqlStageVisuals", () => {
     );
     return textToSqlStageVisuals(report).map((item) => item.visual);
   }
+
+  it("fills every stage from a terminal-only final replay", () => {
+    const visuals = textToSqlStageVisuals(terminalTextToSqlStageReport("done")).map(
+      (item) => item.visual,
+    );
+    expect(visuals).toEqual(["complete", "complete", "complete", "complete", "complete", "complete"]);
+  });
+
+  it("marks checking failed when a terminal-only refusal has no progress", () => {
+    expect(
+      textToSqlStageVisuals(terminalTextToSqlStageReport("failed")).map((item) => item.visual),
+    ).toEqual(["failed", "pending", "pending", "pending", "pending", "pending"]);
+  });
 
   it("keeps checking and understanding in progress together", () => {
     expect(

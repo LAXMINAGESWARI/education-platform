@@ -261,7 +261,11 @@ def commit_upload_terminal(
     message: str | None,
     now: datetime | None = None,
 ) -> None:
-    """Store the terminal stage in the same transaction as lifecycle and the job row."""
+    """Stage the terminal write. The caller commits, so a lost lease can roll it back.
+
+    Assigning ``job.status`` and then ``session.commit()`` would flush that
+    status by primary key and overwrite the worker that reclaimed the row.
+    """
     model = type(version)
     moment = now or datetime.now(UTC)
     session.execute(
@@ -281,7 +285,6 @@ def commit_upload_terminal(
     job.status = job_status
     job.error = job_error
     publish_wake(session, *_subjects_sync(session, job))
-    session.commit()
 
 
 def reset_stage_on_requeue(session: Session, job: Any) -> None:

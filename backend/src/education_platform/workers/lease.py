@@ -85,6 +85,11 @@ def exceeded_max_attempts_message(max_attempts: int) -> str:
     return f"Job exceeded max attempts ({max_attempts})"
 
 
+def bound_lease() -> OwnedLease | None:
+    """Lease bound on this thread, if ``bind_lease`` is active."""
+    return _bound_lease.get()
+
+
 @contextmanager
 def bind_lease(lease: OwnedLease) -> Iterator[OwnedLease]:
     """Bind ``lease`` for ``commit_owned`` on this thread.

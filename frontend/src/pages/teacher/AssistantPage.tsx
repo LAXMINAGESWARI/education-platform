@@ -4,6 +4,7 @@ import { ProgressReconnectError } from "../../api/progress";
 import {
   emptyTextToSqlStageReport,
   noteTextToSqlStage,
+  terminalTextToSqlStageReport,
   textToSqlStageVisuals,
   type StageVisual,
   type TextToSqlStageReport,
@@ -106,6 +107,18 @@ function isAbortError(error: unknown): boolean {
 
 function isStreamMissing(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 404 || error.status === 405);
+}
+
+function showStageStepper(entry: ThreadEntry): boolean {
+  return entry.progress !== null || entry.stages.latest !== null;
+}
+
+function stagesAfterTerminal(
+  stages: TextToSqlStageReport,
+  kind: "final" | "refusal" | "error",
+): TextToSqlStageReport {
+  if (stages.latest !== null) return stages;
+  return terminalTextToSqlStageReport(kind === "final" ? "done" : "failed");
 }
 
 function stageVisualLabel(visual: StageVisual): string {
@@ -301,6 +314,7 @@ export function AssistantPage() {
             answer: result.answer.natural_answer,
             confidence: result.answer.confidence,
             provenance: result.answer.provenance,
+            stages: stagesAfterTerminal(entry.stages, "final"),
             reconnecting: false,
           }));
           triggerHaptic("success");
@@ -310,6 +324,7 @@ export function AssistantPage() {
             ...entry,
             status: "refusal",
             refusal: result.message,
+            stages: stagesAfterTerminal(entry.stages, "refusal"),
             reconnecting: false,
           }));
           triggerHaptic("success");
@@ -319,6 +334,7 @@ export function AssistantPage() {
             ...entry,
             status: "error",
             error: result.message,
+            stages: stagesAfterTerminal(entry.stages, "error"),
             reconnecting: false,
           }));
           triggerHaptic("error");
@@ -451,7 +467,7 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {entry.progress !== null ? (
+                {showStageStepper(entry) ? (
                   <AskStageStepper progress={entry.progress} stages={entry.stages} />
                 ) : null}
                 {entry.table ? <ResultTable table={entry.table} /> : null}
@@ -471,7 +487,7 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {entry.progress !== null ? (
+                {showStageStepper(entry) ? (
                   <AskStageStepper progress={entry.progress} stages={entry.stages} />
                 ) : null}
                 <p className="assistant-chat__body" role="status">

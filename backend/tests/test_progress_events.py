@@ -33,6 +33,8 @@ from education_platform.modules.audit.service import (
 from education_platform.modules.auth.models import User, UserStatus
 from education_platform.modules.authorization.principal import Principal
 from education_platform.modules.authorization.scope import Scope
+from education_platform.modules.generation.models import ContentGenerationRun
+from education_platform.modules.generation.types import RunPhase
 from education_platform.modules.materials.models import (
     SourceMaterial,
     SourceMaterialVersion,
@@ -73,8 +75,8 @@ from education_platform.modules.rag.models import (
     KnowledgeDocumentVersionStatus,
 )
 from education_platform.modules.rag.schemas import MaterialVersionStatusOut
-from education_platform.workers.ingest import process_ingest_job_sync
-from education_platform.workers.lease import Claimed, claim
+from education_platform.workers.ingest import _live_claim, process_ingest_job_sync
+from education_platform.workers.lease import Claimed, OwnedLease, bind_lease, claim, release_lease
 from education_platform.workers.runner import poll_once
 from test_rag_ingest import TINY_PDF
 
@@ -1314,4 +1316,173 @@ def test_sigkill_reclaim_resets_status_and_stream(
     after = client.get(f"/api/v1/admin/material-versions/{version.id}", headers=admin_headers)
     assert after.status_code == 200, after.text
     assert after.json()["stage"] == "done"
+    get_settings.cache_clear()
+
+
+def test_live_claim_reads_the_bound_lease_token() -> None:
+    fallback = StageClaim(attempts=2)
+    assert _live_claim(fallback) == fallback
+    first = datetime(2030, 1, 1, tzinfo=UTC)
+    later = datetime(2030, 1, 1, 0, 0, 30, tzinfo=UTC)
+    lease = OwnedLease(model=IngestJob, job_id=uuid4(), attempts=2, locked_until=first)
+    with bind_lease(lease):
+        assert _live_claim(fallback) == StageClaim(attempts=2, locked_until=first)
+        lease.locked_until = later
+        assert _live_claim(fallback) == StageClaim(attempts=2, locked_until=later)
+
+
+@pytest.mark.regression
+def test_same_attempt_reclaim_drops_the_previous_lease_token(
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A refund plus a new claim can reuse the attempt count with a new token."""
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    first_until = datetime.now(UTC) + timedelta(minutes=5)
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        stage="embedding",
+        stage_seq=4,
+        stage_current=16,
+        stage_total=100,
+        stage_message="Embedding 16 of 100 chunks.",
+        attempts=1,
+        status=IngestJobStatus.RUNNING,
+        locked_until=first_until,
+    )
+    released = release_lease(
+        OwnedLease(
+            model=IngestJob,
+            job_id=job.id,
+            attempts=1,
+            locked_until=first_until,
+        )
+    )
+    assert released is True
+    seeded_db.expire_all()
+    refunded = seeded_db.get(IngestJob, job.id)
+    assert refunded is not None
+    assert refunded.status == IngestJobStatus.QUEUED
+    assert refunded.attempts == 0
+    refunded.attempts = 1
+    refunded.status = IngestJobStatus.RUNNING
+    refunded.locked_until = first_until + timedelta(seconds=30)
+    seeded_db.commit()
+    seeded_db.expire_all()
+    stored = seeded_db.get(SourceMaterialVersion, version.id)
+    running = seeded_db.get(IngestJob, job.id)
+    assert stored is not None and running is not None
+    assert stored.stage_message == RESTART_MESSAGE
+    kept_seq = stored.stage_seq
+
+    skipped = persist_upload_stage(
+        stored,
+        running,
+        claim=StageClaim(attempts=1, locked_until=first_until),
+        stage="embedding",
+        message="Embedding 40 of 100 chunks.",
+        current=40,
+        total=100,
+        force=True,
+    )
+    assert skipped is None
+    seeded_db.expire_all()
+    after = seeded_db.get(SourceMaterialVersion, version.id)
+    assert after is not None
+    assert after.stage_message == RESTART_MESSAGE
+    assert after.stage_seq == kept_seq
+    get_settings.cache_clear()
+
+
+@pytest.mark.regression
+def test_indexing_run_stream_emits_upload_progress(
+    client: TestClient,
+    seeded_db: Session,
+    seeded_subtopic_id: object,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Stage wakes on the intake version reach the generation-run SSE."""
+    del client
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
+    now = datetime.now(UTC)
+    version, job = _store_version(
+        seeded_db,
+        subtopic_id=seeded_subtopic_id,
+        stage="embedding",
+        stage_seq=2,
+        stage_current=3,
+        stage_total=10,
+        stage_message="Embedding 3 of 10 chunks.",
+        attempts=1,
+        status=IngestJobStatus.RUNNING,
+        locked_until=now + timedelta(minutes=5),
+    )
+    settings = get_settings()
+    topic = seeded_db.get(Subtopic, seeded_subtopic_id)
+    admin = seeded_db.scalar(select(User).where(User.email == settings.demo_admin_email))
+    assert topic is not None and admin is not None
+    run = ContentGenerationRun(
+        topic_id=topic.topic_id,
+        submitted_by_user_id=admin.id,
+        title="Indexing intake",
+        phase=RunPhase.INDEXING,
+        target_item_count=60,
+        intake_source_material_version_id=version.id,
+    )
+    seeded_db.add(run)
+    seeded_db.commit()
+
+    seen = bytearray()
+
+    def read_stream(base: str) -> None:
+        url = f"/api/v1/progress/runs/{run.id}"
+        with (
+            httpx.Client(base_url=base, timeout=5) as http,
+            http.stream("GET", url, headers=admin_headers) as response,
+        ):
+            assert response.status_code == 200
+            for chunk in response.iter_bytes():
+                seen.extend(chunk)
+                if seen.count(b"event: progress") >= 2:
+                    return
+
+    with open_progress_server() as base:
+        reader = threading.Thread(target=read_stream, args=(base,))
+        reader.start()
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and b"event: progress" not in seen:
+                time.sleep(0.05)
+            assert b"event: progress" in seen
+            seeded_db.expire_all()
+            current = seeded_db.get(SourceMaterialVersion, version.id)
+            owned = seeded_db.get(IngestJob, job.id)
+            assert current is not None and owned is not None
+            written = persist_upload_stage(
+                current,
+                owned,
+                claim=StageClaim(attempts=1, locked_until=owned.locked_until),
+                stage="embedding",
+                message="Embedding 8 of 10 chunks.",
+                current=8,
+                total=10,
+                force=True,
+            )
+            assert written == 3
+        finally:
+            reader.join(timeout=20)
+    assert not reader.is_alive()
+    payloads = _progress_payloads(seen.decode())
+    assert [payload["seq"] for payload in payloads] == [2, 3]
+    assert payloads[0]["stage"] == "embedding"
+    assert payloads[0]["current"] == 3
+    assert payloads[1]["current"] == 8
+    assert payloads[0]["subject_id"] == str(version.id)
     get_settings.cache_clear()

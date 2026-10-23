@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProgressReconnectError } from "../../api/progress";
+import { TEXT_TO_SQL_STAGE_ORDER } from "../../api/stageOrder";
 import * as textToSqlApi from "../../api/textToSql";
 import { ApiError } from "../../api/types";
 import { RequireAuth } from "../../auth/RequireAuth";
@@ -429,7 +430,7 @@ describe("AssistantPage", () => {
       );
     });
 
-    it("shows the reconnecting badge and drops a partial answer when the run restarts", async () => {
+    it("shows the reconnecting badge and marks the stepper done after a terminal replay", async () => {
       let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
       vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
         handlers?.onAnswerDelta?.("Hello");
@@ -454,6 +455,8 @@ describe("AssistantPage", () => {
         answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
       });
       await waitFor(() => expect(screen.getByText("You teach 10.")).toBeInTheDocument());
+      expect(screen.getAllByText("Done")).toHaveLength(TEXT_TO_SQL_STAGE_ORDER.length);
+      expect(screen.queryByText("Pending")).not.toBeInTheDocument();
     });
 
     it("shows the give-up message with Retry", async () => {

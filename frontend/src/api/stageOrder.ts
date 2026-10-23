@@ -89,6 +89,15 @@ export function emptyTextToSqlStageReport(): TextToSqlStageReport {
   return { latest: null, pair: {} };
 }
 
+/**
+ * A finished ask replays only the terminal frame. Fill the stepper from that
+ * outcome when no progress frame arrived with it.
+ */
+export function terminalTextToSqlStageReport(status: "done" | "failed"): TextToSqlStageReport {
+  const stage = status === "done" ? "summarising" : "checking";
+  return noteTextToSqlStage(emptyTextToSqlStageReport(), { stage, status });
+}
+
 /** Remember checking and understanding on their own. A later stage does not erase that. */
 export function noteTextToSqlStage(
   report: TextToSqlStageReport,

@@ -557,6 +557,34 @@ describe("feedback hierarchy", () => {
     }
   });
 
+  it("does not focus needs attention when that list is empty", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue({
+      ...subject,
+      topics_needing_attention: [],
+    });
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      const heading = await screen.findByRole("heading", {
+        name: "No topics need attention right now.",
+      });
+      expect(heading).toHaveClass("sr-only");
+      expect(heading).not.toHaveFocus();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
   it("scrolls needs attention to the start only after the subject data renders", async () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {

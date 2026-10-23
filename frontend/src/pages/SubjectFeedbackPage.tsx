@@ -143,6 +143,7 @@ export function SubjectFeedbackPage() {
 
   useEffect(() => {
     if (!detail || location.hash !== "#needs-attention") return;
+    if (detail.topics_needing_attention.length === 0) return;
     return revealElementByIdWhenSettled("needs-attention");
   }, [detail, location.hash]);
 
