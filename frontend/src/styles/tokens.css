@@ -44,4 +44,9 @@
   --rail-inset: 0.85rem;
   --page-max: 52rem;
   --measure: 65ch;
+  /* Overlay install toast only. The inline prompt already pushes the page down. */
+  --install-banner-block: 0;
+  /* Phone bar. It is hidden above 860px, where app.css sets this. */
+  --sticky-header-block: 0;
+  --anchor-scroll-margin: calc(var(--sticky-header-block) + var(--install-banner-block) + 0.75rem);
 }

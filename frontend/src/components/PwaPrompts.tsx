@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
@@ -13,14 +14,47 @@ import { isIosSafari, isStandaloneDisplay, shouldShowInstallBanner, snoozeInstal
 import { reloadApp, updateReloadBlocked } from "../pwa/serviceWorkerUpdate";
 
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
+const PWA_PROMPT_HOST_ID = "pwa-prompt-host";
+
+const PwaPromptRegisterContext = createContext<(node: HTMLElement | null) => void>(() => undefined);
+const PwaPromptHostContext = createContext<HTMLElement | null>(null);
+
+/** Wraps the prompts and the page shells so a host can register after auth, with no route change. */
+export function PwaPromptRegistry({ children }: { children: ReactNode }) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const register = useCallback((node: HTMLElement | null) => {
+    setHost(node);
+  }, []);
+  return (
+    <PwaPromptRegisterContext.Provider value={register}>
+      <PwaPromptHostContext.Provider value={host}>{children}</PwaPromptHostContext.Provider>
+    </PwaPromptRegisterContext.Provider>
+  );
+}
+
+/** Mount point inside the scrolling page column. The banner flows above the title. */
+export function PwaPromptHost() {
+  const register = useContext(PwaPromptRegisterContext);
+  const ref = useCallback(
+    (node: HTMLDivElement | null) => {
+      register(node);
+    },
+    [register],
+  );
+  return <div id={PWA_PROMPT_HOST_ID} ref={ref} />;
+}
 
 export function PwaPrompts() {
-  return (
-    <div className="pwa-toasts">
+  const host = useContext(PwaPromptHostContext);
+
+  const prompts = (
+    <div className={host ? "pwa-toasts pwa-toasts--inline" : "pwa-toasts"}>
       <PwaUpdatePrompt />
       <InstallPrompt />
     </div>
   );
+  if (host) return createPortal(prompts, host);
+  return prompts;
 }
 
 function PwaUpdatePrompt() {

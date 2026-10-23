@@ -1,0 +1,205 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.fullname" . }}-default-deny
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  # Chart pods only. CNPG pods are operator-managed and are not in this selector.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: curioed
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.fullname" . }}-dns
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: curioed
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podLabels | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.apiName" . }}-ingress
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.traefik.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.traefik.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.api.service.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.webName" . }}-ingress
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.traefik.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.traefik.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.web.service.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.fullname" . }}-postgres
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - {{ .Release.Name }}
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - api
+          - worker-docling
+          - worker-llm
+          - migrate
+          - seed
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- if eq $np.postgres.mode "cnpg" }}
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "curioed.clusterName" . }}
+        {{- else }}
+        - ipBlock:
+            cidr: {{ $np.postgres.cidr }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.postgres.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.fullname" . }}-https
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - {{ .Release.Name }}
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - api
+          - worker-docling
+          - worker-llm
+          - cloudflared
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ $np.httpsCIDR }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.httpsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.cloudflaredName" . }}-traefik
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "cloudflared") | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.traefik.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.traefik.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.traefik.port }}
+{{- if .Values.cloudflared.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "curioed.cloudflaredName" . }}-probes
+  labels:
+    {{- include "curioed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "curioed.selectorLabels" (dict "root" . "component" "cloudflared") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  # Kubelet probes are not pod traffic. An empty from admits that port from
+  # the node while the default-deny policy still blocks every other port.
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.cloudflared.metricsPort }}
+{{- end }}
+{{- end }}

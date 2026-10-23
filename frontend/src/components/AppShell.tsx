@@ -6,6 +6,7 @@ import { ApiError } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MobileNav } from "./MobileNav";
+import { PwaPromptHost } from "./PwaPrompts";
 import { RouteMotion } from "./RouteMotion";
 
 const IS_DEV = import.meta.env.DEV;
@@ -185,6 +186,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               { to: "/feedback", label: "Feedback", active: onFeedback },
             ]}
           />
+
+          <PwaPromptHost />
 
           <main className="main">
             <RouteMotion>{page}</RouteMotion>

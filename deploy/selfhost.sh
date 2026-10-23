@@ -154,6 +154,7 @@ bring_up() {
   compose --profile "$profile" build
   compose --profile "$profile" up -d --wait postgres
   compose --profile "$profile" up --force-recreate --no-deps --abort-on-container-exit --exit-code-from migrate migrate
+  compose --profile "$profile" up --force-recreate --no-deps --abort-on-container-exit --exit-code-from seed seed
   compose --profile "$profile" up -d --remove-orphans --wait --force-recreate --no-deps \
     api worker web caddy "$tunnel_service"
   if [[ "$mode" == "quick" ]]; then

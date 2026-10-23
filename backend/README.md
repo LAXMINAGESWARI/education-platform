@@ -27,7 +27,9 @@ uv run python -m education_platform.modules.materials.seed
 uv run uvicorn education_platform.main:app --reload
 ```
 
-The API auto-seeds from `docs/curriculum/` on startup when no topics exist.
+The seed command loads `docs/curriculum/` into Postgres. It is idempotent. The API
+does not seed on startup, so more than one API process can boot against the same
+database.
 
 ### Ingest worker
 
@@ -158,7 +160,7 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_API_KEY` | unset | Required for live LLM stages (Policy assistant, ADK generation) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
-| `JEV_GUARD_TIMEOUT_SECONDS` | `5` | Chat-guard Decisions API timeout. Does not inherit `JEV_TIMEOUT_SECONDS` |
+| `JEV_GUARD_TIMEOUT_SECONDS` | `8` | Jev Decisions timeout and the gateway guard-step timeout. Does not inherit `JEV_TIMEOUT_SECONDS` |
 | `GUARD_JEV_BLOCK_THRESHOLD` | `0.6` | Noul probability treated as the old classifier's `true` |
 | `GUARD_JEV_MODEL` | `typesafe/jev-1.14` | Decisions model posted by the chat guard. Does not follow `JEV_MODEL` |
 | `JEV_DECISIONS_URL` | derived from `OPENROUTER_BASE_URL` | Decisions route shared by the lesson judge and the chat guard |

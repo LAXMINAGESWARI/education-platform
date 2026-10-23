@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 
 import {
+  getKnowledgeDocumentVersionStatus,
+  isTerminalIngestStatus,
   listKnowledgeDocuments,
   watchKnowledgeDocumentVersionStatus,
   uploadKnowledgeDocument,
 } from "../../api/adminIngest";
 import { ProgressReconnectError } from "../../api/progress";
+import type { ProgressEnvelope } from "../../api/progressEnvelope";
 import { ApiError, type KnowledgeDocumentListItem } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { DEMO_ADMIN } from "../../auth/demoAccounts";
 import { ROLE_ADMIN, ROLE_STUDENT, ROLE_TEACHER } from "../../auth/roles";
 import { IngestStatusBadge } from "../../components/IngestStatusBadge";
+import { ProgressReconnectStatus, ProgressStreamAlert } from "../../components/ProgressReconnect";
 import { PushButton } from "../../components/PushButton";
+import { UploadProgressMeter } from "../../components/UploadProgressMeter";
 
 const DOC_TYPES = [
   { value: "policy", label: "Policy" },
@@ -51,10 +56,14 @@ export function AdminDocumentsPage() {
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const dragDepth = useRef(0);
   const watchAbortRef = useRef<AbortController | null>(null);
+  const watchedVersionId = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -147,7 +156,9 @@ export function AdminDocumentsPage() {
 
     setBusy(true);
     setUploadError(null);
+    setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     setUploadStatus("processing");
 
     watchAbortRef.current?.abort();
@@ -162,35 +173,79 @@ export function AdminDocumentsPage() {
         requiredRoles,
       });
       if (abort.signal.aborted) return;
+      watchedVersionId.current = accepted.version_id;
       setUploadStatus(accepted.lifecycle_status);
-      const settled = await watchKnowledgeDocumentVersionStatus(accepted.version_id, {
-        signal: abort.signal,
-        onReconnecting: () => {
-          if (!abort.signal.aborted) setReconnecting(true);
-        },
-        onReconnected: () => {
-          // First frame, not response headers, so the banner does not flicker.
-          if (!abort.signal.aborted) setReconnecting(false);
-        },
-      });
-      if (abort.signal.aborted) return;
-      setReconnecting(false);
-      setUploadStatus(settled.lifecycle_status);
-      if (settled.failure_reason) {
-        setUploadError(settled.failure_reason);
-      }
-      setFile(null);
-      setTitle("");
-      await refresh(abort.signal);
+      await followVersion(accepted.version_id, abort);
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-      setUploadStatus(null);
-      setReconnecting(false);
-      const message =
-        err instanceof ProgressReconnectError || err instanceof ApiError
-          ? err.message
-          : "Upload failed. Try again.";
-      setUploadError(message);
+      noteFailure(err, "Upload failed. Try again.");
+    } finally {
+      if (!abort.signal.aborted) setBusy(false);
+    }
+  }
+
+  async function followVersion(versionId: string, abort: AbortController) {
+    const settled = await watchKnowledgeDocumentVersionStatus(versionId, {
+      signal: abort.signal,
+      onReconnecting: () => {
+        if (!abort.signal.aborted) setReconnecting(true);
+      },
+      onReconnected: () => {
+        // First frame, not response headers, so the banner does not flicker.
+        if (!abort.signal.aborted) setReconnecting(false);
+      },
+      onProgress: (progress) => {
+        if (!abort.signal.aborted) setCounts(progress);
+      },
+    });
+    if (abort.signal.aborted) return;
+    setReconnecting(false);
+    setStreamError(null);
+    setUploadStatus(settled.lifecycle_status);
+    if (settled.failure_reason) {
+      setUploadError(settled.failure_reason);
+    } else {
+      setFile(null);
+      setTitle("");
+    }
+    await refresh(abort.signal);
+  }
+
+  function noteFailure(err: unknown, fallback: string) {
+    setUploadStatus(null);
+    setReconnecting(false);
+    if (err instanceof ProgressReconnectError) {
+      setStreamError(err.message);
+      return;
+    }
+    setStreamError(null);
+    setUploadError(err instanceof ApiError ? err.message : fallback);
+  }
+
+  async function resumeProgress() {
+    const versionId = watchedVersionId.current;
+    if (!versionId || busy) return;
+    watchAbortRef.current?.abort();
+    const abort = new AbortController();
+    watchAbortRef.current = abort;
+    setBusy(true);
+    setUploadError(null);
+    setStreamError(null);
+    setReconnecting(false);
+    setCounts(null);
+    try {
+      const fresh = await getKnowledgeDocumentVersionStatus(versionId);
+      if (abort.signal.aborted) return;
+      setUploadStatus(fresh.lifecycle_status);
+      if (isTerminalIngestStatus(fresh.lifecycle_status)) {
+        if (fresh.failure_reason) setUploadError(fresh.failure_reason);
+        await refresh(abort.signal);
+        return;
+      }
+      await followVersion(versionId, abort);
+    } catch (err) {
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+      noteFailure(err, "Could not resume progress updates.");
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -222,20 +277,28 @@ export function AdminDocumentsPage() {
               >
                 <input
                   id="knowledge-doc-file"
+                  ref={fileInputRef}
                   className="sr-only"
                   type="file"
                   accept="application/pdf,.pdf"
+                  aria-label="PDF file"
+                  tabIndex={-1}
                   onChange={(e) => chooseFile(e.target.files?.[0] ?? null)}
                   disabled={busy}
                 />
-                <label className="admin-dropzone__hit" htmlFor="knowledge-doc-file">
+                <button
+                  type="button"
+                  className="admin-dropzone__hit"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy}
+                >
                   <span className="admin-dropzone__title">
                     {file ? file.name : "Drop a PDF here"}
                   </span>
                   <span className="admin-dropzone__hint">
                     {file ? "Click to choose a different file" : "or click to browse"}
                   </span>
-                </label>
+                </button>
               </div>
 
               <div className="form__field">
@@ -301,11 +364,15 @@ export function AdminDocumentsPage() {
                   {uploadError}
                 </p>
               )}
-              {reconnecting && (
-                <p className="admin-upload__status" role="status">
-                  Reconnecting…
-                </p>
-              )}
+              {streamError ? (
+                <ProgressStreamAlert
+                  message={streamError}
+                  busy={busy}
+                  onRetry={() => void resumeProgress()}
+                />
+              ) : null}
+              <ProgressReconnectStatus active={reconnecting} />
+              <UploadProgressMeter envelope={counts} />
               {uploadStatus && (
                 <p className="admin-upload__status" role="status">
                   Ingest: <IngestStatusBadge status={uploadStatus} />

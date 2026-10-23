@@ -1,17 +1,46 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
-import { askQuestion, type Confidence } from "../../api/textToSql";
+import { ProgressReconnectError } from "../../api/progress";
+import {
+  emptyTextToSqlStageReport,
+  noteTextToSqlStage,
+  terminalTextToSqlStageReport,
+  textToSqlStageVisuals,
+  type StageVisual,
+  type TextToSqlStageReport,
+} from "../../api/stageOrder";
+import {
+  askQuestion,
+  askQuestionStream,
+  TEXT_TO_SQL_STAGE_LABEL,
+  type Confidence,
+  type TextToSqlProgress,
+  type TextToSqlTable,
+} from "../../api/textToSql";
+import { ApiError } from "../../api/types";
 import { Crumbs } from "../../components/Crumbs";
 import { claimHaptic, triggerHaptic } from "../../lib/haptics";
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { ProgressReconnectStatus, ProgressStreamAlert } from "../../components/ProgressReconnect";
 import { PushButton } from "../../components/PushButton";
+
+type EntryStatus = "pending" | "done" | "refusal" | "error" | "cancelled";
 
 type ThreadEntry = {
   id: string;
   question: string;
-  status: "pending" | "done" | "error";
-  answer?: string;
+  status: EntryStatus;
+  /** Stream shows the stepper. A 404 falls back to the plain ask and only "Thinking…". */
+  transport: "stream" | "fallback";
+  progress: TextToSqlProgress | null;
+  stages: TextToSqlStageReport;
+  answer: string;
+  table?: TextToSqlTable;
   confidence?: Confidence | null;
+  provenance?: string | null;
+  refusal?: string;
+  error?: string;
+  reconnecting: boolean;
 };
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong — please try again.";
@@ -72,6 +101,114 @@ function ConfidenceBadge({ confidence }: { confidence: Confidence | null | undef
   return <span className={`badge ${modifier}`}>{CONFIDENCE_LABEL[confidence]}</span>;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function isStreamMissing(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 405);
+}
+
+function showStageStepper(entry: ThreadEntry): boolean {
+  return entry.progress !== null || entry.stages.latest !== null;
+}
+
+function stagesAfterTerminal(
+  stages: TextToSqlStageReport,
+  kind: "final" | "refusal" | "error",
+): TextToSqlStageReport {
+  if (stages.latest !== null) return stages;
+  return terminalTextToSqlStageReport(kind === "final" ? "done" : "failed");
+}
+
+function stageVisualLabel(visual: StageVisual): string {
+  switch (visual) {
+    case "pending":
+      return "Pending";
+    case "current":
+      return "In progress";
+    case "complete":
+      return "Done";
+    case "failed":
+      return "Failed";
+    default: {
+      const _never: never = visual;
+      return _never;
+    }
+  }
+}
+
+function cellText(value: TextToSqlTable["rows"][number][number]): string {
+  if (value === null) return "";
+  return String(value);
+}
+
+function AskStageStepper({
+  progress,
+  stages,
+}: {
+  progress: TextToSqlProgress | null;
+  stages: TextToSqlStageReport;
+}) {
+  const steps = textToSqlStageVisuals(stages);
+  return (
+    <div className="assistant-chat__stages">
+      <ol className="generation-stepper" aria-label="Answer progress">
+        {steps.map(({ stage, visual }) => (
+          <li
+            key={stage}
+            className={`generation-stepper__step is-${visual}`}
+            aria-current={visual === "current" ? "step" : undefined}
+          >
+            <span className="generation-stepper__label">{TEXT_TO_SQL_STAGE_LABEL[stage]}</span>
+            <span className="generation-stepper__state">{stageVisualLabel(visual)}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="assistant-chat__stage-message" role="status" aria-live="polite" aria-atomic="true">
+        {progress?.message ? (
+          progress.message
+        ) : (
+          <span className="sr-only">Waiting for the next update</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function ResultTable({ table }: { table: TextToSqlTable }) {
+  return (
+    <div className="table-scroll assistant-chat__table-wrap">
+      <table className="data-table data-table--cards">
+        <caption className="sr-only">Query results</caption>
+        <thead>
+          <tr>
+            {table.columns.map((column) => (
+              <th key={column} scope="col">
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => {
+                const label = table.columns[cellIndex] ?? "";
+                return (
+                  <td key={`${label}-${cellIndex}`} data-label={label}>
+                    {cellText(cell)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /**
  * Teacher-only ask-the-data chat. Route protection already lives one layer up — the whole
  * `/teacher/*` subtree is wrapped in `RequireRole roles={ROLE_TEACHER}` (see App.tsx), so
@@ -79,16 +216,40 @@ function ConfidenceBadge({ confidence }: { confidence: Confidence | null | undef
  * shown, for anyone who isn't a teacher. There is no second, component-level role check
  * here on purpose — one real gate, not two places that could quietly disagree.
  */
+function emptyEntry(id: string, question: string): ThreadEntry {
+  return {
+    id,
+    question,
+    status: "pending",
+    transport: "stream",
+    progress: null,
+    stages: emptyTextToSqlStageReport(),
+    answer: "",
+    reconnecting: false,
+  };
+}
+
 export function AssistantPage() {
   const [thread, setThread] = useState<ThreadEntry[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const runAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     scrollThreadToEnd(threadRef.current);
   }, [thread, busy]);
+
+  useEffect(() => {
+    return () => {
+      runAbort.current?.abort();
+    };
+  }, []);
+
+  function patchEntry(id: string, update: (entry: ThreadEntry) => ThreadEntry) {
+    setThread((prev) => prev.map((entry) => (entry.id === id ? update(entry) : entry)));
+  }
 
   function onPickSuggestion(event: ChangeEvent<HTMLSelectElement>) {
     const question = event.target.value;
@@ -100,45 +261,166 @@ export function AssistantPage() {
     inputRef.current?.focus();
   }
 
-  async function onSubmit(event: FormEvent) {
+  async function runQuestion(id: string, text: string) {
+    runAbort.current?.abort();
+    const controller = new AbortController();
+    runAbort.current = controller;
+    setBusy(true);
+    patchEntry(id, (entry) => ({
+      ...emptyEntry(id, entry.question),
+      question: text,
+    }));
+
+    try {
+      // Single-turn: only the current question is sent. No prior thread entries are read
+      // here or passed along — the thread below is a display concern only.
+      const result = await askQuestionStream(text, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          patchEntry(id, (entry) => ({
+            ...entry,
+            progress,
+            stages: noteTextToSqlStage(entry.stages, progress),
+          }));
+        },
+        onAnswerReset: () => {
+          patchEntry(id, (entry) => ({
+            ...entry,
+            answer: "",
+            table: undefined,
+            progress: null,
+            stages: emptyTextToSqlStageReport(),
+          }));
+        },
+        onAnswerDelta: (delta) => {
+          patchEntry(id, (entry) => ({ ...entry, answer: entry.answer + delta }));
+        },
+        onTable: (table) => {
+          patchEntry(id, (entry) => ({ ...entry, table }));
+        },
+        onReconnecting: () => {
+          patchEntry(id, (entry) => ({ ...entry, reconnecting: true }));
+        },
+        onReconnected: () => {
+          patchEntry(id, (entry) => ({ ...entry, reconnecting: false }));
+        },
+      });
+      if (controller.signal.aborted) return;
+      switch (result.kind) {
+        case "final":
+          patchEntry(id, (entry) => ({
+            ...entry,
+            status: "done",
+            answer: result.answer.natural_answer,
+            confidence: result.answer.confidence,
+            provenance: result.answer.provenance,
+            stages: stagesAfterTerminal(entry.stages, "final"),
+            reconnecting: false,
+          }));
+          triggerHaptic("success");
+          break;
+        case "refusal":
+          patchEntry(id, (entry) => ({
+            ...entry,
+            status: "refusal",
+            refusal: result.message,
+            stages: stagesAfterTerminal(entry.stages, "refusal"),
+            reconnecting: false,
+          }));
+          triggerHaptic("success");
+          break;
+        case "error":
+          patchEntry(id, (entry) => ({
+            ...entry,
+            status: "error",
+            error: result.message,
+            stages: stagesAfterTerminal(entry.stages, "error"),
+            reconnecting: false,
+          }));
+          triggerHaptic("error");
+          break;
+        default: {
+          const _never: never = result;
+          return _never;
+        }
+      }
+    } catch (error) {
+      if (isAbortError(error) || controller.signal.aborted) return;
+      if (isStreamMissing(error)) {
+        patchEntry(id, (entry) => ({
+          ...entry,
+          transport: "fallback",
+          progress: null,
+          stages: emptyTextToSqlStageReport(),
+          reconnecting: false,
+        }));
+        try {
+          const fallback = await askQuestion(text);
+          if (controller.signal.aborted) return;
+          patchEntry(id, (entry) => ({
+            ...entry,
+            status: "done",
+            answer: fallback.natural_answer,
+            confidence: fallback.confidence,
+            provenance: fallback.provenance,
+            progress: null,
+            stages: emptyTextToSqlStageReport(),
+            reconnecting: false,
+          }));
+          triggerHaptic("success");
+        } catch {
+          if (controller.signal.aborted) return;
+          triggerHaptic("error");
+          patchEntry(id, (entry) => ({
+            ...entry,
+            status: "error",
+            error: GENERIC_ERROR_MESSAGE,
+            reconnecting: false,
+          }));
+        }
+        return;
+      }
+      triggerHaptic("error");
+      const message =
+        error instanceof ProgressReconnectError ? error.message : GENERIC_ERROR_MESSAGE;
+      patchEntry(id, (entry) => ({
+        ...entry,
+        status: "error",
+        error: message,
+        reconnecting: false,
+      }));
+    } finally {
+      if (runAbort.current === controller) {
+        setBusy(false);
+      }
+    }
+  }
+
+  function onSubmit(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
     if (!text || busy) return;
     claimHaptic();
-
     const id = `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setDraft("");
-    setBusy(true);
-    setThread((prev) => [...prev, { id, question: text, status: "pending" }]);
+    setThread((prev) => [...prev, emptyEntry(id, text)]);
+    void runQuestion(id, text);
+  }
 
-    try {
-      // Single-turn: only the current question is sent. No prior thread entries are read
-      // here or passed to askQuestion — the thread below is a display concern only.
-      const result = await askQuestion(text);
-      setThread((prev) =>
-        prev.map((entry) =>
-          entry.id === id
-            ? {
-                ...entry,
-                status: "done",
-                answer: result.natural_answer,
-                confidence: result.confidence,
-              }
-            : entry,
-        ),
-      );
-      triggerHaptic("success");
-    } catch {
-      // A real HTTP-layer failure (403/500/504/network) — distinct from a normal 200
-      // response that happens to carry a low-confidence or refusal answer, which never
-      // reaches this branch at all since it doesn't throw.
-      triggerHaptic("error");
-      setThread((prev) =>
-        prev.map((entry) => (entry.id === id ? { ...entry, status: "error" } : entry)),
-      );
-    } finally {
-      setBusy(false);
-    }
+  function onCancel() {
+    runAbort.current?.abort();
+    setBusy(false);
+    setThread((prev) =>
+      prev.map((entry) =>
+        entry.status === "pending" ? { ...entry, status: "cancelled", reconnecting: false } : entry,
+      ),
+    );
+  }
+
+  function onRetry(entry: ThreadEntry) {
+    if (busy) return;
+    claimHaptic();
+    void runQuestion(entry.id, entry.question);
   }
 
   return (
@@ -146,7 +428,7 @@ export function AssistantPage() {
       <h1 className="sr-only">Assistant</h1>
       <Crumbs parts={[{ label: "My classes", to: "/teacher" }, { label: "Assistant" }]} />
 
-      <div className="assistant-chat__thread" ref={threadRef} aria-live="polite">
+      <div className="assistant-chat__thread" ref={threadRef}>
         {thread.length === 0 && (
           <p className="assistant-chat__empty muted">
             Ask about your classes. Pick a suggested question below, or type your own — e.g.
@@ -158,26 +440,70 @@ export function AssistantPage() {
             <div className="assistant-chat__bubble assistant-chat__bubble--user" aria-label="You">
               <p className="assistant-chat__body">{entry.question}</p>
             </div>
-            {entry.status === "pending" && (
+            {entry.status === "pending" && entry.transport === "fallback" && (
               <p className="assistant-chat__typing muted" role="status">
                 Thinking…
               </p>
+            )}
+            {entry.status === "pending" && entry.transport === "stream" && (
+              <div className="assistant-chat__live" aria-label="Assistant">
+                <ProgressReconnectStatus active={entry.reconnecting} />
+                <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                {entry.answer ? (
+                  <p className="assistant-chat__body" aria-live="polite">
+                    {entry.answer}
+                  </p>
+                ) : null}
+                {entry.table ? <ResultTable table={entry.table} /> : null}
+                <div className="assistant-chat__actions">
+                  <PushButton type="button" size="sm" onClick={onCancel}>
+                    Cancel
+                  </PushButton>
+                </div>
+              </div>
             )}
             {entry.status === "done" && (
               <div
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                <MarkdownContent className="assistant-chat__body markdown">
-                  {entry.answer ?? ""}
-                </MarkdownContent>
+                {showStageStepper(entry) ? (
+                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                ) : null}
+                {entry.table ? <ResultTable table={entry.table} /> : null}
+                <div aria-live="polite">
+                  <MarkdownContent className="assistant-chat__body markdown">
+                    {entry.answer}
+                  </MarkdownContent>
+                </div>
                 <ConfidenceBadge confidence={entry.confidence} />
+                {entry.provenance ? (
+                  <p className="assistant-chat__provenance">{entry.provenance}</p>
+                ) : null}
+              </div>
+            )}
+            {entry.status === "refusal" && (
+              <div
+                className="assistant-chat__bubble assistant-chat__bubble--assistant"
+                aria-label="Assistant"
+              >
+                {showStageStepper(entry) ? (
+                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                ) : null}
+                <p className="assistant-chat__body" role="status">
+                  {entry.refusal}
+                </p>
               </div>
             )}
             {entry.status === "error" && (
-              <p className="banner banner--warning" role="alert">
-                {GENERIC_ERROR_MESSAGE}
-              </p>
+              <ProgressStreamAlert
+                message={entry.error ?? GENERIC_ERROR_MESSAGE}
+                busy={busy}
+                onRetry={() => onRetry(entry)}
+              />
+            )}
+            {entry.status === "cancelled" && (
+              <p className="assistant-chat__typing muted">Cancelled.</p>
             )}
           </article>
         ))}
@@ -218,6 +544,7 @@ export function AssistantPage() {
           ref={inputRef}
           className="assistant-chat__input"
           rows={2}
+          maxLength={2000}
           placeholder="Or type your own question, e.g. How many students do I teach in total?"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

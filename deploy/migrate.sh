@@ -1,6 +1,9 @@
 #!/bin/sh
 # Timestamped backup, then Alembic, then synthetic Core topic promotion,
 # then the optional synthetic demo school.
+# The approved markdown curriculum is a separate one-off:
+# python -m education_platform.modules.materials.seed
+# Compose runs that as the `seed` service after this script.
 # A failed backup stops the script before migrations.
 # SEED_SYNTHETIC=true seeds once. SEED_SYNTHETIC=always rebuilds that school.
 set -eu

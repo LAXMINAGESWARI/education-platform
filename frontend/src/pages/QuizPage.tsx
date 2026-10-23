@@ -26,6 +26,7 @@ export function QuizPage() {
   const [starting, setStarting] = useState(true);
   const [lockDialog, setLockDialog] = useState<{ title: string; body: string } | null>(null);
   const submittingRef = useRef(false);
+  const copyGuardCleanup = useRef<(() => void) | null>(null);
   const copyNoticeTimer = useRef<number | null>(null);
   const [copyBlocked, setCopyBlocked] = useState(false);
 
@@ -38,16 +39,6 @@ export function QuizPage() {
       copyNoticeTimer.current = null;
     }, 2200);
   }, []);
-
-  const attachQuizLock = useCallback((node: HTMLElement | null) => {
-    if (!node) return;
-    const detach = installQuizCopyGuard(node, showCopyNotice);
-    node.dataset.quizCopyGuard = "on";
-    return () => {
-      delete node.dataset.quizCopyGuard;
-      detach();
-    };
-  }, [showCopyNotice]);
 
   const question = attempt?.questions[index];
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
@@ -95,8 +86,29 @@ export function QuizPage() {
     };
   }, [quizId]);
 
+  const showCopyNoticeRef = useRef(showCopyNotice);
+  showCopyNoticeRef.current = showCopyNotice;
+
+  // Attach during commit. useEffect runs after paint, and findBy can observe the
+  // question text before that effect, so a copy event sometimes missed the guard.
+  const setQuizLockNode = useCallback((node: HTMLElement | null) => {
+    copyGuardCleanup.current?.();
+    copyGuardCleanup.current = null;
+    if (node === null) return;
+    const detach = installQuizCopyGuard(node, () => {
+      showCopyNoticeRef.current();
+    });
+    node.dataset.quizCopyGuard = "on";
+    copyGuardCleanup.current = () => {
+      delete node.dataset.quizCopyGuard;
+      detach();
+    };
+  }, []);
+
   useEffect(() => {
     return () => {
+      copyGuardCleanup.current?.();
+      copyGuardCleanup.current = null;
       if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
     };
   }, []);
@@ -181,7 +193,7 @@ export function QuizPage() {
             mark {passMark}%
           </p>
 
-          <article ref={attachQuizLock} className="panel quiz-lock">
+          <article key={question.number} ref={setQuizLockNode} className="panel quiz-lock">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
               <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>

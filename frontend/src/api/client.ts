@@ -42,32 +42,71 @@ function isFormDataBody(body: unknown): body is FormData {
 
 let refreshPromise: Promise<boolean> | null = null;
 
+/**
+ * One small POST. Ten seconds covers a slow mobile round trip and is shorter
+ * than the browser's default fetch hang, so a stalled auth server cannot pin
+ * every 401 caller. The timer uses its own AbortController, never a caller's.
+ */
+export const REFRESH_TIMEOUT_MS = 10_000;
+
 function abortError(): DOMException {
   return new DOMException("Aborted", "AbortError");
 }
 
-/** Shared refresh. No caller signal: a rotated pair must be saved even if a waiter gives up. */
+function isTokenResponse(value: unknown): value is TokenResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.access_token === "string" &&
+    record.access_token.length > 0 &&
+    typeof record.refresh_token === "string" &&
+    record.refresh_token.length > 0 &&
+    typeof record.token_type === "string"
+  );
+}
+
+/**
+ * Shared refresh. No caller signal: a rotated pair must be saved even if a waiter gives up.
+ * Tokens are cleared only when /auth/refresh rejects the session (401 or 403).
+ * The refresh route returns 401 for an invalid, expired, or revoked token.
+ */
 async function performRefresh(): Promise<boolean> {
   const refresh = getRefreshToken();
   if (!refresh) {
     return false;
   }
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), REFRESH_TIMEOUT_MS);
   try {
     const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refresh }),
+      signal: timeout.signal,
     });
-    if (!res.ok) {
+    clearTimeout(timer);
+    if (res.status === 401 || res.status === 403) {
       clearTokens();
       return false;
     }
-    const data = (await res.json()) as TokenResponse;
-    setTokens(data);
+    if (!res.ok) {
+      return false;
+    }
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      return false;
+    }
+    if (!isTokenResponse(payload)) {
+      return false;
+    }
+    setTokens(payload);
     return true;
   } catch {
-    clearTokens();
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -168,7 +207,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
 export async function apiStream(
   path: string,
-  options: { signal?: AbortSignal; lastEventId?: string; skipRefresh?: boolean } = {},
+  options: {
+    signal?: AbortSignal;
+    lastEventId?: string;
+    skipRefresh?: boolean;
+    method?: "GET" | "POST";
+    body?: unknown;
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = { Accept: "text/event-stream" };
   const token = getAccessToken();
@@ -178,9 +223,13 @@ export async function apiStream(
   if (options.lastEventId) {
     headers["Last-Event-ID"] = options.lastEventId;
   }
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(`${getApiBaseUrl()}/api/v1${path}`, {
-    method: "GET",
+    method: options.method ?? "GET",
     headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
   });
   if (res.status === 401 && !options.skipRefresh) {

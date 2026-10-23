@@ -1,0 +1,186 @@
+suite: api probes resources and worker probes
+templates:
+  - api-deployment.yaml
+  - web-deployment.yaml
+  - worker-docling-deployment.yaml
+  - worker-llm-deployment.yaml
+  - k6-job.yaml
+set:
+  api.image.tag: ci
+  web.image.tag: ci
+release:
+  name: curioed
+  namespace: curioed
+tests:
+  - it: probes the api and sets resources from values
+    template: api-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.periodSeconds
+          value: 5
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.failureThreshold
+          value: 12
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health/live
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health/ready
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.timeoutSeconds
+          value: 2
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 250m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 512Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: "2"
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 2Gi
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "200"
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value:
+            - sleep
+            - "5"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--timeout-graceful-shutdown"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "20"
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: false
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.securityContext.runAsGroup
+      - isNull:
+          path: spec.template.spec.securityContext.fsGroup
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop[0]
+          value: ALL
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: curioed-platform
+      - isNull:
+          path: spec.template.spec.priorityClassName
+  - it: leaves the docling worker without probes
+    template: worker-docling-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 600
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 3Gi
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 3Gi
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: "2"
+      - isNull:
+          path: spec.template.spec.containers[0].livenessProbe
+      - isNull:
+          path: spec.template.spec.containers[0].readinessProbe
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: false
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+  - it: keeps nginx root so it can bind port 80
+    template: web-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: false
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.securityContext.runAsGroup
+      - isNull:
+          path: spec.template.spec.securityContext.fsGroup
+      - isNull:
+          path: spec.template.spec.volumes
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          value:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - NET_BIND_SERVICE
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/aushakanuj/curioed-web:ci
+  - it: runs k6 as the image uid when the job is enabled
+    template: k6-job.yaml
+    documentIndex: 1
+    set:
+      loadtest.k6.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 12345
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 12345
+  - it: renders the llm worker without probes when enabled
+    template: worker-llm-deployment.yaml
+    set:
+      workers.llm.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 300
+      - isNull:
+          path: spec.template.spec.containers[0].livenessProbe
+      - isNull:
+          path: spec.template.spec.containers[0].readinessProbe
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: false
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+  - it: omits the llm worker by default
+    template: worker-llm-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0

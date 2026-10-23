@@ -46,8 +46,8 @@ Setup complete.
 Next steps:
   1. Infra: docker compose up -d postgres  (wait until healthy)
   2. Apply schema: cd backend && uv run alembic upgrade head
-     (API auto-seeds from docs/curriculum/ when no topics exist;
-      optional: uv run python -m education_platform.modules.materials.seed)
+     Load curriculum: uv run python -m education_platform.modules.materials.seed
+     (the API does not seed on startup)
   3. Start the API: cd backend && uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000
   4. Frontend: cd frontend && cp .env.example .env && npm install && npm run dev
   5. Optional ingest worker: cd backend && uv run python -m education_platform.workers

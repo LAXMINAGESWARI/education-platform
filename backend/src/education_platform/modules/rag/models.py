@@ -89,6 +89,21 @@ class KnowledgeDocumentVersion(UUIDTimestampMixin, Base):
             "version_number >= 1",
             name="ck_knowledge_document_versions_version_number",
         ),
+        CheckConstraint(
+            "stage IS NULL OR stage IN ("
+            "'received', 'parsing', 'chunking', 'embedding', "
+            "'extracting_topics', 'done', 'failed')",
+            name="ck_knowledge_document_versions_stage",
+        ),
+        CheckConstraint(
+            "stage_current IS NULL OR stage_current >= 0",
+            name="ck_knowledge_document_versions_stage_current",
+        ),
+        CheckConstraint(
+            "stage_total IS NULL OR stage_total >= 0",
+            name="ck_knowledge_document_versions_stage_total",
+        ),
+        CheckConstraint("stage_seq >= 0", name="ck_knowledge_document_versions_stage_seq"),
     )
 
     document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), index=True)
@@ -103,6 +118,14 @@ class KnowledgeDocumentVersion(UUIDTimestampMixin, Base):
     checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stage_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    stage_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class KnowledgeChunk(UUIDTimestampMixin, Base):
