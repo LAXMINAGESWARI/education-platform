@@ -28,7 +28,7 @@ def test_settings_has_no_duplicate_fields() -> None:
     assert names
     assert len(names) == len(set(names))
     settings = Settings(_env_file=None)
-    assert settings.jev_guard_timeout_seconds == 5.0
+    assert settings.jev_guard_timeout_seconds == 8.0
     assert settings.guard_jev_block_threshold == 0.6
     assert settings.guard_jev_model == "typesafe/jev-1.14"
     assert settings.guard_audit_store_preview is False

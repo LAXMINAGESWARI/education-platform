@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  getMaterialVersionStatus,
+  isTerminalIngestStatus,
   watchMaterialVersionStatus,
   uploadSubtopicMaterial,
 } from "../api/adminIngest";
 import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import { ApiError, type MaterialVersionStatus } from "../api/types";
 import { IngestStatusBadge } from "./IngestStatusBadge";
+import { ProgressReconnectStatus, ProgressStreamAlert } from "./ProgressReconnect";
 import { PushButton } from "./PushButton";
+import { UploadProgressMeter } from "./UploadProgressMeter";
 
 export type SubtopicOption = {
   id: string;
@@ -35,9 +40,12 @@ export function CurriculumMaterialUpload({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const [status, setStatus] = useState<MaterialVersionStatus | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
+  const watchedVersionId = useRef<string | null>(null);
 
   useEffect(() => {
     if (fixedSubtopicId) setSubtopicId(fixedSubtopicId);
@@ -61,7 +69,9 @@ export function CurriculumMaterialUpload({
     const resolvedTitle = title.trim() || file.name.replace(/\.pdf$/i, "");
     setBusy(true);
     setError(null);
+    setStreamError(null);
     setReconnecting(false);
+    setCounts(null);
     setStatus(null);
 
     pollAbortRef.current?.abort();
@@ -71,6 +81,7 @@ export function CurriculumMaterialUpload({
     try {
       const accepted = await uploadSubtopicMaterial(targetSubtopic, file, resolvedTitle);
       if (abort.signal.aborted) return;
+      watchedVersionId.current = accepted.version_id;
       setStatus({
         id: accepted.version_id,
         source_material_id: accepted.source_material_id,
@@ -80,32 +91,76 @@ export function CurriculumMaterialUpload({
         failure_reason: null,
         chunk_count: 0,
       });
-      const settled = await watchMaterialVersionStatus(accepted.version_id, {
-        signal: abort.signal,
-        onReconnecting: () => {
-          if (!abort.signal.aborted) setReconnecting(true);
-        },
-        onReconnected: () => {
-          // First frame, not response headers, so the banner does not flicker.
-          if (!abort.signal.aborted) setReconnecting(false);
-        },
-      });
+      await followVersion(accepted.version_id, abort);
       if (abort.signal.aborted) return;
-      setReconnecting(false);
-      setStatus(settled);
-      onSettled?.(settled);
-      if (settled.failure_reason) {
-        setError(settled.failure_reason);
-      }
+      // Resume uses followVersion directly and must keep the chosen file.
       setFile(null);
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-      setReconnecting(false);
-      const message =
-        err instanceof ProgressReconnectError || err instanceof ApiError
-          ? err.message
-          : "Upload failed. Try again.";
-      setError(message);
+      noteFailure(err, "Upload failed. Try again.");
+    } finally {
+      if (!abort.signal.aborted) setBusy(false);
+    }
+  }
+
+  async function followVersion(versionId: string, abort: AbortController) {
+    const settled = await watchMaterialVersionStatus(versionId, {
+      signal: abort.signal,
+      onReconnecting: () => {
+        if (!abort.signal.aborted) setReconnecting(true);
+      },
+      onReconnected: () => {
+        // First frame, not response headers, so the banner does not flicker.
+        if (!abort.signal.aborted) setReconnecting(false);
+      },
+      onProgress: (progress) => {
+        if (!abort.signal.aborted) setCounts(progress);
+      },
+    });
+    if (abort.signal.aborted) return;
+    setReconnecting(false);
+    setStreamError(null);
+    setStatus(settled);
+    onSettled?.(settled);
+    if (settled.failure_reason) {
+      setError(settled.failure_reason);
+    }
+  }
+
+  function noteFailure(err: unknown, fallback: string) {
+    setReconnecting(false);
+    if (err instanceof ProgressReconnectError) {
+      setStreamError(err.message);
+      return;
+    }
+    setStreamError(null);
+    setError(err instanceof ApiError ? err.message : fallback);
+  }
+
+  async function resumeProgress() {
+    const versionId = watchedVersionId.current;
+    if (!versionId || busy) return;
+    pollAbortRef.current?.abort();
+    const abort = new AbortController();
+    pollAbortRef.current = abort;
+    setBusy(true);
+    setError(null);
+    setStreamError(null);
+    setReconnecting(false);
+    setCounts(null);
+    try {
+      const fresh = await getMaterialVersionStatus(versionId);
+      if (abort.signal.aborted) return;
+      setStatus(fresh);
+      if (isTerminalIngestStatus(fresh.lifecycle_status)) {
+        onSettled?.(fresh);
+        if (fresh.failure_reason) setError(fresh.failure_reason);
+        return;
+      }
+      await followVersion(versionId, abort);
+    } catch (err) {
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+      noteFailure(err, "Could not resume progress updates.");
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -172,11 +227,11 @@ export function CurriculumMaterialUpload({
           {error}
         </p>
       )}
-      {reconnecting && (
-        <p className="admin-upload__status" role="status">
-          Reconnecting…
-        </p>
-      )}
+      {streamError ? (
+        <ProgressStreamAlert message={streamError} busy={busy} onRetry={() => void resumeProgress()} />
+      ) : null}
+      <ProgressReconnectStatus active={reconnecting} />
+      <UploadProgressMeter envelope={counts} />
       {status && (
         <p className="admin-upload__status" role="status">
           Ingest: <IngestStatusBadge status={status.lifecycle_status} />

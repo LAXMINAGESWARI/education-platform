@@ -16,6 +16,7 @@ import {
   subscribeGenerationRun,
 } from "../api/generation";
 import { ProgressReconnectError } from "../api/progress";
+import type { ProgressEnvelope } from "../api/progressEnvelope";
 import {
   ApiError,
   type DraftChangeRequest,
@@ -31,6 +32,8 @@ import { claimHaptic, triggerHaptic } from "../lib/haptics";
 import { ROLE_ADMIN } from "../auth/roles";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { GenerationStepDetailPanel } from "./GenerationStepDetail";
+import { ProgressReconnectStatus, ProgressStreamAlert } from "./ProgressReconnect";
+import { UploadProgressMeter } from "./UploadProgressMeter";
 import { PushButton } from "./PushButton";
 import { TopicGenerationQa } from "./TopicGenerationQa";
 import { TopicGenerationReview } from "./TopicGenerationReview";
@@ -275,6 +278,27 @@ function phaseStatusCopy(run: GenerationRun): string {
   }
 }
 
+/** Retry refetches a finished or parked review run and does not open another stream. */
+function phaseStreamsOnRetry(phase: RunPhase): boolean {
+  switch (phase) {
+    case "indexing":
+    case "outlining":
+    case "generating":
+      return true;
+    case "outline_review":
+    case "qa_review":
+    case "failed":
+    case "published":
+    case "discarded":
+      return false;
+    default: {
+      const _never: never = phase;
+      void _never;
+      return false;
+    }
+  }
+}
+
 function streamLeavesUiIdle(phase: RunPhase): boolean {
   switch (phase) {
     case "outline_review":
@@ -328,7 +352,9 @@ export function TopicGenerationUpload({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [counts, setCounts] = useState<ProgressEnvelope | null>(null);
   const [runs, setRuns] = useState<GenerationRun[]>([]);
   const [run, setRun] = useState<GenerationRun | null>(null);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
@@ -363,6 +389,7 @@ export function TopicGenerationUpload({
     async function load() {
       setBusy(true);
       setError(null);
+      setStreamError(null);
       try {
         const listed = await listTopicGenerationRuns(topicId);
         if (abort.signal.aborted) return;
@@ -385,8 +412,7 @@ export function TopicGenerationUpload({
         }
       } catch (err) {
         if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-        setReconnecting(false);
-        setError(errorMessage(err, "Could not load the generation run."));
+        noteFailure(err, "Could not load the generation run.");
       } finally {
         if (!abort.signal.aborted) setBusy(false);
       }
@@ -431,7 +457,10 @@ export function TopicGenerationUpload({
   }, []);
 
   async function followRun(runId: string, abort: AbortController) {
-    if (!abort.signal.aborted) setReconnecting(false);
+    if (!abort.signal.aborted) {
+      setReconnecting(false);
+      setCounts(null);
+    }
     try {
       await subscribeGenerationRun(runId, {
         signal: abort.signal,
@@ -441,6 +470,9 @@ export function TopicGenerationUpload({
         onReconnected: () => {
           // First frame, not response headers, so the banner does not flicker.
           if (!abort.signal.aborted) setReconnecting(false);
+        },
+        onProgress: (progress) => {
+          if (!abort.signal.aborted) setCounts(progress);
         },
         onSnapshot: (next) => {
           if (abort.signal.aborted) return;
@@ -471,6 +503,7 @@ export function TopicGenerationUpload({
     const resolvedTitle = title.trim() || file.name.replace(/\.pdf$/i, "");
     setBusy(true);
     setError(null);
+    setStreamError(null);
 
     pollAbortRef.current?.abort();
     const abort = new AbortController();
@@ -499,7 +532,7 @@ export function TopicGenerationUpload({
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-      setError(errorMessage(err, "Upload failed. Try again."));
+      noteFailure(err, "Upload failed. Try again.");
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -647,6 +680,7 @@ export function TopicGenerationUpload({
     if (!run || busy) return;
     setBusy(true);
     setError(null);
+    setStreamError(null);
     pollAbortRef.current?.abort();
     const abort = new AbortController();
     pollAbortRef.current = abort;
@@ -662,7 +696,7 @@ export function TopicGenerationUpload({
       }
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-      setError(errorMessage(err, "Could not retry the run."));
+      noteFailure(err, "Could not retry the run.");
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -748,7 +782,54 @@ export function TopicGenerationUpload({
       }
     } catch (err) {
       if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-      setError(errorMessage(err, "Could not load that generation run."));
+      noteFailure(err, "Could not load that generation run.");
+    } finally {
+      if (!abort.signal.aborted) setBusy(false);
+    }
+  }
+
+  function noteFailure(err: unknown, fallback: string) {
+    setReconnecting(false);
+    if (err instanceof ProgressReconnectError) {
+      setError(null);
+      setStreamError(err.message);
+      return;
+    }
+    setStreamError(null);
+    setError(errorMessage(err, fallback));
+  }
+
+  async function resumeProgress() {
+    if (!run || busy) return;
+    pollAbortRef.current?.abort();
+    const abort = new AbortController();
+    pollAbortRef.current = abort;
+    setBusy(true);
+    setError(null);
+    setStreamError(null);
+    setReconnecting(false);
+    try {
+      const fresh = await getGenerationRun(run.id);
+      if (abort.signal.aborted) return;
+      trackRun(fresh);
+      if (canClose) {
+        try {
+          const steps = await listGenerationSteps(fresh.id);
+          if (!abort.signal.aborted) setStepTimings(steps);
+        } catch {
+          if (!abort.signal.aborted) setStepTimings([]);
+        }
+      }
+      if (fresh.phase === "outline_review" || fresh.phase === "qa_review") {
+        const review = await getGenerationReview(fresh.id);
+        if (!abort.signal.aborted) setWorkspace(review);
+      }
+      if (phaseStreamsOnRetry(fresh.phase)) {
+        await followRun(fresh.id, abort);
+      }
+    } catch (err) {
+      if (abort.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+      noteFailure(err, "Could not resume progress updates.");
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -782,6 +863,8 @@ export function TopicGenerationUpload({
     const failed = current.phase === "failed";
     const status = (
       <>
+        <ProgressReconnectStatus active={reconnecting} />
+        <UploadProgressMeter envelope={counts} />
         <GenerationProgressStepper
           run={current}
           timings={stepTimings}
@@ -937,10 +1020,8 @@ export function TopicGenerationUpload({
           {error}
         </p>
       ) : null}
-      {reconnecting ? (
-        <p className="admin-upload__status" role="status">
-          Reconnecting…
-        </p>
+      {streamError ? (
+        <ProgressStreamAlert message={streamError} busy={busy} onRetry={() => void resumeProgress()} />
       ) : null}
       {allowUpload ? (
         <form onSubmit={(event) => void onSubmit(event)}>

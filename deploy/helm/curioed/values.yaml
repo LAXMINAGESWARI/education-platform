@@ -1,0 +1,631 @@
+# CurioEd chart values. Image tags, resource sizes, and non-secret config live
+# here. Secret values do not. Create the Secrets named below before install
+# (SOPS or kubectl). See README.md for the keys each Secret must contain.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Public hostname. Cloudflare terminates TLS. Traefik only sees HTTP.
+domain: school.example.com
+clusterDomain: cluster.local
+
+# Optional GHCR pull secret. Leave empty for a public package.
+imagePullSecrets:
+  existingSecret: ""
+
+nodeSelector: {}
+tolerations: []
+
+secrets:
+  # JWT_SECRET, TEXT_TO_SQL_DB_PASSWORD, OPENROUTER_API_KEY.
+  # OPENROUTER_API_KEY may be an empty string. The key must still exist.
+  app:
+    existingSecret: curioed-app
+    jwtSecretKey: JWT_SECRET
+    textToSqlPasswordKey: TEXT_TO_SQL_DB_PASSWORD
+    openRouterApiKeyKey: OPENROUTER_API_KEY
+  # kubernetes.io/basic-auth. username must be cnpg.owner.
+  # Password must be URL-safe (letters, digits, hyphen), same rule as Compose.
+  database:
+    existingSecret: curioed-postgres-app
+    usernameKey: username
+    passwordKey: password
+  # kubernetes.io/basic-auth for the CNPG managed role.
+  # password must equal the app Secret's TEXT_TO_SQL_DB_PASSWORD.
+  # username must equal cnpg.readerRole.
+  textToSql:
+    existingSecret: curioed-postgres-reader
+    usernameKey: username
+    passwordKey: password
+  # Key holds the remotely managed tunnel token. Same token on both replicas.
+  tunnel:
+    existingSecret: curioed-cloudflared
+    tokenKey: TUNNEL_TOKEN
+
+config:
+  environment: production
+  # JSON list. Pydantic reads CORS_ORIGINS this way.
+  corsOrigins: '["https://school.example.com"]'
+  corsOriginRegex: ""
+  openRouterBaseUrl: https://openrouter.ai/api/v1
+  openRouterModel: openai/gpt-4o-mini
+  adkModel: openrouter/openai/gpt-4o-mini
+  blindSolverModel: openai/gpt-4o
+  textToSqlUser: text_to_sql_reader
+  # Compose's example defaults this to true. The chart defaults to false so a
+  # cluster install does not build the demo school unless you opt in.
+  seedSynthetic: "false"
+  syntheticInstitution: Al Noor International
+  syntheticStudentsPerSection: "24"
+  syntheticSectionsPerGrade: "2"
+  syntheticTermWeeks: "10"
+  syntheticSeed: "20260812"
+  # Non-secret AI_GATEWAY_*, JEV_*, and GUARD_* settings. Names and defaults
+  # are the pydantic-settings env names from
+  # backend/src/education_platform/core/config.py. None of these are secrets.
+  # OPENROUTER_API_KEY stays in the app Secret. extraEnv overrides a name.
+  # extraSecretEnv points at an existing Secret key. Do not put secret values here.
+  #
+  # AI_GATEWAY_FEATURES, AI_GATEWAY_POLICY_CHAT, AI_GATEWAY_TEXT_TO_SQL,
+  # AI_GATEWAY_GENERATION, AI_GATEWAY_FEEDBACK, AI_GATEWAY_REVIEW_CHAT,
+  # AI_GATEWAY_AUTHORING, AI_GATEWAY_TIMEOUT_CHAT_ANSWER_SECONDS,
+  # AI_GATEWAY_TIMEOUT_SQL_GENERATE_SECONDS, AI_GATEWAY_TIMEOUT_GUARD_SECONDS,
+  # AI_GATEWAY_TIMEOUT_GENERATION_SECONDS, AI_GATEWAY_TIMEOUT_FEEDBACK_SECONDS,
+  # AI_GATEWAY_MAX_RETRIES, AI_GATEWAY_RETRY_BASE_SECONDS,
+  # AI_GATEWAY_RETRY_MAX_SECONDS, AI_GATEWAY_CIRCUIT_FAILURE_THRESHOLD,
+  # AI_GATEWAY_CIRCUIT_COOLDOWN_SECONDS, AI_GATEWAY_CONCURRENCY_INTERACTIVE,
+  # AI_GATEWAY_CONCURRENCY_GUARD, AI_GATEWAY_CONCURRENCY_GENERATION,
+  # AI_GATEWAY_CONCURRENCY_BATCH,
+  # JEV_DECISIONS_URL, JEV_GUARD_TIMEOUT_SECONDS, JEV_MODEL, JEV_TIMEOUT_SECONDS,
+  # JEV_MAX_RETRIES, JEV_JUDGE_MODE, JEV_MODE, JEV_NOUL_ACCEPT, JEV_NOUL_REJECT,
+  # JEV_CONFIDENCE_ACCEPT, JEV_CONFIDENCE_REJECT, JEV_COVERAGE_ACCEPT_SCORE,
+  # JEV_COVERAGE_REJECT_SCORE,
+  # GUARD_JEV_BLOCK_THRESHOLD, GUARD_JEV_MODEL, GUARD_AUDIT_STORE_PREVIEW.
+  platformEnv:
+    AI_GATEWAY_FEATURES: ""
+    AI_GATEWAY_POLICY_CHAT: "false"
+    AI_GATEWAY_TEXT_TO_SQL: "false"
+    AI_GATEWAY_GENERATION: "false"
+    AI_GATEWAY_FEEDBACK: "false"
+    AI_GATEWAY_REVIEW_CHAT: "false"
+    AI_GATEWAY_AUTHORING: "false"
+    AI_GATEWAY_TIMEOUT_CHAT_ANSWER_SECONDS: "30"
+    AI_GATEWAY_TIMEOUT_SQL_GENERATE_SECONDS: "20"
+    AI_GATEWAY_TIMEOUT_GUARD_SECONDS: "8"
+    AI_GATEWAY_TIMEOUT_GENERATION_SECONDS: "120"
+    AI_GATEWAY_TIMEOUT_FEEDBACK_SECONDS: "20"
+    AI_GATEWAY_MAX_RETRIES: "2"
+    AI_GATEWAY_RETRY_BASE_SECONDS: "0.25"
+    AI_GATEWAY_RETRY_MAX_SECONDS: "8"
+    AI_GATEWAY_CIRCUIT_FAILURE_THRESHOLD: "5"
+    AI_GATEWAY_CIRCUIT_COOLDOWN_SECONDS: "30"
+    AI_GATEWAY_CONCURRENCY_INTERACTIVE: "8"
+    AI_GATEWAY_CONCURRENCY_GUARD: "16"
+    AI_GATEWAY_CONCURRENCY_GENERATION: "2"
+    AI_GATEWAY_CONCURRENCY_BATCH: "2"
+    JEV_DECISIONS_URL: ""
+    JEV_GUARD_TIMEOUT_SECONDS: "5"
+    JEV_MODEL: typesafe/jev-1.14
+    JEV_TIMEOUT_SECONDS: "30"
+    JEV_MAX_RETRIES: "2"
+    JEV_JUDGE_MODE: ""
+    JEV_MODE: ""
+    JEV_NOUL_ACCEPT: "0.80"
+    JEV_NOUL_REJECT: "0.35"
+    JEV_CONFIDENCE_ACCEPT: "0.55"
+    JEV_CONFIDENCE_REJECT: "0.70"
+    JEV_COVERAGE_ACCEPT_SCORE: "2.0"
+    JEV_COVERAGE_REJECT_SCORE: "0.75"
+    GUARD_JEV_BLOCK_THRESHOLD: "0.6"
+    GUARD_JEV_MODEL: ""
+    GUARD_AUDIT_STORE_PREVIEW: "false"
+  extraEnv: {}
+  extraSecretEnv: []
+  # - name: SOME_TOKEN
+  #   secret: curioed-app
+  #   key: SOME_TOKEN
+  # extraEnv stays empty for names that are not in the chart yet.
+
+# Pool env from Coder's PR #200 (head 1989159). The app ignores these names
+# until that PR merges.
+# App defaults when unset: DB_POOL_SIZE 5, DB_MAX_OVERFLOW 5,
+# DB_POOL_TIMEOUT_SECONDS 30, DB_POOL_RECYCLE_SECONDS 1800,
+# TEXT_TO_SQL_DB_POOL_SIZE 5, TEXT_TO_SQL_DB_MAX_OVERFLOW 5,
+# WORKER_SHUTDOWN_GRACE_SECONDS 25.
+# Budget once PR #200 is deployed: about 30 connections per api pod in the
+# worst case, counting all engines, so 180 at HPA max 6, plus the workers and
+# one SSE LISTEN connection per stream. That fits under max_connections 300.
+# The imported 6b7553c image ignores these names and uses about 45 connections
+# per pod, so prod and load-test keep api maxReplicas at 4 until that image
+# includes #200. Raise maxReplicas to 6 after that.
+# No PgBouncer. LISTEN needs a direct connection.
+# Workers do not open the text-to-SQL pool. terminationGracePeriodSeconds stays
+# at least 40 (docling 600, llm 300), above WORKER_SHUTDOWN_GRACE_SECONDS + 5.
+dbPool:
+  api:
+    size: 5
+    maxOverflow: 5
+    timeoutSeconds: 30
+    recycleSeconds: 1800
+    textToSqlSize: 2
+    textToSqlMaxOverflow: 3
+  worker:
+    size: 2
+    maxOverflow: 2
+    timeoutSeconds: 30
+    recycleSeconds: 1800
+    shutdownGraceSeconds: 25
+
+revisionHistoryLimit: 3
+
+# Shared hardening. runAsNonRoot, runAsUser, runAsGroup, and fsGroup are set
+# on each workload. A null user, group, or fsGroup is omitted.
+# readOnlyRootFilesystem stays false here. A workload can set its own bool.
+# When that bool is true the pod mounts an emptyDir on /tmp. Nginx also mounts
+# /var/cache/nginx and /var/run. The defaults below stay false.
+podSecurity:
+  seccompProfile: RuntimeDefault
+  allowPrivilegeEscalation: false
+  dropCapabilities:
+    - ALL
+  readOnlyRootFilesystem: false
+
+# Optional. Off by default. Order is postgres, then api, then web, then workers.
+priorityClass:
+  enabled: false
+  postgres: 1000000
+  api: 100000
+  web: 10000
+  workers: 1000
+
+# Off by default. Enabling default-deny requires the selectors below to match
+# this cluster. Postgres egress is either the CNPG pods in this namespace or
+# a CIDR, so the same chart works for CNPG and for an external Postgres.
+networkPolicy:
+  enabled: false
+  traefik:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+    port: 80
+  postgres:
+    mode: cnpg
+    port: 5432
+    cidr: ""
+    namespace: ""
+    podLabels: {}
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  httpsCIDR: 0.0.0.0/0
+  httpsPort: 443
+
+# PDBs use maxUnavailable 1 and render only when the replica floor is at least 2.
+pdb:
+  api:
+    enabled: true
+  web:
+    enabled: true
+  cloudflared:
+    enabled: true
+  workerDocling:
+    enabled: true
+  workerLlm:
+    enabled: true
+
+# Workers and the migrate hook use this same image.
+api:
+  image:
+    repository: ghcr.io/aushakanuj/curioed-api
+    # Required. Empty fails the render. helm lint, unittests, and CI pass
+    # --set api.image.tag=ci. ci is not a published image.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # 30 > preStop 5 + uvicorn graceful shutdown 20. Clients reconnect SSE
+  # with Last-Event-ID, so cutting the streams is safe.
+  terminationGracePeriodSeconds: 30
+  preStopSleepSeconds: 5
+  gracefulShutdownSeconds: 20
+  # TODO: deploy/Dockerfile.api has no USER. python:3.12-slim-bookworm's image
+  # config User is empty, so the process is root. Add a USER line in that
+  # Dockerfile (aushak's OK) before setting runAsNonRoot. Workers, migrate,
+  # the curriculum seed, and demo-data use this same image.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  replicaCount: 1
+  service:
+    port: 8000
+  # SSE streams count toward this cap. 200 is the in-flight limit per pod.
+  limitConcurrency: 200
+  # Nginx is the only container that must bind a privileged port. The api
+  # listens on 8000, so it does not need this.
+  addCapabilities: []
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  autoscaling:
+    enabled: true
+    # Raise minReplicas to 2 once the seed Job is enabled and the database is warm.
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 65
+    scaleUpStabilizationSeconds: 0
+    scaleDownStabilizationSeconds: 300
+  # /health/live does not touch Postgres. See main.py health_live.
+  probes:
+    livePath: /health/live
+    readyPath: /health/ready
+    startupPeriodSeconds: 5
+    startupFailureThreshold: 12
+    readinessTimeoutSeconds: 2
+
+web:
+  replicas: 2
+  image:
+    repository: ghcr.io/aushakanuj/curioed-web
+    # Required, same rule as api.image.tag. CI supplies --set web.image.tag=ci.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # nginx:1.27-alpine has no USER (image config User is empty) and listens on
+  # port 80. runAsNonRoot stays false. The entrypoint needs CHOWN, SETUID,
+  # and SETGID, plus NET_BIND_SERVICE for port 80. nginx-unprivileged on
+  # 8080 is the later non-root option. The Dockerfile stays as it is.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  service:
+    port: 80
+  # Official nginx listens on port 80 and its entrypoint chowns cache
+  # directories, then the master setuids the worker. drop ALL removes those
+  # unless they are added back. DAC_OVERRIDE was not required.
+  addCapabilities:
+    - CHOWN
+    - SETGID
+    - SETUID
+    - NET_BIND_SERVICE
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 65
+    scaleUpStabilizationSeconds: 0
+    scaleDownStabilizationSeconds: 300
+
+# One replica. Off in the load-test values. Requests equal limits so the pod is Guaranteed.
+# CPU is 2/2. Memory stays 3Gi until a measured PDF peak says otherwise:
+# keep 3Gi if peak RSS is under 2.5Gi, otherwise use a 3Gi request and a 5Gi limit.
+# Recreate avoids a second 3Gi pod during rollout.
+workerDocling:
+  enabled: true
+  replicas: 1
+  # Same root api image. Keep off until Dockerfile.api has a USER line.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  # This is the compose `worker`: python -m education_platform.workers,
+  # same volumes and app env, no db_ping healthcheck. It drains every queue
+  # until WORKER_QUEUES exists. 600s covers a long ingest.
+  # 570 is the pod grace minus 30, and stays under terminationGracePeriodSeconds.
+  terminationGracePeriodSeconds: 600
+  shutdownGraceSeconds: 570
+  resources:
+    requests:
+      cpu: "2"
+      memory: 3Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+
+# Off until the app can select queues. The process is the same as
+# worker-docling, so a Docling job claimed here can exceed this limit.
+# SIGTERM is handled once Coder's worker image is deployed. Until then it is not.
+workers:
+  llm:
+    enabled: false
+    replicas: 1
+    # Same root api image. Keep off until Dockerfile.api has a USER line.
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: null
+      runAsGroup: null
+      fsGroup: null
+      readOnlyRootFilesystem: false
+    # Off in prod until WORKER_QUEUES exists. Same all-queue command as
+    # docling, so a Docling job claimed here can exceed this limit.
+    # Shutdown grace stays 25. Pod grace stays at least 40.
+    terminationGracePeriodSeconds: 300
+    shutdownGraceSeconds: 25
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1.5Gi
+
+migrate:
+  enabled: true
+  # Same root api image. Keep off until Dockerfile.api has a USER line.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  # pre-install runs before this chart's Cluster and backup PVC exist.
+  # First install disables this and curriculumSeed, then the upgrade enables both.
+  hooks: pre-install,pre-upgrade
+  weight: "5"
+  deletePolicy: before-hook-creation,hook-succeeded
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  databaseWaitSeconds: 180
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Off until the seed branch is merged. Do not retarget the command at
+# unmerged seed-branch code. Weight 10 runs after the migrate hook (weight 5).
+# Same first-install constraint as migrate: the database does not exist yet.
+curriculumSeed:
+  enabled: false
+  # Same root api image. Keep off until Dockerfile.api has a USER line.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  hooks: pre-install,pre-upgrade
+  weight: "10"
+  deletePolicy: before-hook-creation,hook-succeeded
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+cloudflared:
+  enabled: true
+  # cloudflare/cloudflared:2026.10.1 image config User is 65532:65532.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+  # 2 when the tunnel should be live. Prod values keep this at 0 until cutover,
+  # then scale to 2. A PDB is rendered only at 2 or more.
+  replicas: 2
+  # cloudflared's own --grace-period default is 30s. Stay above that.
+  terminationGracePeriodSeconds: 40
+  metricsPort: 2000
+  image:
+    repository: cloudflare/cloudflared
+    tag: "2026.10.1"
+    pullPolicy: IfNotPresent
+  # Dashboard public-hostname service for the tunnel. Not passed to `tunnel run`;
+  # a token tunnel reads its origin from Cloudflare.
+  origin: http://traefik.kube-system.svc.cluster.local:80
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# CloudNativePG operator is installed on the cluster, not by this chart.
+# Image: CNPG "standard" builds include pgvector. Tag verified on GHCR.
+# Image config User is 26. The operator sets runAsNonRoot and runAsUser 26.
+# This chart does not set a postgres securityContext.
+cnpg:
+  instances: 1
+  image: ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
+  imagePullPolicy: IfNotPresent
+  database: education
+  owner: education
+  readerRole: text_to_sql_reader
+  storage:
+    size: 20Gi
+    storageClass: local-path
+  parameters:
+    # Sized for the 2Gi memory limit.
+    max_connections: "150"
+    shared_buffers: "512MB"
+    effective_cache_size: "1GB"
+    work_mem: "4MB"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Off-site Barman is not wired in this chart. Leaving this false keeps
+  # object-storage credentials out of the render. Turning it on fails the
+  # render so it cannot be mistaken for a working backup. The migrate hook's
+  # pg_dump is the backup that runs before Alembic.
+  backup:
+    enabled: false
+
+# KEDA is off until the app has WORKER_QUEUES. Today every worker process
+# drains every queue (python -m education_platform.workers). Do not enable
+# these ScaledObjects before that split, or both deployments scale on work
+# the other one will also claim.
+# A dedicated read-only KEDA database role needs an Alembic GRANT. That
+# migration is out of scope. The trigger uses the existing app Secret.
+keda:
+  llm:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    cooldownPeriod: 600
+    targetQueryValue: "1"
+    # generation_jobs status values and feedback_summary_jobs status values are
+    # the varchar enum values from db/types.py str_enum (queued, running).
+    # Counts in-flight rows as well as queued ones so a busy worker holds its
+    # replica. curriculum_generation_jobs is omitted: run_forever() never
+    # passes a curriculum runner, so that table is never claimed.
+    query: >-
+      SELECT (SELECT count(*) FROM generation_jobs WHERE status IN ('queued','running'))
+      + (SELECT count(*) FROM feedback_summary_jobs WHERE status IN ('queued','running'))
+  docling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
+    cooldownPeriod: 300
+    targetQueryValue: "1"
+    # Same predicate as workers/lease.py claim(): queued, or running with no
+    # lease or an expired lease. ingest_jobs.locked_until is nullable.
+    query: >-
+      SELECT count(*) FROM ingest_jobs WHERE status = 'queued'
+      OR (status = 'running' AND (locked_until IS NULL OR locked_until < now()))
+  api:
+    enabled: false
+    serverAddress: ""
+    threshold: "100"
+    query: sum(rate(traefik_service_requests_total[1m]))
+  auth:
+    existingSecret: curioed-postgres-app
+    usernameKey: username
+    passwordKey: password
+    sslmode: require
+
+# Architect numbers. Steady state with the API at minReplicas fits.
+# The API at maxReplicas 4 plus its maxSurge of 1 does not fit limits.memory.
+# The sums are in the chart README. Do not raise these to hide that.
+quota:
+  requestsMemory: 8Gi
+  limitsMemory: 14Gi
+  # Empty omits the key. Prod and load-test set both CPU requests and limits.
+  requestsCpu: ""
+  limitsCpu: ""
+  # Defaults so a container that forgot resources is still admitted.
+  # maxMemory covers the documented docling alternative (3Gi request / 5Gi limit).
+  limitRange:
+    defaultCpu: 200m
+    defaultMemory: 256Mi
+    defaultRequestCpu: 50m
+    defaultRequestMemory: 64Mi
+    maxCpu: "2"
+    maxMemory: 5Gi
+
+persistence:
+  storageClass: local-path
+  uploads:
+    size: 20Gi
+  hfCache:
+    size: 5Gi
+  inductorCache:
+    size: 5Gi
+  backups:
+    size: 10Gi
+
+ingress:
+  # k3s Traefik HTTP entrypoint. Cloudflare has already terminated TLS.
+  entryPoint: web
+  responseHeaderTimeout: 300s
+  dialTimeout: 30s
+  idleTimeout: 300s
+  # 32MiB, matching the Caddy site body limit. Quoted so Helm does not
+  # rewrite it as a float.
+  maxRequestBodyBytes: "33554432"
+  flushInterval: 1ms
+
+# Optional Service named caddy. Prod turns this on so the existing tunnel route
+# http://caddy:80 reaches Traefik. ExternalName is a CNAME, so Traefik's
+# Service port must be 80. k3s Traefik's web entrypoint is that port.
+caddyAlias:
+  enabled: false
+  externalName: traefik.kube-system.svc.cluster.local
+
+# Off except in values-loadtest.yaml. The image is a pinned CPython tag.
+llmMock:
+  enabled: false
+  image: python:3.12.7-slim-bookworm
+  # python:3.12.7-slim-bookworm image config User is empty (root).
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  pullPolicy: IfNotPresent
+  latencyMinSeconds: "1"
+  latencyMaxSeconds: "2"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Off except in values-loadtest.yaml. Not a Helm hook: it waits for Postgres,
+# then runs alembic, the curriculum seed, and scripts/seed_demo.py.
+demoData:
+  enabled: false
+  # Same root api image. Keep off until Dockerfile.api has a USER line.
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    readOnlyRootFilesystem: false
+  backoffLimit: 1
+  activeDeadlineSeconds: 1800
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Off except in values-loadtest.yaml. The script is files/k6-api.js, kept
+# identical to deploy/loadtest/k6-api.js.
+loadtest:
+  k6:
+    enabled: false
+    image: grafana/k6:0.57.0
+    # grafana/k6:0.57.0 Dockerfile adds uid 12345 and sets USER k6.
+    # The image config User is the name k6, so the chart sets the numeric uid.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 12345
+    demoPassword: demo1234
+    resources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi

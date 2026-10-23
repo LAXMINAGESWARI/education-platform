@@ -54,7 +54,7 @@ See `.cursor/skills-cursor/` and `.cursor/plugins/` for full skill documentation
 | Service | Command | Notes |
 | --- | --- | --- |
 | Postgres + pgvector | From repo root: `docker compose up -d postgres` | Required. Defaults match `backend/.env.example` (`education`/`education` on `:5432`). Wait for health before migrating. |
-| Backend API | From `backend/`: `uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000` | After Postgres is up: `uv run alembic upgrade head`. API auto-seeds from `docs/curriculum/` when no topics exist. |
+| Backend API | From `backend/`: `uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000` | After Postgres is up: `uv run alembic upgrade head`, then `uv run python -m education_platform.modules.materials.seed`. The API does not seed on startup. |
 | Frontend | From `frontend/`: `npm run dev` | Needs `frontend/.env` with `VITE_API_BASE_URL=http://127.0.0.1:8000` (copy from `.env.example`). Dev server on `:5173`. |
 | Ingest worker | Optional | `uv run python -m education_platform.workers` from `backend/` — only for admin PDF ingest. Not required for student quiz or admin materials browse. |
 | Policy assistant | Admin `/admin/policy` | Needs `OPENROUTER_API_KEY` in `backend/.env` for LLM injection/validate/summarize stages. Without the key, heuristic injection + stub summarize still run; retrieval uses pgvector. |

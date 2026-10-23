@@ -8,7 +8,11 @@ from fastapi.responses import StreamingResponse
 
 from education_platform.api.deps import Principal, get_current_user_detached
 from education_platform.db.session import get_session_factory
-from education_platform.modules.audit.service import AuditAction, record_event
+from education_platform.modules.audit.service import (
+    SUBSCRIBE_AUDIT_WINDOW,
+    AuditAction,
+    record_event_within_window,
+)
 from education_platform.modules.authorization.scope import scope_for
 from education_platform.modules.progress.sse import SSE_HEADERS, iter_sse
 from education_platform.modules.progress.subscribe import subscribe
@@ -21,6 +25,8 @@ from education_platform.modules.progress.types import (
 )
 
 router = APIRouter(tags=["progress"])
+
+# One scoped-read row per principal, subject, and 10-minute bucket.
 
 
 async def _chain(
@@ -41,12 +47,14 @@ async def _open_stream(
     factory = get_session_factory()
     async with factory() as session:
         scope = await scope_for(session, principal)
-        await record_event(
+        await record_event_within_window(
             session,
+            window=SUBSCRIBE_AUDIT_WINDOW,
             institution_id=principal.institution_id,
             actor_user_id=principal.user_id,
             event_type=AuditAction.SCOPED_READ,
             entity_type=resource,
+            match_payload={"detail": subject.key()},
             payload={
                 "resource": resource,
                 "unrestricted": scope.unrestricted,

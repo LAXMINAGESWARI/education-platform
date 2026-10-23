@@ -226,24 +226,25 @@ def _noul(body: str) -> float:
     return answer.noul
 
 
-def test_judge_clamps_a_probability_outside_0_1() -> None:
+def test_judge_clamps_a_finite_probability_and_rejects_infinity() -> None:
     assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": 1.5}}}') == 1.0
     assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": -0.1}}}') == 0.0
-    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": Infinity}}}') == 1.0
-    assert _noul('{"answers": {"is_bug": {"type": "noul", "noul": -Infinity}}}') == 0.0
 
+    def infinite(body: str) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return _json_response(body)
 
-def test_infinite_score_is_rejected() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return _json_response('{"answers": {"urgency": {"type": "score", "score": Infinity}}}')
+        judge = HttpJudge(
+            _settings(),
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            sleep=lambda _seconds: None,
+        )
+        with pytest.raises(JudgeResponseError, match="infinite"):
+            judge.decide(_request())
 
-    judge = HttpJudge(
-        _settings(),
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-        sleep=lambda _seconds: None,
-    )
-    with pytest.raises(JudgeResponseError, match="infinite"):
-        judge.decide(_request())
+    infinite('{"answers": {"is_bug": {"type": "noul", "noul": Infinity}}}')
+    infinite('{"answers": {"is_bug": {"type": "noul", "noul": -Infinity}}}')
+    infinite('{"answers": {"urgency": {"type": "score", "score": Infinity}}}')
 
 
 def test_judge_posts_the_shared_decisions_url() -> None:

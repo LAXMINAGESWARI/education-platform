@@ -54,6 +54,7 @@ const due: DueReviewRow[] = [
     topicName: "Mensuration",
     daysSinceLastAttempt: 12,
     dueIntervalDays: 7,
+    subjectId: "math-1",
     subjectName: "Mathematics",
     href: "/subjects/math-1/feedback",
   },
@@ -119,6 +120,53 @@ describe("FeedbackEntriesTable", () => {
 
     await user.tab();
     expect(within(math).getByRole("link", { name: "Mathematics" })).toHaveFocus();
+  });
+
+  it("renders mastery, advanced, on-track, declining, and flat badges", () => {
+    const variants: FeedbackSubjectCard[] = [
+      {
+        ...subjects[0],
+        subject_id: "mastery-1",
+        subject_name: "Mastery Subject",
+        achievement: "mastery",
+        trend: "declining",
+        trend_delta: "5",
+      },
+      {
+        ...subjects[0],
+        subject_id: "advanced-1",
+        subject_name: "Advanced Subject",
+        achievement: "advanced",
+        trend: "flat",
+        trend_delta: "0",
+      },
+      {
+        ...subjects[0],
+        subject_id: "track-1",
+        subject_name: "On Track Subject",
+        achievement: "on_track",
+        trend: "improving",
+        trend_delta: "3",
+      },
+    ];
+
+    render(
+      <MemoryRouter>
+        <FeedbackEntriesTable subjects={variants} />
+      </MemoryRouter>,
+    );
+
+    const mastery = screen.getByRole("row", { name: /Mastery Subject/ });
+    expect(within(mastery).getByText("Mastery")).toHaveClass("badge", "badge--ok");
+    expect(within(mastery).getByText("Declining")).toHaveClass("badge", "badge--danger");
+
+    const advanced = screen.getByRole("row", { name: /Advanced Subject/ });
+    expect(within(advanced).getByText("Advanced")).toHaveClass("badge", "badge--ok");
+    expect(within(advanced).getByText("No change")).toHaveClass("badge", "badge--locked");
+
+    const onTrack = screen.getByRole("row", { name: /On Track Subject/ });
+    expect(within(onTrack).getByText("On track")).toHaveClass("badge", "badge--info");
+    expect(within(onTrack).getByText("Improving")).toHaveClass("badge", "badge--ok");
   });
 });
 

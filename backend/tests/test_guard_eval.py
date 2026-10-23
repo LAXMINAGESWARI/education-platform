@@ -1,4 +1,8 @@
-"""Chat-guard eval harness (evals/guard). Every test is offline: MockTransport or no client."""
+"""Chat-guard eval harness (evals/guard). Every test is offline: MockTransport or no client.
+
+The CLI dry-run GETs the public OpenRouter model list. These tests stub that
+fetch so a classifier client is still the thing that fails the suite.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from evals.guard.score import (
     score_all,
 )
 from evals.guard.surfaces import SURFACE_DEFS, checks_for
+from evals.pricing import ModelPrice
 
 data_injection_node = importlib.import_module(
     "education_platform.modules.text_to_sql.nodes.injection_guard"
@@ -148,14 +153,32 @@ def _forbid_clients(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx.Client, "__init__", boom)
 
 
+def _stub_prices(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(model_ids: list[str], timeout: float = 20.0) -> tuple[dict[str, ModelPrice], str]:
+        prices = {
+            model_id: (
+                ModelPrice(0.000000042, 0.0, "test")
+                if "jev" in model_id
+                else ModelPrice(0.00000015, 0.0000006, "test")
+            )
+            for model_id in model_ids
+        }
+        return prices, "stubbed public catalog"
+
+    monkeypatch.setattr(cli, "load_prices", fake)
+
+
 def test_dry_run_makes_no_network_call(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _forbid_clients(monkeypatch)
+    _stub_prices(monkeypatch)
     assert cli.main(["--dry-run"]) == cli.EXIT_OK
     out = capsys.readouterr().out
     assert "160 rows" in out
     assert "est $" in out and "calls" in out
+    assert "priced usd expected:" in out
+    assert "priced worst with transport retries:" in out
     assert "test-key" not in out
 
 
@@ -163,8 +186,11 @@ def test_without_live_flag_nothing_is_called(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _forbid_clients(monkeypatch)
+    _stub_prices(monkeypatch)
     assert cli.main([]) == cli.EXIT_OK
-    assert "Add --live" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Add --live" in out
+    assert "priced usd expected:" in out
 
 
 def test_live_without_key_exits_before_any_call(monkeypatch: pytest.MonkeyPatch) -> None:

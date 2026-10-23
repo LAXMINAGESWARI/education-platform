@@ -26,7 +26,7 @@ export function QuizPage() {
   const [starting, setStarting] = useState(true);
   const [lockDialog, setLockDialog] = useState<{ title: string; body: string } | null>(null);
   const submittingRef = useRef(false);
-  const quizLockRef = useRef<HTMLElement>(null);
+  const copyGuardCleanup = useRef<(() => void) | null>(null);
   const copyNoticeTimer = useRef<number | null>(null);
   const [copyBlocked, setCopyBlocked] = useState(false);
 
@@ -86,15 +86,24 @@ export function QuizPage() {
     };
   }, [quizId]);
 
-  const quizLocked = Boolean(attempt && question);
-  useEffect(() => {
-    const root = quizLockRef.current;
-    if (!quizLocked || !root) return;
-    return installQuizCopyGuard(root, showCopyNotice);
-  }, [quizLocked, showCopyNotice]);
+  const showCopyNoticeRef = useRef(showCopyNotice);
+  showCopyNoticeRef.current = showCopyNotice;
+
+  // Attach during commit. useEffect runs after paint, and findBy can observe the
+  // question text before that effect, so a copy event sometimes missed the guard.
+  const setQuizLockNode = useCallback((node: HTMLElement | null) => {
+    copyGuardCleanup.current?.();
+    copyGuardCleanup.current = null;
+    if (node === null) return;
+    copyGuardCleanup.current = installQuizCopyGuard(node, () => {
+      showCopyNoticeRef.current();
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
+      copyGuardCleanup.current?.();
+      copyGuardCleanup.current = null;
       if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
     };
   }, []);
@@ -179,7 +188,7 @@ export function QuizPage() {
             mark {passMark}%
           </p>
 
-          <article ref={quizLockRef} className="panel quiz-lock">
+          <article key={question.number} ref={setQuizLockNode} className="panel quiz-lock">
             {question.difficulty && <span className="difficulty">{question.difficulty}</span>}
             <h2 className="question-prompt">
               <MarkdownContent inline>{presentQuizText(question.prompt)}</MarkdownContent>

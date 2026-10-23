@@ -255,9 +255,9 @@ def _required_unit(raw: object, key: str, *, strict: bool = False) -> float:
 def _optional_unit(raw: object, *, strict: bool = False) -> float | None:
     """Parse a probability.
 
-    The lesson and quiz judge clamps a finite out-of-range value, and ±infinity,
-    into 0-1. The chat guard passes ``strict=True`` and rejects those values.
-    NaN is rejected on both paths.
+    The lesson and quiz judge clamps a finite value outside 0-1. NaN and
+    ±infinity are rejected on that path and on the chat guard, which also
+    rejects a finite value outside 0-1 (``strict=True``).
     """
     if raw is None:
         return None
@@ -266,10 +266,10 @@ def _optional_unit(raw: object, *, strict: bool = False) -> float | None:
     value = float(raw)
     if math.isnan(value):
         raise JudgeResponseError("Jev returned a NaN probability.")
-    if strict and (math.isinf(value) or value < 0.0 or value > 1.0):
-        raise JudgeResponseError("Jev returned a probability outside 0-1.")
     if math.isinf(value):
-        return 1.0 if value > 0.0 else 0.0
+        raise JudgeResponseError("Jev returned an infinite probability.")
+    if strict and (value < 0.0 or value > 1.0):
+        raise JudgeResponseError("Jev returned a probability outside 0-1.")
     if value < 0.0:
         return 0.0
     if value > 1.0:

@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiRequest, clearTokens, getAccessToken, getRefreshToken, setTokens } from "./client";
+import {
+  REFRESH_TIMEOUT_MS,
+  apiRequest,
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+} from "./client";
 import { progressReconnectDelayMs, runSubject, subscribeProgress } from "./progress";
 
 type FetchCall = {
@@ -145,7 +152,8 @@ describe("progress reconnect token refresh", () => {
       const url = String(input);
       if (url.endsWith("/api/v1/auth/refresh")) {
         refreshCount += 1;
-        expect(init?.signal).toBeUndefined();
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal).not.toBe(abort.signal);
         return new Promise<Response>((resolve) => {
           resolveRefresh = resolve;
         });
@@ -225,7 +233,8 @@ describe("progress reconnect token refresh", () => {
       const authorization = headerValue(init?.headers, "authorization");
       if (url.endsWith("/api/v1/auth/refresh")) {
         refreshCount += 1;
-        expect(init?.signal).toBeUndefined();
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal).not.toBe(abort.signal);
         return new Promise<Response>((resolve) => {
           resolveRefresh = resolve;
         });
@@ -274,5 +283,140 @@ describe("progress reconnect token refresh", () => {
     await expect(apiRequest("/widgets/1")).rejects.toMatchObject({ status: 401 });
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
+  });
+
+  it("times out a hung refresh without clearing tokens, then a later refresh can run", async () => {
+    vi.useFakeTimers();
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+    let refreshCount = 0;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCount += 1;
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        if (refreshCount === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            const onAbort = () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            };
+            if (init?.signal?.aborted) {
+              onAbort();
+              return;
+            }
+            init?.signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            access_token: "new-access",
+            refresh_token: "refresh-2",
+            token_type: "bearer",
+          }),
+        );
+      }
+      const authorization = headerValue(init?.headers, "authorization");
+      if (authorization === "Bearer old-access") {
+        return Promise.resolve(jsonResponse(401, { detail: "token expired" }));
+      }
+      return Promise.resolve(jsonResponse(200, { ok: true }));
+    });
+
+    const first = apiRequest("/widgets/1");
+    const firstFailed = expect(first).rejects.toMatchObject({ status: 401 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS);
+    await firstFailed;
+    expect(getAccessToken()).toBe("old-access");
+    expect(getRefreshToken()).toBe("refresh-1");
+
+    await expect(apiRequest("/widgets/1")).resolves.toMatchObject({ ok: true });
+    expect(refreshCount).toBe(2);
+    expect(getAccessToken()).toBe("new-access");
+    expect(getRefreshToken()).toBe("refresh-2");
+  });
+
+  it.each(["network", "timeout", 503] as const)(
+    "keeps stored tokens when refresh fails with %s",
+    async (failure) => {
+      vi.useFakeTimers();
+      setTokens({
+        access_token: "old-access",
+        refresh_token: "refresh-1",
+        token_type: "bearer",
+      });
+      vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/auth/refresh")) {
+          if (failure === "network") {
+            return Promise.reject(new TypeError("network down"));
+          }
+          if (failure === "timeout") {
+            return new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener(
+                "abort",
+                () => {
+                  reject(new DOMException("The operation was aborted.", "AbortError"));
+                },
+                { once: true },
+              );
+            });
+          }
+          return Promise.resolve(jsonResponse(failure, { detail: "unavailable" }));
+        }
+        return Promise.resolve(jsonResponse(401, { detail: "token expired" }));
+      });
+
+      const pending = apiRequest("/widgets/1");
+      const failed = expect(pending).rejects.toMatchObject({ status: 401 });
+      if (failure === "timeout") {
+        await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS);
+      }
+      await failed;
+      expect(getAccessToken()).toBe("old-access");
+      expect(getRefreshToken()).toBe("refresh-1");
+    },
+  );
+
+  it.each([401, 403])("clears tokens when refresh is rejected with %s", async (status) => {
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+    vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        return Promise.resolve(jsonResponse(status, { detail: "Invalid refresh token" }));
+      }
+      return Promise.resolve(jsonResponse(401, { detail: "token expired" }));
+    });
+
+    await expect(apiRequest("/widgets/1")).rejects.toMatchObject({ status: 401 });
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+  });
+
+  it("keeps stored tokens when a 200 refresh body is not a token pair", async () => {
+    setTokens({
+      access_token: "old-access",
+      refresh_token: "refresh-1",
+      token_type: "bearer",
+    });
+    vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        return Promise.resolve(jsonResponse(200, { detail: "ok" }));
+      }
+      return Promise.resolve(jsonResponse(401, { detail: "token expired" }));
+    });
+
+    await expect(apiRequest("/widgets/1")).rejects.toMatchObject({ status: 401 });
+    expect(getAccessToken()).toBe("old-access");
+    expect(getRefreshToken()).toBe("refresh-1");
   });
 });

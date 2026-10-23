@@ -17,6 +17,7 @@ from education_platform.modules.materials.models import (
     SourceMaterialVersion,
     SourceMaterialVersionStatus,
 )
+from education_platform.modules.progress.stage_store import mark_upload_received
 from education_platform.modules.rag import storage
 from education_platform.modules.rag.models import IngestJob, IngestJobStatus
 
@@ -71,6 +72,7 @@ async def _insert_processing_version(
         checksum=storage.sha256_hex(data),
         submitted_by_user_id=submitted_by_user_id,
     )
+    mark_upload_received(version)
     session.add(version)
     await session.flush()
 

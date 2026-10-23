@@ -34,6 +34,7 @@ describe("AdminShell", () => {
     expect(screen.getAllByRole("button", { name: "Sign out" }).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Demo mockup only/)).not.toBeInTheDocument();
     expect(document.querySelector(".demo-banner")).not.toBeInTheDocument();
+    expect(document.getElementById("pwa-prompt-host")).not.toBeNull();
 
     const app = document.querySelector(".app");
     expect(app).not.toHaveClass("is-rail-collapsed");

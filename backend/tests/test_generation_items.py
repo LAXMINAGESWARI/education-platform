@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -42,7 +43,12 @@ from education_platform.modules.generation.items import (
     texts_for_nodes,
 )
 from education_platform.modules.generation.lesson import section_from_chunks
-from education_platform.modules.generation.models import ContentGenerationRun, GenerationJob
+from education_platform.modules.generation.models import (
+    ContentGenerationOutlineNode,
+    ContentGenerationRun,
+    GenerationJob,
+)
+from education_platform.modules.generation.outline import is_outline_noise_heading
 from education_platform.modules.generation.types import (
     GenerationJobKind,
     GenerationJobStatus,
@@ -112,6 +118,70 @@ def _accept_two_node_run(
     )
     assert accepted.status_code == 200, accepted.text
     return run_id
+
+
+@pytest.mark.regression
+def test_accept_outline_folds_a_heading_into_the_concept(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    seeded_topic_id: UUID,
+    seeded_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _silence_embed(monkeypatch, tmp_path)
+    response = _submit_admin(client, admin_headers, seeded_topic_id)
+    run_id = UUID(response.json()["run_id"])
+    intake_id = UUID(
+        client.get(f"/api/v1/teaching/generation-runs/{run_id}", headers=admin_headers).json()[
+            "intake_version_id"
+        ]
+    )
+    _index_run(seeded_db, intake_id, chunks=_second_chunk())
+    _outline_run(seeded_db, run_id, _write_two_nodes)
+    seeded_db.expire_all()
+    existing = list(
+        seeded_db.scalars(
+            select(ContentGenerationOutlineNode).where(
+                ContentGenerationOutlineNode.run_id == run_id
+            )
+        )
+    )
+    assert existing
+    previous = max(existing, key=lambda node: node.sequence)
+    exercise = ContentGenerationOutlineNode(
+        run_id=run_id,
+        slug="exercise-9-2-fold",
+        title="EXERCISE 9.2",
+        token_mass=4,
+        prerequisite_score=Decimal("0.2"),
+        centrality=Decimal("0.2"),
+        weight=Decimal("1"),
+        proposed_outcomes=["Practice the exercise"],
+        source_headings=["EXERCISE 9.2"],
+        sequence=previous.sequence + 1,
+    )
+    seeded_db.add(exercise)
+    seeded_db.commit()
+
+    accepted = client.post(
+        f"/api/v1/teaching/generation-runs/{run_id}/accept-outline",
+        headers=admin_headers,
+    )
+    assert accepted.status_code == 200, accepted.text
+    seeded_db.expire_all()
+    names = list(
+        seeded_db.scalars(select(Subtopic.name).where(Subtopic.topic_id == seeded_topic_id))
+    )
+    assert "EXERCISE 9.2" not in names
+    folded = seeded_db.get(ContentGenerationOutlineNode, exercise.id)
+    concept = seeded_db.get(ContentGenerationOutlineNode, previous.id)
+    assert folded is not None and concept is not None
+    assert folded.accepted_subtopic_id == concept.accepted_subtopic_id
+    assert folded.accepted_subtopic_id is not None
+    target = seeded_db.get(Subtopic, folded.accepted_subtopic_id)
+    assert target is not None
+    assert not is_outline_noise_heading(target.name)
 
 
 def test_bloom_mix_sums_to_quota_and_leans() -> None:

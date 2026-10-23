@@ -197,7 +197,7 @@ def _timeout(kind: _TimeoutKind, settings: Settings) -> float:
     if kind is _TimeoutKind.SQL:
         return settings.ai_gateway_timeout_sql_generate_seconds
     if kind is _TimeoutKind.GUARD:
-        return settings.ai_gateway_timeout_guard_seconds
+        return settings.jev_guard_timeout_seconds
     if kind is _TimeoutKind.GENERATION:
         return settings.ai_gateway_timeout_generation_seconds
     if kind is _TimeoutKind.FEEDBACK:
