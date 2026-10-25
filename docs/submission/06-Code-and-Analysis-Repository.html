@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Code and Analysis Repository</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm 15mm;
+    @bottom-left {
+      content: "CurioEd  ·  Code and Analysis Repository";
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif", "Times New Roman", serif;
+    color: #1a2332;
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+  body.compact {
+    font-size: 10pt;
+    line-height: 1.32;
+  }
+  .cover {
+    border-top: 8px solid #1e3a5f;
+    padding-top: 14px;
+    margin-bottom: 18px;
+  }
+  .kicker {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c6b7a;
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-weight: 650;
+    font-size: 22pt;
+    line-height: 1.15;
+    color: #1e3a5f;
+    margin: 0 0 10px;
+  }
+  .deck {
+    font-size: 12pt;
+    margin: 0 0 8px;
+  }
+  body.compact .deck { font-size: 10.5pt; }
+  .meta {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    color: #1e3a5f;
+    margin: 0;
+  }
+  h2 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 13.5pt;
+    color: #1e3a5f;
+    margin: 18px 0 6px;
+    line-height: 1.25;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 11.5pt;
+    color: #1e3a5f;
+    margin: 12px 0 4px;
+    page-break-after: avoid;
+  }
+  body.compact h2 { margin-top: 11px; font-size: 12pt; }
+  body.compact h3 { margin-top: 8px; }
+  p { margin: 0 0 8px; orphans: 3; widows: 3; }
+  ul, ol { margin: 0 0 8px; padding-left: 1.2em; }
+  li { margin: 0 0 3px; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0 10px;
+    page-break-inside: avoid;
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 8.7pt;
+    line-height: 1.3;
+  }
+  body.compact table { font-size: 8pt; margin: 4px 0 6px; }
+  th {
+    background: #1e3a5f;
+    color: white;
+    text-align: left;
+    font-weight: 600;
+    padding: 5px 6px;
+    vertical-align: top;
+  }
+  td {
+    border-bottom: 1px solid #d5dde6;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f4f7fb; }
+  table.sig td { height: 46px; }
+  table.sig td.sign { background: white; }
+  aside {
+    border-left: 3px solid #1e3a5f;
+    padding: 4px 10px;
+    margin: 0 0 8px;
+    color: #1a2332;
+  }
+  .break { page-break-before: always; }
+</style>
+</head>
+<body class="regular">
+<header class='cover'><p class='kicker'>CurioEd · group submission · 25 October 2026</p><h1>Code and Analysis Repository</h1><p class='deck'>The LMS item asks for a link or a zip of notebooks. This project submits the link. The analysis is Python, tested with pytest.</p><p class='meta'>https://github.com/aushakanuj/education-platform</p></header><h2>1. Link</h2><p>https://github.com/aushakanuj/education-platform</p><p>Owner on GitHub: aushakanuj. Default branch: main. This Submission Package is added on a branch and opened as a pull request so the files can be reviewed; the link above is the project the report describes.</p><h2>2. What “analysis” means here</h2><p>There is no notebook bundle. The analysis is a small rule engine with a deterministic generated school behind it, plus tests that lock the worked cases in the report.</p><table><thead><tr><th>Role</th><th>Path</th></tr></thead><tbody><tr><td>Generated school</td><td>backend/src/education_platform/modules/synthetic/</td></tr><tr><td>Rebuild command</td><td>From backend/: uv run python -m education_platform.modules.synthetic.cli</td></tr><tr><td>Seed and size</td><td>SchoolSpec in generator.py. Seed 20260812. 240 students by default.</td></tr><tr><td>Early-warning rules</td><td>backend/src/education_platform/modules/at_risk/engine.py</td></tr><tr><td>Loading, storage, permissions</td><td>backend/src/education_platform/modules/at_risk/service.py and router.py</td></tr><tr><td>student_360 register</td><td>backend/src/education_platform/modules/insights/</td></tr><tr><td>Policy the rules implement</td><td>docs/design/08-at-risk-early-warning.md</td></tr><tr><td>Engine tests</td><td>backend/tests/test_at_risk_engine.py</td></tr><tr><td>API, role, and audit tests</td><td>backend/tests/test_at_risk_api.py</td></tr><tr><td>Teacher list matches the assistant</td><td>backend/tests/test_at_risk_assistant_agreement.py</td></tr><tr><td>Schema the questions are written against</td><td>backend/src/education_platform/modules/text_to_sql/config/schema_catalog.md</td></tr><tr><td>How to run the whole app</td><td>README.md at the repository root</td></tr></tbody></table><h2>3. Run the analysis</h2><ol><li>Install uv, Docker, and Node 18 or newer.</li><li>From the repository root: docker compose up -d postgres. Wait until it is healthy.</li><li>From backend/: uv run alembic upgrade head</li><li>From backend/: uv run python -m education_platform.modules.synthetic.cli</li><li>From backend/: uv run pytest tests/test_at_risk_engine.py tests/test_at_risk_api.py tests/test_at_risk_assistant_agreement.py</li><li>Optional, the app itself: uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000, and from frontend/ npm run dev after copying .env.example to .env.</li></ol><p>The engine tests include cases that do not need a database. The API and agreement tests need the migrated Postgres from step 2. CI on GitHub runs the full backend suite against a pgvector container.</p><h2>4. What not to upload beside the link</h2><ul><li>backend/.env if it contains an API key.</li><li>The local upload directory of PDF blobs.</li><li>A dump of a database, even the synthetic one. The seed rebuilds it.</li><li>node_modules or the Python virtual environment.</li></ul><p>A zip of the whole working tree would be a worse copy than the link: it goes stale, and it is easy to sweep a secret into it. If the LMS form will not accept a link without a file, upload this note (PDF and DOCX) and paste the link in the form field.</p>
+</body>
+</html>
