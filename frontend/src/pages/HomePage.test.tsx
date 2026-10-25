@@ -17,6 +17,7 @@ vi.mock("../api/materials", () => ({
 
 vi.mock("../api/feedback", () => ({
   getFeedbackHighlights: vi.fn().mockResolvedValue({ due_reviews: [], trajectories: [] }),
+  getFeedbackSubject: vi.fn().mockResolvedValue({ topics_needing_attention: [] }),
 }));
 
 import { fetchLearningDirectory } from "../api/materials";

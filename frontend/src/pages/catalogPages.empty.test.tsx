@@ -10,6 +10,7 @@ import { HomePage, clearLearningDirectoryCache } from "./HomePage";
 vi.mock("../api/feedback", () => ({
   getFeedbackOverview: vi.fn(),
   getFeedbackHighlights: vi.fn(),
+  getFeedbackSubject: vi.fn().mockResolvedValue({ topics_needing_attention: [] }),
 }));
 
 vi.mock("../api/materials", () => ({

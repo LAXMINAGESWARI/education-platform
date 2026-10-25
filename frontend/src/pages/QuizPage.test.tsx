@@ -182,7 +182,8 @@ describe("QuizPage", () => {
     );
 
     const prompt = await screen.findByText("What is a square?");
-    expect(prompt.closest(".quiz-lock")).not.toBeNull();
+    const lock = prompt.closest(".quiz-lock");
+    expect(lock).toHaveAttribute("data-quiz-copy-guard", "on");
     expect(fireEvent.copy(prompt)).toBe(false);
     expect(fireEvent.paste(prompt)).toBe(false);
     expect(fireEvent.cut(screen.getByRole("radio", { name: /A rectangle with equal sides/i }))).toBe(

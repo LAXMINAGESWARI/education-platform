@@ -6,6 +6,34 @@ import type {
   GoalOut,
 } from "../api/types";
 
+/**
+ * Mastery pass mark. Mirrors PASS_PERCENT in
+ * backend/src/education_platform/modules/assessments/feedback_hierarchy.py.
+ */
+export const PASS_PERCENT = 70;
+
+/** Topic names the needs-attention heading renders, or null when the API omitted them. */
+export function topicsNeedingAttention(
+  detail: { topics_needing_attention?: readonly string[] | null } | null | undefined,
+): readonly string[] | null {
+  if (!detail || detail.topics_needing_attention == null) return null;
+  return detail.topics_needing_attention;
+}
+
+/** Directory fallback when the feedback subject payload has no needs-attention list. */
+export function weakTopicNames(
+  topics: readonly {
+    title: string;
+    overall_quiz?: { best_score_percent?: string | number | null } | null;
+  }[],
+): string[] {
+  return topics.flatMap((topic) => {
+    const score = scoreNumber(topic.overall_quiz?.best_score_percent);
+    if (score === null || score >= PASS_PERCENT) return [];
+    return [topic.title];
+  });
+}
+
 export function scoreNumber(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const number = typeof value === "string" ? Number(value) : value;
@@ -119,7 +147,7 @@ export function attemptBadgePresentation(
 ): { text: string; color: string | null } {
   if (badge === "not_attempted") return { text: "Not attempted", color: null };
   const score = scoreNumber(best);
-  if (score === null || badge === "keep_going" || score < 70) {
+  if (score === null || badge === "keep_going" || score < PASS_PERCENT) {
     return { text: "Keep going", color: null };
   }
   const title = attemptTitle(attemptCount, score);
@@ -202,13 +230,13 @@ export function calibrationMessage(
   score: number | null,
 ): string {
   if (score !== null) {
-    if (confidence === "confident" && score < 70) {
+    if (confidence === "confident" && score < PASS_PERCENT) {
       return "You're feeling confident — a quick review will help your scores catch up to that confidence.";
     }
     if (confidence === "still_learning" && score >= 80) {
       return 'You said "still learning," but your scores say you\'ve got this — trust yourself a little more!';
     }
-    if (confidence === "still_learning" && score >= 70) {
+    if (confidence === "still_learning" && score >= PASS_PERCENT) {
       return "You're doing better than you feel — keep going, you're closer than you think.";
     }
     if (confidence === "confident" && score >= 80) {
