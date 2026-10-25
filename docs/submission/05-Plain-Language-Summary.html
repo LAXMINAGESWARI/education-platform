@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Plain-Language Summary</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm 15mm;
+    @bottom-left {
+      content: "CurioEd  ·  Plain-Language Summary";
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif", "Times New Roman", serif;
+    color: #1a2332;
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+  body.compact {
+    font-size: 10pt;
+    line-height: 1.32;
+  }
+  .cover {
+    border-top: 8px solid #1e3a5f;
+    padding-top: 14px;
+    margin-bottom: 18px;
+  }
+  .kicker {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c6b7a;
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-weight: 650;
+    font-size: 22pt;
+    line-height: 1.15;
+    color: #1e3a5f;
+    margin: 0 0 10px;
+  }
+  .deck {
+    font-size: 12pt;
+    margin: 0 0 8px;
+  }
+  body.compact .deck { font-size: 10.5pt; }
+  .meta {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    color: #1e3a5f;
+    margin: 0;
+  }
+  h2 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 13.5pt;
+    color: #1e3a5f;
+    margin: 18px 0 6px;
+    line-height: 1.25;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 11.5pt;
+    color: #1e3a5f;
+    margin: 12px 0 4px;
+    page-break-after: avoid;
+  }
+  body.compact h2 { margin-top: 11px; font-size: 12pt; }
+  body.compact h3 { margin-top: 8px; }
+  p { margin: 0 0 8px; orphans: 3; widows: 3; }
+  ul, ol { margin: 0 0 8px; padding-left: 1.2em; }
+  li { margin: 0 0 3px; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0 10px;
+    page-break-inside: avoid;
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 8.7pt;
+    line-height: 1.3;
+  }
+  body.compact table { font-size: 8pt; margin: 4px 0 6px; }
+  th {
+    background: #1e3a5f;
+    color: white;
+    text-align: left;
+    font-weight: 600;
+    padding: 5px 6px;
+    vertical-align: top;
+  }
+  td {
+    border-bottom: 1px solid #d5dde6;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f4f7fb; }
+  table.sig td { height: 46px; }
+  table.sig td.sign { background: white; }
+  aside {
+    border-left: 3px solid #1e3a5f;
+    padding: 4px 10px;
+    margin: 0 0 8px;
+    color: #1a2332;
+  }
+  .break { page-break-before: always; }
+</style>
+</head>
+<body class="regular">
+<header class='cover'><p class='kicker'>CurioEd · group submission · 25 October 2026</p><h1>Plain-Language Summary</h1><p class='deck'>What CurioEd is, in ordinary words.</p><p class='meta'>https://github.com/aushakanuj/education-platform</p></header><p>CurioEd is a website for a school. It has three kinds of login: an administrator, a teacher, and a student.</p><p>The administrator publishes the lessons and the quizzes. There is one copy of each lesson for the class. Students do not each get a private rewrite of the file. They each get a private record of what they have done: which lessons they opened, and how they did on the quiz.</p><p>A student can sign in, open their subjects, read a lesson, and take the quiz for that topic. The passing mark used by the quizzes is 70%. The site scores the quiz on the server. It does not send the student the answer key.</p><p>A teacher can open a list of students who may need a conversation. Each row says why it is there. The reasons are simple. Marks in one subject are under 60%. Or the recent quizzes have fallen by more than 15 points compared with earlier ones. Or attendance is under 80%. If two of those subject reasons are true at once, the row is marked urgent. If marks have fallen but are not yet under 60%, the row is marked attention. A single low score, or low attendance on its own, is marked monitor.</p><p>A low mark in mathematics does not get described as “this student is weak at everything.” The other subjects stay off the list when their marks are fine. Low attendance is its own row, and a subject teacher does not see that row. An administrator does.</p><p>The student is not shown an “at risk” label. The list is for staff. The site does not email a parent, and it does not change a grade because a name appeared. A teacher can dismiss a row. The site keeps a record of who dismissed it.</p><p>The school in the demo is invented. It is called Al Noor International. It has 240 generated students in Grades 6 to 10. One of them, Aisha Rahman, is written so that her mathematics marks fall across the term (74, then 65, 56, 47, 38) while her attendance sits at 62%. The list should show her mathematics row as urgent, and her attendance as a separate reason. The numbers were chosen so the demo has a clear case, not because they describe a real child. They should not be quoted as a finding about a real school.</p><p>There is also a chat for administrators that answers from documents the school has uploaded, after a check that the question is not trying to hijack the tool. A tutor that talks to students in the same way is not part of this version.</p><p>The code is at https://github.com/aushakanuj/education-platform. The longer explanation, including the arithmetic for Aisha&#x27;s quizzes, is in the Final Project Report. The Data Note is the one-page description of the generated school.</p>
+</body>
+</html>
