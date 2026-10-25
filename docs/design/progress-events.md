@@ -272,13 +272,16 @@ Additional SSE events on this stream only:
 | --- | --- |
 | `answer_delta` | `{ "text": "..." }` — append to the answer; not a full replacement |
 | `table` | `{ "columns": ["..."], "rows": [["..."]] }` — the query result grid |
-| `final` | The same fields as `AskOut`: `natural_answer`, `confidence`, `provenance` |
+| `final` | The same fields as `AskOut`: `natural_answer`, `confidence` |
 | `refusal` | `{ "message": "..." }` — one sentence, safe to show |
 
 `final` and `refusal` end the stream. They are not `progress` events and they do
 not use the stage enum.
 
 ## Policy chat
+
+`POST /api/v1/chats/{conversation_id}/messages/stream` sends
+`{ "content", "request_id" }`.
 
 `kind` = `policy_chat`. Same request-scoped rules as text-to-SQL, including
 reconnect-by-reask with the same `request_id`.

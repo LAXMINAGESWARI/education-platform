@@ -139,7 +139,7 @@ def _mock_generated_sql(sql: str) -> AsyncMock:
     return AsyncMock(side_effect=_fake)
 
 
-# --- Teacher: valid question -> 200, exactly the three allowed fields -------------------
+# --- Teacher: valid question -> 200, exactly the two allowed fields ---------------------
 
 
 def test_teacher_valid_question_returns_200_with_only_allowed_fields(
@@ -155,7 +155,7 @@ def test_teacher_valid_question_returns_200_with_only_allowed_fields(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body.keys()) == {"natural_answer", "confidence", "provenance"}
+    assert set(body.keys()) == {"natural_answer", "confidence"}
     assert isinstance(body["natural_answer"], str) and body["natural_answer"]
     assert body["confidence"] in {"high", "medium", "low"}
 
@@ -173,7 +173,14 @@ def test_response_never_contains_internal_fields(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    for forbidden in ("generated_sql", "validated_sql", "query_result", "audit_entry", "error"):
+    for forbidden in (
+        "generated_sql",
+        "validated_sql",
+        "query_result",
+        "audit_entry",
+        "error",
+        "provenance",
+    ):
         assert forbidden not in body
 
 

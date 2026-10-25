@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from education_platform.modules.assistant.schemas import (
 )
 from education_platform.modules.assistant.strategy import (
     AssistantKind,
+    AssistantReply,
     ChatTurn,
     PolicyAssistantContext,
     graph_for,
@@ -197,6 +199,147 @@ def _trim_history_for_context(
     return selected
 
 
+async def owned_conversation(
+    session: AsyncSession,
+    principal: Principal,
+    conversation_id: UUID,
+) -> ChatConversation:
+    return await _get_owned_conversation(session, principal, conversation_id)
+
+
+async def _ordered_messages(session: AsyncSession, conversation_id: UUID) -> list[ChatMessage]:
+    return list(
+        (
+            await session.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conversation_id)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            )
+        ).all()
+    )
+
+
+def _history_from(rows: list[ChatMessage], *, content: str) -> list[ChatTurn]:
+    settings = get_settings()
+    history = [
+        {"role": message.role.value, "content": message.content}
+        for message in rows
+        if message.role in {ChatMessageRole.USER, ChatMessageRole.ASSISTANT}
+    ]
+    trimmed = _trim_history_for_context(
+        history,
+        limit_tokens=settings.chat_context_limit_tokens,
+        reserve=estimate_tokens(content) + 800,
+    )
+    turns: list[ChatTurn] = []
+    for turn in trimmed:
+        role = turn.get("role")
+        text = turn.get("content", "")
+        if role == "user":
+            turns.append(ChatTurn(role="user", content=text))
+        elif role == "assistant":
+            turns.append(ChatTurn(role="assistant", content=text))
+    return turns
+
+
+@dataclass
+class PolicyStreamLoad:
+    history: list[ChatTurn]
+    existing_user: ChatMessage | None
+    replay: PostMessageOut | None
+
+
+async def load_policy_stream(
+    session: AsyncSession,
+    conv: ChatConversation,
+    *,
+    content: str,
+    request_id: UUID,
+) -> PolicyStreamLoad:
+    rows = await _ordered_messages(session, conv.id)
+    for index, message in enumerate(rows):
+        if message.role != ChatMessageRole.USER or message.client_request_id != request_id:
+            continue
+        assistant = next(
+            (later for later in rows[index + 1 :] if later.role == ChatMessageRole.ASSISTANT),
+            None,
+        )
+        if assistant is None:
+            return PolicyStreamLoad(
+                history=_history_from(rows[:index], content=content),
+                existing_user=message,
+                replay=None,
+            )
+        return PolicyStreamLoad(
+            history=[],
+            existing_user=None,
+            replay=PostMessageOut(
+                user_message=_message_out(message),
+                assistant_message=_message_out(assistant),
+                context=_context_out(conv),
+            ),
+        )
+    return PolicyStreamLoad(
+        history=_history_from(rows, content=content),
+        existing_user=None,
+        replay=None,
+    )
+
+
+async def persist_policy_turn(
+    session: AsyncSession,
+    conv: ChatConversation,
+    *,
+    text: str,
+    history: list[ChatTurn],
+    reply: AssistantReply,
+    client_request_id: UUID | None,
+    existing_user: ChatMessage | None,
+) -> PostMessageOut:
+    settings = get_settings()
+    if existing_user is None:
+        user_msg = ChatMessage(
+            conversation_id=conv.id,
+            role=ChatMessageRole.USER,
+            content=text,
+            citations=None,
+            token_estimate=estimate_tokens(text),
+            client_request_id=client_request_id,
+        )
+        session.add(user_msg)
+        await session.flush()
+    else:
+        user_msg = existing_user
+
+    citations_raw = [
+        {"id": item.id, "label": item.label, "excerpt": item.excerpt} for item in reply.citations
+    ]
+    prompt_tokens = estimate_tokens(text) + sum(estimate_tokens(turn.content) for turn in history)
+    assistant_msg = ChatMessage(
+        conversation_id=conv.id,
+        role=ChatMessageRole.ASSISTANT,
+        content=reply.content,
+        citations=list(citations_raw) if citations_raw else None,
+        token_estimate=estimate_tokens(reply.content),
+    )
+    session.add(assistant_msg)
+    conv.context_used_tokens = prompt_tokens
+    conv.context_limit_tokens = settings.chat_context_limit_tokens
+    conv.context_used_percent = context_percent(prompt_tokens, settings.chat_context_limit_tokens)
+    conv.updated_at = datetime.now(UTC)
+    if conv.title == "New chat":
+        conv.title = text[:80] + ("…" if len(text) > 80 else "")
+    await session.flush()
+    await session.refresh(user_msg)
+    await session.refresh(assistant_msg)
+    await session.refresh(conv)
+    return PostMessageOut(
+        user_message=_message_out(user_msg),
+        assistant_message=_message_out(assistant_msg),
+        context=_context_out(conv),
+    )
+
+
 async def post_message(
     session: AsyncSession,
     principal: Principal,
@@ -204,87 +347,24 @@ async def post_message(
     *,
     content: str,
 ) -> PostMessageOut:
-    settings = get_settings()
     conv = await _get_owned_conversation(session, principal, conversation_id)
     text = content.strip()
     if not text:
         raise DomainError("Message is empty", status_code=400)
-
-    prior = (
-        await session.scalars(
-            select(ChatMessage)
-            .where(ChatMessage.conversation_id == conv.id)
-            .order_by(ChatMessage.created_at.asc())
-        )
-    ).all()
-    history = [
-        {"role": m.role.value, "content": m.content}
-        for m in prior
-        if m.role in {ChatMessageRole.USER, ChatMessageRole.ASSISTANT}
-    ]
-    trimmed = _trim_history_for_context(
-        history,
-        limit_tokens=settings.chat_context_limit_tokens,
-        reserve=estimate_tokens(text) + 800,
-    )
-    history_turns: list[ChatTurn] = []
-    for turn in trimmed:
-        role = turn.get("role")
-        content = turn.get("content", "")
-        if role == "user":
-            history_turns.append(ChatTurn(role="user", content=content))
-        elif role == "assistant":
-            history_turns.append(ChatTurn(role="assistant", content=content))
-
-    user_msg = ChatMessage(
-        conversation_id=conv.id,
-        role=ChatMessageRole.USER,
-        content=text,
-        citations=None,
-        token_estimate=estimate_tokens(text),
-    )
-    session.add(user_msg)
-    await session.flush()
-
+    history = _history_from(await _ordered_messages(session, conv.id), content=text)
     reply = await graph_for(AssistantKind.POLICY).run_turn(
         session=session,
         principal=principal,
         context=PolicyAssistantContext(kind="policy", institution_id=principal.institution_id),
-        history=tuple(history_turns),
+        history=tuple(history),
         message=text,
     )
-    assistant_text = reply.content
-    citations_raw = [
-        {"id": item.id, "label": item.label, "excerpt": item.excerpt} for item in reply.citations
-    ]
-    prompt_tokens = estimate_tokens(text) + sum(
-        estimate_tokens(turn.content) for turn in history_turns
-    )
-
-    assistant_msg = ChatMessage(
-        conversation_id=conv.id,
-        role=ChatMessageRole.ASSISTANT,
-        content=assistant_text,
-        citations=list(citations_raw) if citations_raw else None,
-        token_estimate=estimate_tokens(assistant_text),
-    )
-    session.add(assistant_msg)
-
-    used = prompt_tokens
-    conv.context_used_tokens = used
-    conv.context_limit_tokens = settings.chat_context_limit_tokens
-    conv.context_used_percent = context_percent(used, settings.chat_context_limit_tokens)
-    conv.updated_at = datetime.now(UTC)
-    if conv.title == "New chat":
-        conv.title = text[:80] + ("…" if len(text) > 80 else "")
-
-    await session.flush()
-    await session.refresh(user_msg)
-    await session.refresh(assistant_msg)
-    await session.refresh(conv)
-
-    return PostMessageOut(
-        user_message=_message_out(user_msg),
-        assistant_message=_message_out(assistant_msg),
-        context=_context_out(conv),
+    return await persist_policy_turn(
+        session,
+        conv,
+        text=text,
+        history=history,
+        reply=reply,
+        client_request_id=None,
+        existing_user=None,
     )

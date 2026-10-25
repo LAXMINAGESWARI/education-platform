@@ -11,7 +11,7 @@ from uuid import UUID
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
-from education_platform.ai_platform.gateway.api import CallContext, complete
+from education_platform.ai_platform.gateway.api import CallContext, complete, complete_stream
 from education_platform.ai_platform.gateway.flags import gateway_enabled
 from education_platform.core.config import Settings, get_settings
 from education_platform.core.llm import (
@@ -27,6 +27,7 @@ from education_platform.modules.assistant.contracts import (
     dump_graph_state,
     parse_graph_state,
 )
+from education_platform.modules.assistant.policy_events import current_policy_events
 from education_platform.modules.assistant.tokens import estimate_tokens
 from education_platform.modules.assistant.tools.registry import (
     ToolValidationError,
@@ -160,6 +161,20 @@ def _exit(model: AssistantGraphState) -> GraphState:
     return dump_graph_state(model)  # type: ignore[return-value]
 
 
+async def _stage(stage: str, status: str) -> None:
+    events = current_policy_events()
+    if events is None:
+        return
+    await events.stage(stage, status)
+
+
+async def _delta(text: str) -> None:
+    events = current_policy_events()
+    if events is None or not text:
+        return
+    await events.delta(text)
+
+
 def _refuse_injection(current: AssistantGraphState, reply: str) -> GraphState:
     current.injection_blocked = True
     current.question_valid = False
@@ -175,11 +190,22 @@ def _refuse_scope(current: AssistantGraphState, reply: str) -> GraphState:
     return _exit(current)
 
 
+async def _blocked(current: AssistantGraphState, reply: str) -> GraphState:
+    await _stage("checking", "failed")
+    return _refuse_injection(current, reply)
+
+
+async def _out_of_scope(current: AssistantGraphState, reply: str) -> GraphState:
+    await _stage("checking", "failed")
+    return _refuse_scope(current, reply)
+
+
 async def injection_guard(state: GraphState, *, settings: Settings) -> GraphState:
     current = _enter(state)
+    await _stage("checking", "running")
     if _heuristic_injection(current.user_message):
         current.guard_stage = "heuristic"
-        return _refuse_injection(current, HEURISTIC_INJECTION_REPLY)
+        return await _blocked(current, HEURISTIC_INJECTION_REPLY)
     if not settings.openrouter_configured:
         # Regex already ran. GPT needs the same key, so the second stage does not.
         current.guard_stage = "unconfigured"
@@ -199,11 +225,11 @@ async def injection_guard(state: GraphState, *, settings: Settings) -> GraphStat
         return await _gpt_policy_injection(current, settings)
     except JudgeError:
         current.guard_stage = "jev_error"
-        return _refuse_injection(current, GUARD_UNAVAILABLE_REPLY)
+        return await _blocked(current, GUARD_UNAVAILABLE_REPLY)
     current.injection_probability = probability
     current.guard_stage = "jev"
     if is_positive(probability, settings):
-        return _refuse_injection(current, INJECTION_BLOCKED_REPLY)
+        return await _blocked(current, INJECTION_BLOCKED_REPLY)
     current.injection_blocked = False
     return _exit(current)
 
@@ -219,10 +245,10 @@ async def _gpt_policy_injection(current: AssistantGraphState, settings: Settings
         )
     except JudgeError:
         current.guard_stage = "gpt_error"
-        return _refuse_injection(current, GUARD_UNAVAILABLE_REPLY)
+        return await _blocked(current, GUARD_UNAVAILABLE_REPLY)
     current.guard_stage = "gpt"
     if flagged:
-        return _refuse_injection(current, INJECTION_BLOCKED_REPLY)
+        return await _blocked(current, INJECTION_BLOCKED_REPLY)
     current.injection_blocked = False
     return _exit(current)
 
@@ -232,9 +258,10 @@ async def question_validator(state: GraphState, *, settings: Settings) -> GraphS
     if current.injection_blocked:
         return _exit(current)
     if len(current.user_message.strip()) < 3:
-        return _refuse_scope(current, SPECIFIC_QUESTION_REPLY)
+        return await _out_of_scope(current, SPECIFIC_QUESTION_REPLY)
     if not settings.openrouter_configured:
         current.question_valid = True
+        await _stage("checking", "done")
         return _exit(current)
     try:
         data = await _policy_json(
@@ -247,10 +274,11 @@ async def question_validator(state: GraphState, *, settings: Settings) -> GraphS
         )
         classified = QuestionValidatorResult.model_validate(data)
         if not classified.valid:
-            return _refuse_scope(current, SCOPE_REPLY)
+            return await _out_of_scope(current, SCOPE_REPLY)
     except (OpenRouterError, json.JSONDecodeError, TypeError, ValidationError):
-        return _refuse_scope(current, GUARD_UNAVAILABLE_REPLY)
+        return await _out_of_scope(current, GUARD_UNAVAILABLE_REPLY)
     current.question_valid = True
+    await _stage("checking", "done")
     return _exit(current)
 
 
@@ -259,6 +287,7 @@ async def retrieve_node(state: GraphState) -> GraphState:
     if _guards_failed(current):
         current.retrieved_chunks = []
         return _exit(current)
+    await _stage("searching", "running")
     registry = get_tool_registry()
     try:
         result = await registry.invoke(
@@ -270,6 +299,7 @@ async def retrieve_node(state: GraphState) -> GraphState:
         current.retrieved_chunks = validated.chunks
     except (ToolValidationError, ValidationError):
         current.retrieved_chunks = []
+    await _stage("searching", "done")
     return _exit(current)
 
 
@@ -286,6 +316,7 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
         current.prompt_tokens = estimate_tokens(content)
         return _exit(current)
 
+    await _stage("summarising", "running")
     chunks = current.retrieved_chunks
     history = current.history
     evidence_blocks: list[str] = []
@@ -337,12 +368,15 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
                 "OpenRouter is not configured — stub summary from retrieved chunks:\n\n"
                 + "\n".join(f"- **{c.label}:** {c.excerpt[:160]}…" for c in citations[:3])
             )
-        return _commit_answer(
+        await _delta(content)
+        committed = _commit_answer(
             current,
             content=content,
             citations=citations if chunks else [],
             prompt_tokens=prompt_tokens,
         )
+        await _stage("summarising", "done")
+        return committed
 
     try:
         content = await _policy_answer(messages, settings=settings)
@@ -350,13 +384,16 @@ async def summarize_node(state: GraphState, *, settings: Settings) -> GraphState
     except OpenRouterError as exc:
         content = f"The language model is temporarily unavailable ({exc}). Please try again."
         kept_citations = []
+        await _delta(content)
 
-    return _commit_answer(
+    committed = _commit_answer(
         current,
         content=content,
         citations=kept_citations,
         prompt_tokens=prompt_tokens,
     )
+    await _stage("summarising", "done")
+    return committed
 
 
 async def _policy_json(
@@ -389,15 +426,33 @@ async def _policy_answer(
     *,
     settings: Settings,
 ) -> str:
-    """Flag off calls the legacy client with the same arguments as before."""
-    if not gateway_enabled("policy_chat", settings):
-        return await chat_completion(messages, settings=settings, temperature=0.2)
-    result = await complete(
-        "policy_chat.answer",
-        messages,
-        ctx=CallContext(feature="policy_chat", settings=settings),
-    )
-    return result.text
+    """Flag off calls the legacy client with the same arguments as before.
+
+    A stream hook yields provider deltas through ``complete_stream``. The
+    one-shot route leaves the hook unset and still buffers one completion.
+    """
+    events = current_policy_events()
+    if gateway_enabled("policy_chat", settings):
+        ctx = CallContext(feature="policy_chat", settings=settings)
+        if events is None:
+            result = await complete("policy_chat.answer", messages, ctx=ctx)
+            return result.text
+        hook = events
+
+        async def on_delta(text: str) -> None:
+            await hook.delta(text)
+
+        streamed = await complete_stream(
+            "policy_chat.answer",
+            messages,
+            ctx=ctx,
+            on_delta=on_delta,
+        )
+        return streamed.text
+    text = await chat_completion(messages, settings=settings, temperature=0.2)
+    if events is not None and text:
+        await events.delta(text)
+    return text
 
 
 def _commit_answer(

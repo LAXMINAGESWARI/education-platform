@@ -278,7 +278,6 @@ export type ProgressTable = { columns: string[]; rows: unknown[][] };
 export type TextToSqlFinal = {
   natural_answer: string;
   confidence: string | null;
-  provenance: string | null;
 };
 
 export type PolicyCitation = { id: string; label: string; excerpt: string };
@@ -451,12 +450,8 @@ function parseStageProgress(value: Record<string, unknown>): StageProgress | nul
 function parseFinal(value: Record<string, unknown>): TextToSqlFinal | PolicyChatFinal | null {
   if (typeof value.natural_answer === "string") {
     const confidence = value.confidence === null ? null : value.confidence;
-    const provenance = value.provenance === null ? null : value.provenance;
-    if (
-      (confidence === null || typeof confidence === "string") &&
-      (provenance === null || typeof provenance === "string")
-    ) {
-      return { natural_answer: value.natural_answer, confidence, provenance };
+    if (confidence === null || typeof confidence === "string") {
+      return { natural_answer: value.natural_answer, confidence };
     }
     return null;
   }

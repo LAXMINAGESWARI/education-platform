@@ -55,6 +55,11 @@ class PostMessageIn(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
 
 
+class StreamMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+    request_id: UUID
+
+
 class PostMessageOut(BaseModel):
     user_message: ChatMessageOut
     assistant_message: ChatMessageOut

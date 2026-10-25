@@ -324,7 +324,6 @@ describe("progress SSE client", () => {
     const finalEvent = parseProgressEvent("final", {
       natural_answer: "Four students",
       confidence: "high",
-      provenance: "roster",
     });
     expect(finalEvent?.event).toBe("final");
 

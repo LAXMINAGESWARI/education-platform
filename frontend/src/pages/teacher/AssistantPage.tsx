@@ -4,9 +4,6 @@ import { ProgressReconnectError } from "../../api/progress";
 import {
   emptyTextToSqlStageReport,
   noteTextToSqlStage,
-  terminalTextToSqlStageReport,
-  textToSqlStageVisuals,
-  type StageVisual,
   type TextToSqlStageReport,
 } from "../../api/stageOrder";
 import {
@@ -20,11 +17,21 @@ import {
 import { ApiError } from "../../api/types";
 import { Crumbs } from "../../components/Crumbs";
 import { claimHaptic, triggerHaptic } from "../../lib/haptics";
+import { prefersReducedMotion } from "../../lib/motionPrefs";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { ProgressReconnectStatus, ProgressStreamAlert } from "../../components/ProgressReconnect";
 import { PushButton } from "../../components/PushButton";
 
 type EntryStatus = "pending" | "done" | "refusal" | "error" | "cancelled";
+
+type EntrySeal =
+  | {
+      kind: "final";
+      answer: string;
+      confidence: Confidence | null;
+    }
+  | { kind: "refusal"; message: string }
+  | { kind: "error"; message: string };
 
 type ThreadEntry = {
   id: string;
@@ -34,14 +41,20 @@ type ThreadEntry = {
   transport: "stream" | "fallback";
   progress: TextToSqlProgress | null;
   stages: TextToSqlStageReport;
+  /** Running-stage lines, in the order they arrived. The thinking line plays these one at a time. */
+  phrases: string[];
+  /** Set when the stream has finished and the thinking line still has phrases left to show. */
+  seal: EntrySeal | null;
   answer: string;
   table?: TextToSqlTable;
   confidence?: Confidence | null;
-  provenance?: string | null;
   refusal?: string;
   error?: string;
   reconnecting: boolean;
 };
+
+/** How long each thinking line stays before the next one, or before the answer. */
+export const ASK_THINK_MS = 900;
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong — please try again.";
 
@@ -109,70 +122,62 @@ function isStreamMissing(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 404 || error.status === 405);
 }
 
-function showStageStepper(entry: ThreadEntry): boolean {
-  return entry.progress !== null || entry.stages.latest !== null;
-}
-
-function stagesAfterTerminal(
-  stages: TextToSqlStageReport,
-  kind: "final" | "refusal" | "error",
-): TextToSqlStageReport {
-  if (stages.latest !== null) return stages;
-  return terminalTextToSqlStageReport(kind === "final" ? "done" : "failed");
-}
-
-function stageVisualLabel(visual: StageVisual): string {
-  switch (visual) {
-    case "pending":
-      return "Pending";
-    case "current":
-      return "In progress";
-    case "complete":
-      return "Done";
-    case "failed":
-      return "Failed";
-    default: {
-      const _never: never = visual;
-      return _never;
-    }
-  }
-}
-
 function cellText(value: TextToSqlTable["rows"][number][number]): string {
   if (value === null) return "";
   return String(value);
 }
 
+function runningPhrase(progress: TextToSqlProgress): string | null {
+  if (progress.status !== "running") return null;
+  const spoken = progress.message?.trim();
+  if (spoken) return spoken;
+  return TEXT_TO_SQL_STAGE_LABEL[progress.stage];
+}
+
 function AskStageStepper({
-  progress,
-  stages,
+  phrases,
+  sealed,
+  onReveal,
 }: {
-  progress: TextToSqlProgress | null;
-  stages: TextToSqlStageReport;
+  phrases: readonly string[];
+  sealed: boolean;
+  onReveal: () => void;
 }) {
-  const steps = textToSqlStageVisuals(stages);
+  const revealRef = useRef(onReveal);
+  revealRef.current = onReveal;
+  const [cursor, setCursor] = useState(0);
+  const previousLength = useRef(0);
+  const reduce = prefersReducedMotion();
+  const last = phrases.length - 1;
+  const shownIndex = reduce ? Math.max(last, 0) : Math.min(cursor, Math.max(last, 0));
+  const shown = phrases[shownIndex] ?? "Thinking";
+
+  useEffect(() => {
+    if (phrases.length < previousLength.current) setCursor(0);
+    previousLength.current = phrases.length;
+  }, [phrases.length]);
+
+  useEffect(() => {
+    if (reduce || phrases.length === 0) {
+      if (sealed) revealRef.current();
+      return;
+    }
+    if (cursor < last) {
+      const timer = window.setTimeout(() => setCursor((value) => value + 1), ASK_THINK_MS);
+      return () => window.clearTimeout(timer);
+    }
+    if (!sealed) return;
+    const timer = window.setTimeout(() => revealRef.current(), ASK_THINK_MS);
+    return () => window.clearTimeout(timer);
+  }, [cursor, last, phrases.length, reduce, sealed]);
+
   return (
-    <div className="assistant-chat__stages">
-      <ol className="generation-stepper" aria-label="Answer progress">
-        {steps.map(({ stage, visual }) => (
-          <li
-            key={stage}
-            className={`generation-stepper__step is-${visual}`}
-            aria-current={visual === "current" ? "step" : undefined}
-          >
-            <span className="generation-stepper__label">{TEXT_TO_SQL_STAGE_LABEL[stage]}</span>
-            <span className="generation-stepper__state">{stageVisualLabel(visual)}</span>
-          </li>
-        ))}
-      </ol>
-      <p className="assistant-chat__stage-message" role="status" aria-live="polite" aria-atomic="true">
-        {progress?.message ? (
-          progress.message
-        ) : (
-          <span className="sr-only">Waiting for the next update</span>
-        )}
-      </p>
-    </div>
+    <p className="ask-think" role="status" aria-live="polite" aria-atomic="true">
+      <span className="ask-think__orb" aria-hidden="true" />
+      <span key={shown} className="ask-think__phrase">
+        {shown}
+      </span>
+    </p>
   );
 }
 
@@ -224,6 +229,8 @@ function emptyEntry(id: string, question: string): ThreadEntry {
     transport: "stream",
     progress: null,
     stages: emptyTextToSqlStageReport(),
+    phrases: [],
+    seal: null,
     answer: "",
     reconnecting: false,
   };
@@ -232,10 +239,11 @@ function emptyEntry(id: string, question: string): ThreadEntry {
 export function AssistantPage() {
   const [thread, setThread] = useState<ThreadEntry[]>([]);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const runAbort = useRef<AbortController | null>(null);
+  const revealed = useRef(new Set<string>());
+  const busy = thread.some((entry) => entry.status === "pending");
 
   useEffect(() => {
     scrollThreadToEnd(threadRef.current);
@@ -249,6 +257,47 @@ export function AssistantPage() {
 
   function patchEntry(id: string, update: (entry: ThreadEntry) => ThreadEntry) {
     setThread((prev) => prev.map((entry) => (entry.id === id ? update(entry) : entry)));
+  }
+
+  function reveal(entry: ThreadEntry) {
+    const seal = entry.seal;
+    if (!seal || revealed.current.has(entry.id)) return;
+    revealed.current.add(entry.id);
+    patchEntry(entry.id, (current) => {
+      if (current.status !== "pending") return current;
+      switch (seal.kind) {
+        case "final":
+          return {
+            ...current,
+            status: "done",
+            answer: seal.answer,
+            confidence: seal.confidence,
+            seal: null,
+            reconnecting: false,
+          };
+        case "refusal":
+          return {
+            ...current,
+            status: "refusal",
+            refusal: seal.message,
+            seal: null,
+            reconnecting: false,
+          };
+        case "error":
+          return {
+            ...current,
+            status: "error",
+            error: seal.message,
+            seal: null,
+            reconnecting: false,
+          };
+        default: {
+          const _never: never = seal;
+          return _never;
+        }
+      }
+    });
+    triggerHaptic(seal.kind === "error" ? "error" : "success");
   }
 
   function onPickSuggestion(event: ChangeEvent<HTMLSelectElement>) {
@@ -265,7 +314,7 @@ export function AssistantPage() {
     runAbort.current?.abort();
     const controller = new AbortController();
     runAbort.current = controller;
-    setBusy(true);
+    revealed.current.delete(id);
     patchEntry(id, (entry) => ({
       ...emptyEntry(id, entry.question),
       question: text,
@@ -277,11 +326,17 @@ export function AssistantPage() {
       const result = await askQuestionStream(text, {
         signal: controller.signal,
         onProgress: (progress) => {
-          patchEntry(id, (entry) => ({
-            ...entry,
-            progress,
-            stages: noteTextToSqlStage(entry.stages, progress),
-          }));
+          patchEntry(id, (entry) => {
+            const phrase = runningPhrase(progress);
+            const phrases =
+              phrase && entry.phrases.at(-1) !== phrase ? [...entry.phrases, phrase] : entry.phrases;
+            return {
+              ...entry,
+              progress,
+              stages: noteTextToSqlStage(entry.stages, progress),
+              phrases,
+            };
+          });
         },
         onAnswerReset: () => {
           patchEntry(id, (entry) => ({
@@ -290,6 +345,8 @@ export function AssistantPage() {
             table: undefined,
             progress: null,
             stages: emptyTextToSqlStageReport(),
+            phrases: [],
+            seal: null,
           }));
         },
         onAnswerDelta: (delta) => {
@@ -310,34 +367,27 @@ export function AssistantPage() {
         case "final":
           patchEntry(id, (entry) => ({
             ...entry,
-            status: "done",
-            answer: result.answer.natural_answer,
-            confidence: result.answer.confidence,
-            provenance: result.answer.provenance,
-            stages: stagesAfterTerminal(entry.stages, "final"),
+            seal: {
+              kind: "final",
+              answer: result.answer.natural_answer,
+              confidence: result.answer.confidence,
+            },
             reconnecting: false,
           }));
-          triggerHaptic("success");
           break;
         case "refusal":
           patchEntry(id, (entry) => ({
             ...entry,
-            status: "refusal",
-            refusal: result.message,
-            stages: stagesAfterTerminal(entry.stages, "refusal"),
+            seal: { kind: "refusal", message: result.message },
             reconnecting: false,
           }));
-          triggerHaptic("success");
           break;
         case "error":
           patchEntry(id, (entry) => ({
             ...entry,
-            status: "error",
-            error: result.message,
-            stages: stagesAfterTerminal(entry.stages, "error"),
+            seal: { kind: "error", message: result.message },
             reconnecting: false,
           }));
-          triggerHaptic("error");
           break;
         default: {
           const _never: never = result;
@@ -362,7 +412,6 @@ export function AssistantPage() {
             status: "done",
             answer: fallback.natural_answer,
             confidence: fallback.confidence,
-            provenance: fallback.provenance,
             progress: null,
             stages: emptyTextToSqlStageReport(),
             reconnecting: false,
@@ -389,10 +438,6 @@ export function AssistantPage() {
         error: message,
         reconnecting: false,
       }));
-    } finally {
-      if (runAbort.current === controller) {
-        setBusy(false);
-      }
     }
   }
 
@@ -409,7 +454,6 @@ export function AssistantPage() {
 
   function onCancel() {
     runAbort.current?.abort();
-    setBusy(false);
     setThread((prev) =>
       prev.map((entry) =>
         entry.status === "pending" ? { ...entry, status: "cancelled", reconnecting: false } : entry,
@@ -448,18 +492,24 @@ export function AssistantPage() {
             {entry.status === "pending" && entry.transport === "stream" && (
               <div className="assistant-chat__live" aria-label="Assistant">
                 <ProgressReconnectStatus active={entry.reconnecting} />
-                <AskStageStepper progress={entry.progress} stages={entry.stages} />
+                <AskStageStepper
+                  phrases={entry.phrases}
+                  sealed={entry.seal !== null}
+                  onReveal={() => reveal(entry)}
+                />
                 {entry.answer ? (
                   <p className="assistant-chat__body" aria-live="polite">
                     {entry.answer}
                   </p>
                 ) : null}
                 {entry.table ? <ResultTable table={entry.table} /> : null}
-                <div className="assistant-chat__actions">
-                  <PushButton type="button" size="sm" onClick={onCancel}>
-                    Cancel
-                  </PushButton>
-                </div>
+                {entry.seal === null && (
+                  <div className="assistant-chat__actions">
+                    <PushButton type="button" size="sm" onClick={onCancel}>
+                      Cancel
+                    </PushButton>
+                  </div>
+                )}
               </div>
             )}
             {entry.status === "done" && (
@@ -467,9 +517,6 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {showStageStepper(entry) ? (
-                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
-                ) : null}
                 {entry.table ? <ResultTable table={entry.table} /> : null}
                 <div aria-live="polite">
                   <MarkdownContent className="assistant-chat__body markdown">
@@ -477,9 +524,6 @@ export function AssistantPage() {
                   </MarkdownContent>
                 </div>
                 <ConfidenceBadge confidence={entry.confidence} />
-                {entry.provenance ? (
-                  <p className="assistant-chat__provenance">{entry.provenance}</p>
-                ) : null}
               </div>
             )}
             {entry.status === "refusal" && (
@@ -487,9 +531,6 @@ export function AssistantPage() {
                 className="assistant-chat__bubble assistant-chat__bubble--assistant"
                 aria-label="Assistant"
               >
-                {showStageStepper(entry) ? (
-                  <AskStageStepper progress={entry.progress} stages={entry.stages} />
-                ) : null}
                 <p className="assistant-chat__body" role="status">
                   {entry.refusal}
                 </p>

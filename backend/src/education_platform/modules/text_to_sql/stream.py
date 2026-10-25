@@ -122,16 +122,13 @@ class _Encoder:
             return
         await self._queue.put(encode_event("answer_delta", {"text": text}))
 
-    async def final(
-        self, natural_answer: str, confidence: str | None, provenance: str | None
-    ) -> None:
+    async def final(self, natural_answer: str, confidence: str | None) -> None:
         if self._closed:
             return
         self._closed = True
         payload = {
             "natural_answer": natural_answer,
             "confidence": confidence,
-            "provenance": provenance,
         }
         await self._terminal("final", payload, close=True)
         await self._queue.put(encode_event("final", payload))

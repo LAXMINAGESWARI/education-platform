@@ -5,7 +5,7 @@ import {
   deleteChat,
   getChat,
   listChats,
-  postChatMessage,
+  postChatMessageStream,
   type ChatCitation,
   type ChatMessage,
   type ContextUsage,
@@ -17,6 +17,12 @@ import { MarkdownContent } from "../../components/MarkdownContent";
 import { PushButton } from "../../components/PushButton";
 
 const COMPACT_CHAT_QUERY = "(max-width: 860px)";
+
+const POLICY_STAGE_PHRASE: Record<string, string> = {
+  checking: "Checking your question",
+  searching: "Searching policy documents",
+  summarising: "Writing the answer",
+};
 
 function prefersCompactChats(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
@@ -147,6 +153,8 @@ export function PolicyChatPage() {
   const [context, setContext] = useState<ContextUsage>(emptyContext());
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [think, setThink] = useState<string | null>(null);
+  const [draftAnswer, setDraftAnswer] = useState("");
   const [loadingList, setLoadingList] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const compact = useCompactChats();
@@ -198,7 +206,7 @@ export function PolicyChatPage() {
 
   useEffect(() => {
     scrollThreadToEnd(threadRef.current);
-  }, [messages, busy]);
+  }, [messages, busy, think, draftAnswer]);
 
   useEffect(() => {
     if (compact && !wasCompact.current) setSidebarCollapsed(true);
@@ -264,6 +272,8 @@ export function PolicyChatPage() {
     setDraft("");
     setBusy(true);
     setError(null);
+    setThink("Checking your question");
+    setDraftAnswer("");
     const optimistic: ChatMessage = {
       id: `local-${Date.now()}`,
       role: "user",
@@ -273,12 +283,33 @@ export function PolicyChatPage() {
     setMessages((prev) => [...prev, optimistic]);
 
     try {
-      const result = await postChatMessage(activeId, text);
+      const result = await postChatMessageStream(activeId, text, {
+        onProgress: (progress) => {
+          if (progress.status !== "running") return;
+          const phrase = progress.message ?? POLICY_STAGE_PHRASE[progress.stage];
+          if (phrase) setThink(phrase);
+        },
+        onAnswerDelta: (delta) => setDraftAnswer((prev) => prev + delta),
+        onAnswerReset: () => setDraftAnswer(""),
+      });
+      if (result.kind === "error") {
+        triggerHaptic("error");
+        setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+        setError(result.message);
+        return;
+      }
+      const saved = result.kind === "final" ? result.message : result.saved;
+      if (!saved) {
+        triggerHaptic("error");
+        setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+        setError(result.message);
+        return;
+      }
       setMessages((prev) => {
         const withoutOptimistic = prev.filter((m) => m.id !== optimistic.id);
-        return [...withoutOptimistic, result.user_message, result.assistant_message];
+        return [...withoutOptimistic, saved.user_message, saved.assistant_message];
       });
-      setContext(result.context);
+      setContext(saved.context);
       await refreshList();
       triggerHaptic("success");
     } catch (err) {
@@ -287,6 +318,8 @@ export function PolicyChatPage() {
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
       setBusy(false);
+      setThink(null);
+      setDraftAnswer("");
     }
   }
 
@@ -396,11 +429,22 @@ export function PolicyChatPage() {
                 )}
               </article>
             ))}
-            {busy && (
-              <p className="policy-chat__typing muted" role="status">
-                Running safety checks and retrieval…
+            {busy && think ? (
+              <p className="ask-think" role="status">
+                <span className="ask-think__orb" aria-hidden="true" />
+                <span className="ask-think__phrase" key={think}>
+                  {think}
+                </span>
               </p>
-            )}
+            ) : null}
+            {busy && draftAnswer ? (
+              <article
+                className="policy-chat__bubble policy-chat__bubble--assistant"
+                aria-label="Assistant"
+              >
+                <MarkdownContent className="policy-chat__body markdown">{draftAnswer}</MarkdownContent>
+              </article>
+            ) : null}
           </div>
 
           <form className="policy-chat__composer" onSubmit={(e) => void onSubmit(e)}>

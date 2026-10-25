@@ -12,7 +12,6 @@ export type Confidence = "high" | "medium" | "low";
 export type AskResponse = {
   natural_answer: string;
   confidence: Confidence | null;
-  provenance: string | null;
 };
 
 /**
@@ -147,14 +146,9 @@ function parseFinal(data: string): AskResponse {
   if (typeof payload.natural_answer !== "string") {
     throw new SyntaxError("Final frame had no natural_answer");
   }
-  const provenance = payload.provenance;
-  if (provenance !== null && typeof provenance !== "string") {
-    throw new SyntaxError("Final frame provenance was not a string or null");
-  }
   return {
     natural_answer: payload.natural_answer,
     confidence: parseConfidence(payload.confidence),
-    provenance,
   };
 }
 

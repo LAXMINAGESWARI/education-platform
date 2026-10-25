@@ -17,7 +17,7 @@ does not reuse the progress subject's snapshot/`Last-Event-ID` replay. An ask
 stores its own row, described under Reconnect.
 
 `POST /text-to-sql/ask` is unchanged: teacher role, `AskIn` (`question` only), and
-the three-field `AskOut` (`natural_answer`, `confidence`, `provenance`). Streaming
+the two-field `AskOut` (`natural_answer`, `confidence`). Streaming
 is a separate endpoint and runs only when `TEXT_TO_SQL_PIPELINE` is `lean`. When
 the flag is `legacy`, `POST /text-to-sql/ask/stream` returns 404 with a detail
 that names `POST /api/v1/text-to-sql/ask`, and the client uses that endpoint.
@@ -99,14 +99,14 @@ column order, already coerced to JSON scalars.
 
 ### `final`
 
-The same three fields as `AskOut`, so the client can render the stream the same
-way as `/ask`.
+The same two fields as `AskOut`, so the client can render the stream the same
+way as `/ask`. Table names are not included.
 
 ```json
-{"natural_answer": "...", "confidence": "high", "provenance": "Queried: student_profiles."}
+{"natural_answer": "...", "confidence": "high"}
 ```
 
-`confidence` and `provenance` are JSON `null` when `/ask` would return null.
+`confidence` is JSON `null` when `/ask` would return null.
 
 ### `refusal`
 
@@ -195,10 +195,8 @@ by filtering a free-form payload.
   service result in place of `execute_sql`. An audit write failure emits one
   `error` and no data frame.
 - No guard probability, no `INJECTION_BLOCKED` / `OFF_TOPIC_REJECTED` / other
-  category names, no raw SQL, and no template name appear in any frame. `/ask`
-  does not return SQL, and this stream matches that.
-- `provenance` on `final` may name tables, because `AskOut.provenance` already
-  does, and only after the checks above.
+  category names, no raw SQL, no template name, and no queried-table line appear
+  in any frame. `/ask` does not return SQL, and this stream matches that.
 
 ## Reconnect
 
@@ -254,13 +252,14 @@ end, with the same `UsageRecord` shape as `complete`. Each delta is one
 
 ## Policy chat
 
-Not implemented here. The same frame family fits; the text-to-SQL stage enum
-does not. A policy stream would set `kind` to the policy value from
-`progress-events.md` and use stages `checking` (injection and scope),
-`searching` (retrieval, no model), and `summarising` (the answer). `answer_delta`
-fits the GPT answer. `final` would be the policy message (content and citations),
-not `AskOut`. `table` does not apply. `refusal`, `error`, and the 15 s heartbeat
-do. The follow-up is a `POST` stream beside `POST /chats/{id}/messages` that
-maps those nodes onto that stage enum and streams `policy_chat.answer` through
-the same gateway stream variant. It should share the encoder and heartbeat, and
-it should not reuse `writing_query`, `validating`, or `running`.
+`POST /api/v1/chats/{conversation_id}/messages/stream` takes
+`{ "content", "request_id" }` and streams the policy graph. `kind` is
+`policy_chat`. Stages are `checking` (injection and scope), `searching`
+(retrieval, no model), and `summarising` (the answer). `answer_delta` is the
+answer text. `final` is `{ "content", "citations" }` plus the saved user
+message, assistant message, and context. `table` is not emitted. `refusal`,
+`error`, and the 15 s heartbeat are. A repeat POST with the same `request_id`
+replays the saved turn and does not insert another message. The text-to-SQL
+stages `writing_query`, `validating`, and `running` are not used. The answer
+step calls `complete_stream` for `policy_chat.answer` when the gateway is on.
+The frame encoder and heartbeat are the text-to-SQL ones.
