@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Data Note</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm 15mm;
+    @bottom-left {
+      content: "CurioEd  ·  Data Note";
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif", "Times New Roman", serif;
+    color: #1a2332;
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+  body.compact {
+    font-size: 10pt;
+    line-height: 1.32;
+  }
+  .cover {
+    border-top: 8px solid #1e3a5f;
+    padding-top: 14px;
+    margin-bottom: 18px;
+  }
+  .kicker {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c6b7a;
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-weight: 650;
+    font-size: 22pt;
+    line-height: 1.15;
+    color: #1e3a5f;
+    margin: 0 0 10px;
+  }
+  .deck {
+    font-size: 12pt;
+    margin: 0 0 8px;
+  }
+  body.compact .deck { font-size: 10.5pt; }
+  .meta {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    color: #1e3a5f;
+    margin: 0;
+  }
+  h2 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 13.5pt;
+    color: #1e3a5f;
+    margin: 18px 0 6px;
+    line-height: 1.25;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 11.5pt;
+    color: #1e3a5f;
+    margin: 12px 0 4px;
+    page-break-after: avoid;
+  }
+  body.compact h2 { margin-top: 11px; font-size: 12pt; }
+  body.compact h3 { margin-top: 8px; }
+  p { margin: 0 0 8px; orphans: 3; widows: 3; }
+  ul, ol { margin: 0 0 8px; padding-left: 1.2em; }
+  li { margin: 0 0 3px; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0 10px;
+    page-break-inside: avoid;
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 8.7pt;
+    line-height: 1.3;
+  }
+  body.compact table { font-size: 8pt; margin: 4px 0 6px; }
+  th {
+    background: #1e3a5f;
+    color: white;
+    text-align: left;
+    font-weight: 600;
+    padding: 5px 6px;
+    vertical-align: top;
+  }
+  td {
+    border-bottom: 1px solid #d5dde6;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f4f7fb; }
+  table.sig td { height: 46px; }
+  table.sig td.sign { background: white; }
+  aside {
+    border-left: 3px solid #1e3a5f;
+    padding: 4px 10px;
+    margin: 0 0 8px;
+    color: #1a2332;
+  }
+  .break { page-break-before: always; }
+</style>
+</head>
+<body class="compact">
+<header class='cover'><p class='kicker'>CurioEd · group submission · 25 October 2026</p><h1>Data Note</h1><p class='deck'>One page. The school behind every mark in CurioEd is generated. No row is a real pupil.</p><p class='meta'>https://github.com/aushakanuj/education-platform</p></header><p>CurioEd did not receive an extract of real students. The generator module states that CBT provided no pupil records, and the early-warning design note records that the sponsor could not confirm historical outcome cohorts. Marks, attendance, names, and classes are produced by education_platform.modules.synthetic from a fixed seed. The same command rebuilds the same school. This note is the data statement for that school and for the rules that read it.</p><table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody><tr><td>Institution name in the demo</td><td>Al Noor International</td></tr><tr><td>Grades</td><td>6, 7, 8, 9, 10</td></tr><tr><td>Sections and students</td><td>2 sections per grade, 24 students per section, 240 students</td></tr><tr><td>Subjects</td><td>Mathematics, Science, English, Arabic, Social Studies</td></tr><tr><td>Quizzes and term</td><td>5 quizzes per subject, 10 term weeks</td></tr><tr><td>Seed</td><td>20260812</td></tr><tr><td>Demo password</td><td>demo1234, a local fixture, not a production secret</td></tr><tr><td>Generator</td><td>backend/: uv run python -m education_platform.modules.synthetic.cli</td></tr></tbody></table><p>Three shapes are planted on purpose, because a uniform random school makes every rule look the same. Aisha Rahman (S-00097, Grade 8) declines in mathematics: scores 74, 65, 56, 47, 38, mastery 56%, attendance rate 62%, other subjects recorded in the design note between 61% and 77%. Every 17th student has attendance at 70% and marks that are not low. Two sections of one subject differ on a mathematics topic, so a section gap is real and is not collapsed into a single cohort flag.</p><p>Rules, recorded with their calibration in modules/at_risk/engine.py: mastery below 60% (synthetic mean mastery 71.3%, SD 8.5; about 11.5% of student–subject rows); a drop of more than 15 points from earlier attempts to the latest three (about 2.9% of groups with history); attendance below 80% (the gap between a 70% cluster and the next mass at 86%). Exact hits on 60, 15, and 80 do not flag. A subject flag and an attendance flag are separate objects. These cuts describe this generated school only.</p><p>The data can show that those planted cases fire the intended drivers, and that a teacher and an administrator do not see the same rows. It cannot support a prediction about a real child, a trained model, or a comparison with a live school. Do not treat Al Noor International as a real institution. Policy: docs/design/08-at-risk-early-warning.md.</p>
+</body>
+</html>

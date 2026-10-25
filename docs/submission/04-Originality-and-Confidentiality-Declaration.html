@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Originality and Confidentiality Declaration</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm 15mm;
+    @bottom-left {
+      content: "CurioEd  ·  Originality and Confidentiality Declaration";
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: "Inter", "Noto Sans", sans-serif;
+      font-size: 8.5pt;
+      color: #5c6b7a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif", "Times New Roman", serif;
+    color: #1a2332;
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+  body.compact {
+    font-size: 10pt;
+    line-height: 1.32;
+  }
+  .cover {
+    border-top: 8px solid #1e3a5f;
+    padding-top: 14px;
+    margin-bottom: 18px;
+  }
+  .kicker {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c6b7a;
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-weight: 650;
+    font-size: 22pt;
+    line-height: 1.15;
+    color: #1e3a5f;
+    margin: 0 0 10px;
+  }
+  .deck {
+    font-size: 12pt;
+    margin: 0 0 8px;
+  }
+  body.compact .deck { font-size: 10.5pt; }
+  .meta {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    color: #1e3a5f;
+    margin: 0;
+  }
+  h2 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 13.5pt;
+    color: #1e3a5f;
+    margin: 18px 0 6px;
+    line-height: 1.25;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 11.5pt;
+    color: #1e3a5f;
+    margin: 12px 0 4px;
+    page-break-after: avoid;
+  }
+  body.compact h2 { margin-top: 11px; font-size: 12pt; }
+  body.compact h3 { margin-top: 8px; }
+  p { margin: 0 0 8px; orphans: 3; widows: 3; }
+  ul, ol { margin: 0 0 8px; padding-left: 1.2em; }
+  li { margin: 0 0 3px; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0 10px;
+    page-break-inside: avoid;
+    font-family: "Inter", "Noto Sans", sans-serif;
+    font-size: 8.7pt;
+    line-height: 1.3;
+  }
+  body.compact table { font-size: 8pt; margin: 4px 0 6px; }
+  th {
+    background: #1e3a5f;
+    color: white;
+    text-align: left;
+    font-weight: 600;
+    padding: 5px 6px;
+    vertical-align: top;
+  }
+  td {
+    border-bottom: 1px solid #d5dde6;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f4f7fb; }
+  table.sig td { height: 46px; }
+  table.sig td.sign { background: white; }
+  aside {
+    border-left: 3px solid #1e3a5f;
+    padding: 4px 10px;
+    margin: 0 0 8px;
+    color: #1a2332;
+  }
+  .break { page-break-before: always; }
+</style>
+</head>
+<body class="regular">
+<header class='cover'><p class='kicker'>CurioEd · group submission · 25 October 2026</p><h1>Originality and Confidentiality Declaration</h1><p class='deck'>The text is the group&#x27;s statement. It takes effect when the submitting members sign.</p><p class='meta'>https://github.com/aushakanuj/education-platform</p></header><h2>1. Originality</h2><p>By signing, each person confirms that their contribution to CurioEd, and to this Submission Package, is their own work or the joint work of this group, except for the third-party components named below. The group is not submitting this project for assessment in another course under a different description of authorship. Where a person reused their own earlier notes, they can say so in the margin before signing.</p><h2>2. Third-party software</h2><p>The platform is built on software the group did not write. That software stays under its own licences. The lockfiles are the list: backend/uv.lock and frontend/package.json (and the frontend lockfile). Major pieces include Python, FastAPI, SQLAlchemy, PostgreSQL with pgvector, LangGraph, React, and Vite. The group claims the application code, the curriculum markdown it authored, the design notes, the tests, and this narrative. The group does not claim those libraries.</p><h2>3. No real pupil records</h2><p>The school called Al Noor International is synthetic. Names are drawn from lists in the generator. Marks and attendance are computed from seed 20260812. Nothing in the database is a record of a living child, and this package does not attach one. Demo accounts and the password demo1234 are local fixtures, documented in the repository README, for a database the group generates itself.</p><h2>4. Confidentiality</h2><p>Signing members will keep the following out of the upload and out of any public copy they do not intend to publish:</p><ul><li>API keys, including any OPENROUTER_API_KEY. Keys live in uncommitted environment files.</li><li>Passwords other than the documented demo fixture.</li><li>Any pupil, parent, or staff record from a real school, should one ever be received. None is in this package.</li><li>Sponsor material the sponsor has not agreed to include. The minutes name Lakshmi&#x27;s feedback in summary. They do not attach a sponsor document.</li></ul><p>Results from the synthetic school will be described as results from the synthetic school. They will not be presented as measurements of a real cohort.</p><h2>5. Drafting assistance</h2><p>The narrative documents in this package (the report, this declaration, the form, the data note, the plain-language summary, the repository note, and the checklist) were drafted with Cursor, an AI coding assistant, from the group&#x27;s repository: code, tests, and design notes. No AI system is an author. Each signatory is responsible for the accuracy of the text they sign. If a statement disagrees with the code, the code is the record and the text should be corrected before upload.</p><h2>6. One group submission</h2><p>The group submits one package. The uploading member is named on the Assignment Submission Form. Signing here means the person has had the chance to read the report, the data note, and this declaration, and agrees to be named as a member of the group that submits them.</p><h2>7. Signatures</h2><p>Sign in ink or with a proper digital signature. A typed name with no signature is not a signature. Leave unused rows blank rather than signing for someone else. Add a row for any submitting member who is not listed. The minutes name tanmay with no surname; add that row if they are a submitting member.</p><table class='sig'><thead><tr><th>Name</th><th>Signature</th><th>Date</th></tr></thead><tbody><tr><td>Aushak Anuj Dendukuri</td><td class='sign'></td><td class='sign'></td></tr><tr><td>Pranit Daggupati</td><td class='sign'></td><td class='sign'></td></tr><tr><td>Suparna Dhumale</td><td class='sign'></td><td class='sign'></td></tr><tr><td>Rahul Vamshikanth Gunda</td><td class='sign'></td><td class='sign'></td></tr><tr><td>Arathe Sankar</td><td class='sign'></td><td class='sign'></td></tr><tr><td>Additional member (name in full)</td><td class='sign'></td><td class='sign'></td></tr></tbody></table><p>Document prepared 25 October 2026.</p>
+</body>
+</html>
