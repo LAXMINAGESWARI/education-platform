@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import errno
+import contextlib
 import fcntl
 import hashlib
 import os
 import re
+import shutil
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,7 @@ from alembic.config import Config
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
@@ -63,6 +63,8 @@ _WORKER_DATABASE_URL: str | None = None
 _CLONE_WAIT_SECONDS = 60
 _CLONED_TEMPLATE_URL: str | None = None
 _CLONED_WORKER_DB: str | None = None
+# Held until session end so a concurrent run sees this clone in pg_stat_activity.
+_CLONE_KEEPALIVE: tuple[Engine, Connection] | None = None
 
 
 def _load_ml_test_files() -> frozenset[str]:
@@ -111,15 +113,15 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Drop this worker's cloned database and its ready marker.
+    """Drop this worker's cloned database, then let the last finisher remove the run dir.
 
-    Idle workers clone during collection and never run the session fixture, so
-    cleanup lives here. The run directory is removed only after its last marker is gone.
+    Ready markers stay in place for the whole run. Unlinking one as soon as that
+    worker finished made a slower worker time out, so this reverses that cleanup.
     """
     del session, exitstatus
     if os.environ.get("PYTEST_XDIST_WORKER") and _CLONED_WORKER_DB is not None:
         _drop_cloned_database()
-        _remove_run_ready_dir()
+        _finish_run_directory()
 
 
 def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -266,13 +268,27 @@ def _clone_from_template(base_url: str, template: str, worker_db: str) -> None:
         admin.dispose()
 
 
+def _ready_marker_names(ready_dir: Path) -> set[str]:
+    """Names of this run's worker markers. Subdirectories such as ``finished`` are ignored."""
+    if not ready_dir.is_dir():
+        return set()
+    return {path.name for path in ready_dir.glob("gw*") if path.is_file()}
+
+
 def _wait_for_worker_clones(ready_dir: Path, worker_count: int) -> None:
+    """Return once ``worker_count`` markers have been seen.
+
+    A marker stays counted after it is first observed. A later deletion, including
+    removal of the whole directory, does not make this worker wait again.
+    """
+    seen: set[str] = set()
     deadline = time.monotonic() + _CLONE_WAIT_SECONDS
     while time.monotonic() < deadline:
-        if len(list(ready_dir.glob("gw*"))) >= worker_count:
+        seen.update(_ready_marker_names(ready_dir))
+        if len(seen) >= worker_count:
             return
         time.sleep(0.05)
-    ready = sorted(path.name for path in ready_dir.glob("gw*"))
+    ready = sorted(seen)
     pytest.fail(
         f"Timed out waiting for {worker_count} xdist workers to clone databases. "
         f"Ready: {ready or 'none'}."
@@ -297,8 +313,24 @@ def _remember_clone(base_url: str, worker_db: str) -> None:
     _CLONED_WORKER_DB = worker_db
 
 
+def _close_clone_keepalive() -> None:
+    """Release the connection that told other runs this clone is in use."""
+    global _CLONE_KEEPALIVE
+    held = _CLONE_KEEPALIVE
+    _CLONE_KEEPALIVE = None
+    if held is None:
+        return
+    engine, connection = held
+    try:
+        connection.close()
+    finally:
+        engine.dispose()
+
+
 def _drop_cloned_database() -> None:
     """Drop the clone recorded for this process. Failures here must not hide test results."""
+    with contextlib.suppress(Exception):
+        _close_clone_keepalive()
     if _CLONED_TEMPLATE_URL is None or _CLONED_WORKER_DB is None:
         return
     template = make_url(_CLONED_TEMPLATE_URL).database
@@ -326,27 +358,213 @@ def _drop_cloned_database() -> None:
         admin.dispose()
 
 
-def _remove_run_ready_dir() -> None:
-    """Unlink this worker's marker, then remove the run directory if it is empty."""
+def _current_ready_dir() -> Path:
+    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
+    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
+    return Path("/tmp") / f"curioed-xdist-{safe_run}"
+
+
+def _run_token(run_id: str | None = None) -> str:
+    """First eight alphanumeric characters of this xdist session id.
+
+    ``PYTEST_XDIST_TESTRUNUID`` is a unique id per pytest process. Eight
+    characters keep ``<template>_<token>_gwN`` inside Postgres' 63-byte name
+    limit. Two sessions that collide on those eight characters would share
+    clone names; xdist's id is a random hex string, so that is not a practical
+    concern for local runs.
+    """
+    if run_id is None:
+        run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
+    alnum = re.sub(r"[^A-Za-z0-9]", "", run_id) or "local"
+    return alnum[:8]
+
+
+def _worker_database_name(template: str, worker: str, run_token: str | None = None) -> str:
+    """``<template>_<runid8>_gwN`` for this session."""
+    token = _run_token() if run_token is None else run_token
+    return f"{template}_{token}_{worker}"
+
+
+def _clone_identity(name: str, template: str) -> tuple[str, str] | None:
+    """Return ``(run_token, worker)`` for a clone of ``template``.
+
+    Old ``<template>_gwN`` clones, from before run ids were part of the name,
+    use an empty run token. The template database itself is not a clone.
+    """
+    prefix = f"{template}_"
+    if not name.startswith(prefix):
+        return None
+    rest = name[len(prefix) :]
+    old = re.fullmatch(r"(gw\d+)", rest)
+    if old:
+        return ("", old.group(1))
+    new = re.fullmatch(r"([A-Za-z0-9]{1,8})_(gw\d+)", rest)
+    if new:
+        return (new.group(1), new.group(2))
+    return None
+
+
+def _should_drop_worker_database(
+    name: str, template: str, current_token: str, busy: set[str]
+) -> bool:
+    """True for a leftover clone this run may drop.
+
+    The current session's clones are never dropped here. Another session's
+    clones, and old ``<template>_gwN`` names, are dropped only when
+    ``pg_stat_activity`` has no session on them (``name`` not in ``busy``).
+    A connected database may belong to a run that is still executing.
+    """
+    identity = _clone_identity(name, template)
+    if identity is None:
+        return False
+    token, _worker = identity
+    if token and token == current_token:
+        return False
+    return name not in busy
+
+
+def _marker_dir_token(path: Path) -> str:
+    suffix = path.name.removeprefix("curioed-xdist-")
+    return _run_token(suffix)
+
+
+def _remove_other_marker_dirs(
+    current: Path,
+    busy_tokens: set[str] | None = None,
+    root: Path = Path("/tmp"),
+) -> None:
+    """Delete leftover marker directories. A missing directory is left alone.
+
+    Directories whose run id still has a connected clone are kept, so a second
+    pytest on this machine does not remove the first run's barrier.
+    """
+    if not root.is_dir():
+        return
+    live = busy_tokens or set()
+    current_resolved = current.resolve()
+    for path in root.glob("curioed-xdist-*"):
+        if not path.is_dir():
+            continue
+        if path.resolve() == current_resolved:
+            continue
+        if _marker_dir_token(path) in live:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _busy_database_names(conn: Connection) -> set[str]:
+    rows = conn.execute(text("SELECT datname FROM pg_stat_activity WHERE datname IS NOT NULL"))
+    return {row[0] for row in rows if row[0]}
+
+
+def _drop_stale_worker_databases(base_url: str, template: str) -> set[str]:
+    """Drop idle clones left by other runs. Return run tokens that are still connected.
+
+    Missing databases are fine. A clone with a live session is not stale, and
+    neither is a clone whose run id is this session.
+    """
+    admin_url = to_sync_url(
+        make_url(base_url).set(database="postgres").render_as_string(hide_password=False)
+    )
+    admin = create_engine(
+        admin_url,
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+        connect_args=sync_connect_args(),
+    )
+    try:
+        with admin.connect() as conn:
+            busy = _busy_database_names(conn)
+            current = _run_token()
+            names = [
+                row[0]
+                for row in conn.execute(text("SELECT datname FROM pg_database"))
+                if _should_drop_worker_database(row[0], template, current, busy)
+            ]
+            for name in names:
+                quoted = _quote_db(name)
+                conn.execute(text(f"DROP DATABASE IF EXISTS {quoted} WITH (FORCE)"))
+            busy_tokens: set[str] = set()
+            for name in busy:
+                identity = _clone_identity(name, template)
+                if identity is not None and identity[0]:
+                    busy_tokens.add(identity[0])
+            return busy_tokens
+    finally:
+        admin.dispose()
+
+
+def _sweep_stale_xdist_state(base_url: str, template: str, ready_dir: Path) -> None:
+    """One worker per run clears idle clones from other sessions before cloning.
+
+    See ``_clone_worker_database`` for how concurrent runs stay isolated.
+    """
+    flag = ready_dir / ".cleanup-done"
+    if flag.is_file():
+        return
+    busy_tokens = _drop_stale_worker_databases(base_url, template)
+    _remove_other_marker_dirs(ready_dir, busy_tokens)
+    ready_dir.mkdir(parents=True, exist_ok=True)
+    flag.write_text("done", encoding="utf-8")
+
+
+def _finish_run_directory() -> None:
+    """Record that this worker is done. The last one removes the whole marker directory.
+
+    Individual ready markers are not unlinked. A slower worker can still see every
+    marker it already counted, and any it has not counted yet.
+    """
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
         return
-    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
-    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
-    ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
-    with suppress(FileNotFoundError):
-        (ready_dir / worker).unlink()
+    ready_dir = _current_ready_dir()
+    finished = ready_dir / "finished"
     try:
-        ready_dir.rmdir()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        if exc.errno != errno.ENOTEMPTY:
-            raise
+        finished.mkdir(parents=True, exist_ok=True)
+        (finished / worker).write_text("done", encoding="utf-8")
+        done = [path for path in finished.glob("gw*") if path.is_file()]
+    except OSError:
+        return
+    worker_count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+    if len(done) >= worker_count:
+        shutil.rmtree(ready_dir, ignore_errors=True)
+
+
+def _hold_clone_connection(worker_url: str) -> None:
+    """Keep one autocommit session open so other runs can see this clone is live."""
+    global _CLONE_KEEPALIVE
+    sync_url = to_sync_url(worker_url)
+    engine = create_engine(
+        sync_url,
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+        connect_args=sync_connect_args(),
+    )
+    connection = engine.connect()
+    try:
+        connection.execute(text("SELECT 1"))
+    except Exception:
+        connection.close()
+        engine.dispose()
+        raise
+    _CLONE_KEEPALIVE = (engine, connection)
 
 
 def _clone_worker_database(base_url: str, worker: str) -> str:
     """Migrate the shared test database once, then give this worker its own copy.
+
+    The clone is named ``<template>_<runid8>_gwN``. ``runid8`` comes from
+    ``PYTEST_XDIST_TESTRUNUID``, so two pytest-xdist sessions on one Postgres
+    do not share clone names.
+
+    Before the first clone, this run drops leftover databases whose run id is
+    not the current one: old ``<template>_gwN`` names, and
+    ``<template>_<other-run>_gwN``. A name is not enough to tell a crashed
+    session from one that is still running, so a database is dropped only when
+    ``pg_stat_activity`` shows no session on it. This worker opens an autocommit
+    connection before it releases the clone lock and holds that connection until
+    session teardown, which makes a concurrent run leave the database alone.
+    This session's own clones are never dropped by the sweep.
 
     Role DDL in the migrations is cluster-wide, so a per-worker ``alembic upgrade``
     races (``tuple concurrently updated``). A file lock serializes one upgrade of the
@@ -360,12 +578,11 @@ def _clone_worker_database(base_url: str, worker: str) -> str:
         raise RuntimeError("DATABASE_URL has no database name")
     _quote_db(template)
     _quote_db(worker)
-    worker_db = f"{template}_{worker}"
+    worker_db = _worker_database_name(template, worker)
     _quote_db(worker_db)
+    worker_url = url.set(database=worker_db).render_as_string(hide_password=False)
 
-    run_id = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
-    safe_run = re.sub(r"[^A-Za-z0-9_-]", "", run_id) or "local"
-    ready_dir = Path("/tmp") / f"curioed-xdist-{safe_run}"
+    ready_dir = _current_ready_dir()
     lock_path = Path("/tmp") / f"curioed-pytest-{template}.lock"
     worker_count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
 
@@ -373,16 +590,18 @@ def _clone_worker_database(base_url: str, worker: str) -> str:
     with lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            _sweep_stale_xdist_state(base_url, template, ready_dir)
             _upgrade_database(base_url)
             _clone_from_template(base_url, template, worker_db)
             _remember_clone(base_url, worker_db)
             ready_dir.mkdir(parents=True, exist_ok=True)
             (ready_dir / worker).write_text("ready", encoding="utf-8")
+            _hold_clone_connection(worker_url)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     _wait_for_worker_clones(ready_dir, worker_count)
-    return url.set(database=worker_db).render_as_string(hide_password=False)
+    return worker_url
 
 
 def _test_database_url() -> str:

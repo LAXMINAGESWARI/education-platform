@@ -266,6 +266,9 @@ jobs:
 
   quality:
     runs-on: ubuntu-latest
+    # Aggregator only: this job reads `needs` and does not run pytest.
+    # Do not copy this limit onto a job that runs the suite.
+    timeout-minutes: 5
     if: always()
     needs: [lint, backend-fast, backend-ml, coverage, frontend, helm]
     permissions:
