@@ -448,7 +448,7 @@ def test_data_chat_refuses_injection_and_answers_a_benign_question(
     answered = _ask(alnoor, benign)
     assert answered["natural_answer"] != _DATA_INJECTION_ANSWER
     assert answered["natural_answer"] != _DATA_OFF_TOPIC_ANSWER
-    assert set(answered) == {"natural_answer", "confidence", "provenance"}
+    assert set(answered) == {"natural_answer", "confidence"}
     assert gpt.calls.count("data_injection") == 1
     assert gpt.calls.count("data_off_topic") == 1
     allowed = _data_rows(seeded_db)[-1].payload

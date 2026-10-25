@@ -92,6 +92,18 @@ async def require_administrator(
     return principal
 
 
+async def require_administrator_detached(
+    principal: Principal = Depends(get_current_user_detached),
+) -> Principal:
+    """Administrator check that does not hold the request session open."""
+    if not principal.is_administrator:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator role required",
+        )
+    return principal
+
+
 def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:
     """Require at least one of the given roles."""
     allowed = frozenset(roles)

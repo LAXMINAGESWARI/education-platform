@@ -26,9 +26,7 @@ class AskEvents(ComposeStream, Protocol):
 
     async def error(self, message: str) -> None: ...
 
-    async def final(
-        self, natural_answer: str, confidence: str | None, provenance: str | None
-    ) -> None: ...
+    async def final(self, natural_answer: str, confidence: str | None) -> None: ...
 
 
 _HOOKS: ContextVar[ComposeStream | None] = ContextVar("text_to_sql_compose_stream", default=None)

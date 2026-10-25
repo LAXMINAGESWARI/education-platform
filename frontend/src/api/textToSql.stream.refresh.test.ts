@@ -71,7 +71,7 @@ describe("text-to-SQL stream token refresh", () => {
         return jsonResponse(401, { detail: "token expired" });
       }
       return sseResponse([
-        'event: final\ndata: {"natural_answer":"You teach 10.","confidence":"high","provenance":null}\n\n',
+        'event: final\ndata: {"natural_answer":"You teach 10.","confidence":"high"}\n\n',
       ]);
     });
 

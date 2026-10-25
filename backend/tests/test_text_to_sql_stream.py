@@ -213,7 +213,7 @@ async def test_happy_path_emits_stages_then_table_then_final(
     assert final[0] == "final"
     assert final[1] is not None
     assert final[1]["confidence"] == "high"
-    assert "subjects" not in (final[1]["provenance"] or "")
+    assert "provenance" not in final[1]
     assert _SECRET_SQL not in json.dumps(frames)
 
 
@@ -339,7 +339,7 @@ async def test_heartbeat_does_not_advance_seq_or_drop_the_next_frame(
         await events.progress("checking", "running")
         await release.wait()
         await events.progress("checking", "done")
-        await events.final("Done.", "high", None)
+        await events.final("Done.", "high")
         return state
 
     monkeypatch.setattr(stream_mod, "run_lean", paced)
@@ -377,7 +377,7 @@ def test_stream_route_rejects_non_teachers_and_streams_the_envelope(
         assert state["stream_request_id"] == _REQUEST
         assert state["user_role"] == "teacher"
         await events.progress("checking", "running")
-        await events.final("Done.", None, None)
+        await events.final("Done.", None)
         return state
 
     monkeypatch.setattr(stream_mod, "run_lean", paced)
@@ -418,7 +418,6 @@ def test_stream_route_rejects_non_teachers_and_streams_the_envelope(
     assert frames[-1][1] == {
         "natural_answer": "Done.",
         "confidence": None,
-        "provenance": None,
     }
 
     invalid = TestClient(app).post(_STREAM_URL, json={"question": "How many?"})

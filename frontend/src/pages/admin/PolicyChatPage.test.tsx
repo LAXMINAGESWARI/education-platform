@@ -11,7 +11,7 @@ vi.mock("../../api/chats", () => ({
   createChat: vi.fn(),
   getChat: vi.fn(),
   deleteChat: vi.fn(),
-  postChatMessage: vi.fn(),
+  postChatMessageStream: vi.fn(),
 }));
 
 const sampleContext = { used_tokens: 120, limit_tokens: 20_000, used_percent: 1 };
@@ -47,21 +47,41 @@ describe("PolicyChatPage", () => {
       updated_at: "2026-08-15T00:00:00Z",
       context: sampleContext,
     });
-    vi.mocked(chatsApi.postChatMessage).mockResolvedValue({
-      user_message: {
-        id: "m2",
-        role: "user",
-        content: "What is attendance policy?",
-        created_at: "2026-08-15T00:01:00Z",
-      },
-      assistant_message: {
-        id: "m3",
-        role: "assistant",
-        content: "## Attendance\n\nNotify the office after **three** absences.",
-        citations: [{ id: "1", label: "Handbook", excerpt: "three absences" }],
-        created_at: "2026-08-15T00:01:01Z",
-      },
-      context: { used_tokens: 400, limit_tokens: 20_000, used_percent: 2 },
+    vi.mocked(chatsApi.postChatMessageStream).mockImplementation(async (_id, _content, handlers) => {
+      handlers?.onProgress?.({
+        v: 1,
+        kind: "policy_chat",
+        subject_id: "req-1",
+        seq: 1,
+        stage: "checking",
+        status: "running",
+        percent: 25,
+        current: null,
+        total: null,
+        unit: null,
+        message: "Checking your question",
+        updated_at: "2026-08-15T00:01:00Z",
+      });
+      return {
+        kind: "final",
+        requestId: "req-1",
+        message: {
+          user_message: {
+            id: "m2",
+            role: "user",
+            content: "What is attendance policy?",
+            created_at: "2026-08-15T00:01:00Z",
+          },
+          assistant_message: {
+            id: "m3",
+            role: "assistant",
+            content: "## Attendance\n\nNotify the office after **three** absences.",
+            citations: [{ id: "1", label: "Handbook", excerpt: "three absences" }],
+            created_at: "2026-08-15T00:01:01Z",
+          },
+          context: { used_tokens: 400, limit_tokens: 20_000, used_percent: 2 },
+        },
+      };
     });
   });
 
@@ -107,12 +127,96 @@ describe("PolicyChatPage", () => {
     expect(screen.getByLabelText("Filter")).toHaveDisplayValue("All types");
     expect(screen.getByRole("option", { name: "Handbook" })).toBeInTheDocument();
     expect(screen.getByText("three absences")).toBeVisible();
+    expect(screen.queryByText("Running safety checks and retrieval…")).not.toBeInTheDocument();
     expect(
       screen.getByLabelText(/Context window 400 of 20,000 tokens, 2 percent/i),
     ).toBeInTheDocument();
     expect(
       screen.getByText("400 / 20,000 tokens · 2%", { selector: ".policy-chat__context-tip" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the live stage and draft, then the saved answer", async () => {
+    const user = userEvent.setup();
+    let release: (value: Awaited<ReturnType<typeof chatsApi.postChatMessageStream>>) => void =
+      () => {};
+    const gate = new Promise<Awaited<ReturnType<typeof chatsApi.postChatMessageStream>>>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    vi.mocked(chatsApi.postChatMessageStream).mockImplementation(async (_id, _content, handlers) => {
+      handlers?.onProgress?.({
+        v: 1,
+        kind: "policy_chat",
+        subject_id: "req-1",
+        seq: 1,
+        stage: "checking",
+        status: "running",
+        percent: 25,
+        current: null,
+        total: null,
+        unit: null,
+        message: "Checking your question",
+        updated_at: "2026-08-15T00:01:00Z",
+      });
+      handlers?.onProgress?.({
+        v: 1,
+        kind: "policy_chat",
+        subject_id: "req-1",
+        seq: 2,
+        stage: "searching",
+        status: "running",
+        percent: 60,
+        current: null,
+        total: null,
+        unit: null,
+        message: "Searching policy documents",
+        updated_at: "2026-08-15T00:01:01Z",
+      });
+      handlers?.onAnswerDelta?.("STREAMED");
+      return gate;
+    });
+
+    render(
+      <MemoryRouter>
+        <PolicyChatPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText("Ask a policy question.");
+    await user.type(screen.getByLabelText("Message"), "What is attendance policy?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Searching policy documents")).toBeInTheDocument();
+    expect(screen.getByText("STREAMED")).toBeInTheDocument();
+    expect(screen.queryByText("Running safety checks and retrieval…")).not.toBeInTheDocument();
+
+    release({
+      kind: "final",
+      requestId: "req-1",
+      message: {
+        user_message: {
+          id: "m2",
+          role: "user",
+          content: "What is attendance policy?",
+          created_at: "2026-08-15T00:01:00Z",
+        },
+        assistant_message: {
+          id: "m3",
+          role: "assistant",
+          content: "## Attendance\n\nNotify the office after **three** absences.",
+          citations: [{ id: "1", label: "Handbook", excerpt: "three absences" }],
+          created_at: "2026-08-15T00:01:01Z",
+        },
+        context: { used_tokens: 400, limit_tokens: 20_000, used_percent: 2 },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("STREAMED")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("three", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Searching policy documents")).not.toBeInTheDocument();
   });
 
   it("starts with chats collapsed into the header on a phone-width viewport", async () => {

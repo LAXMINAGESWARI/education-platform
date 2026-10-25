@@ -63,7 +63,6 @@ function finalFrame(answer = "You teach 10."): string {
   return `event: final\ndata: ${JSON.stringify({
     natural_answer: answer,
     confidence: "high",
-    provenance: "Queried: student_profiles.",
   })}\n\n`;
 }
 
@@ -133,11 +132,11 @@ describe("parseTextToSqlFrame", () => {
     expect(
       parseTextToSqlFrame({
         event: "final",
-        data: JSON.stringify({ natural_answer: "Ten.", confidence: null, provenance: null }),
+        data: JSON.stringify({ natural_answer: "Ten.", confidence: null }),
       }),
     ).toEqual({
       type: "final",
-      answer: { natural_answer: "Ten.", confidence: null, provenance: null },
+      answer: { natural_answer: "Ten.", confidence: null },
     });
 
     expect(

@@ -4,14 +4,13 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProgressReconnectError } from "../../api/progress";
-import { TEXT_TO_SQL_STAGE_ORDER } from "../../api/stageOrder";
 import * as textToSqlApi from "../../api/textToSql";
 import { ApiError } from "../../api/types";
 import { RequireAuth } from "../../auth/RequireAuth";
 import { RequireRole } from "../../auth/RequireRole";
 import { ROLE_TEACHER } from "../../auth/roles";
 import { TeacherShell } from "../../components/TeacherShell";
-import { AssistantPage } from "./AssistantPage";
+import { ASK_THINK_MS, AssistantPage } from "./AssistantPage";
 
 vi.mock("../../api/textToSql", async () => {
   const actual = await vi.importActual<typeof import("../../api/textToSql")>("../../api/textToSql");
@@ -60,7 +59,6 @@ describe("AssistantPage", () => {
     vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
       natural_answer: "You teach 42 students across your sections.",
       confidence: "high",
-      provenance: "Queried: student_360.",
     });
 
     const user = userEvent.setup();
@@ -78,13 +76,13 @@ describe("AssistantPage", () => {
     });
     expect(screen.getByText("High confidence")).toBeInTheDocument();
     expect(screen.getByText("High confidence")).toHaveClass("badge--ok");
+    expect(screen.queryByText("Queried: student_360.")).not.toBeInTheDocument();
   });
 
   it("renders a low-confidence/refusal response as a normal message, not an error state", async () => {
     vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
       natural_answer: "That question touches data you don't have access to.",
       confidence: "low",
-      provenance: null,
     });
 
     const user = userEvent.setup();
@@ -126,12 +124,10 @@ describe("AssistantPage", () => {
       .mockResolvedValueOnce({
         natural_answer: "First answer.",
         confidence: "high",
-        provenance: null,
       })
       .mockResolvedValueOnce({
         natural_answer: "Second answer.",
         confidence: "high",
-        provenance: null,
       });
 
     const user = userEvent.setup();
@@ -207,7 +203,6 @@ describe("AssistantPage", () => {
       vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
         natural_answer: "The student count is 72.",
         confidence: "high",
-        provenance: null,
       });
       const user = userEvent.setup();
       renderPage();
@@ -227,7 +222,6 @@ describe("AssistantPage", () => {
       vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
         natural_answer: "The student count is 4.",
         confidence: "high",
-        provenance: null,
       });
       const user = userEvent.setup();
       renderPage();
@@ -251,7 +245,6 @@ describe("AssistantPage", () => {
       vi.mocked(textToSqlApi.askQuestion).mockResolvedValue({
         natural_answer: "A free-text answer.",
         confidence: "medium",
-        provenance: null,
       });
       const user = userEvent.setup();
       renderPage();
@@ -278,7 +271,7 @@ describe("AssistantPage", () => {
 
       expect(screen.getByLabelText("Suggested questions")).toBeDisabled();
 
-      resolveAnswer({ natural_answer: "Done.", confidence: "high", provenance: null });
+      resolveAnswer({ natural_answer: "Done.", confidence: "high" });
       await waitFor(() => expect(screen.getByLabelText("Suggested questions")).toBeEnabled());
     });
   });
@@ -328,13 +321,9 @@ describe("AssistantPage", () => {
       renderPage();
       await ask(user);
 
-      expect(screen.getByRole("list", { name: "Answer progress" })).toBeInTheDocument();
-      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
-      expect(screen.getByText("Checking").closest("li")).toHaveAttribute("aria-current", "step");
-      const current = screen.getByText("Understanding").closest("li");
-      expect(current).toHaveTextContent("In progress");
-      expect(current).toHaveAttribute("aria-current", "step");
-      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.getByText("Checking your question")).toBeInTheDocument();
+      expect(screen.queryByText("Understanding your question")).not.toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
       expect(screen.queryByText("40%")).not.toBeInTheDocument();
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
       expect(screen.getByText("You teach 10.")).toBeInTheDocument();
@@ -342,9 +331,12 @@ describe("AssistantPage", () => {
       release({
         kind: "final",
         requestId: REQUEST_ID,
-        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+        answer: { natural_answer: "You teach 10.", confidence: "high" },
       });
-      await waitFor(() => expect(screen.getByText("High confidence")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText("High confidence")).toBeInTheDocument(), {
+        timeout: 4_000,
+      });
+      expect(screen.queryByText("Checking your question")).not.toBeInTheDocument();
       expect(textToSqlApi.askQuestion).not.toHaveBeenCalled();
     });
 
@@ -358,7 +350,7 @@ describe("AssistantPage", () => {
         return {
           kind: "final",
           requestId: REQUEST_ID,
-          answer: { natural_answer: "Aisha Rahman is at 82%.", confidence: "high", provenance: null },
+          answer: { natural_answer: "Aisha Rahman is at 82%.", confidence: "high" },
         };
       });
       const user = userEvent.setup();
@@ -366,10 +358,10 @@ describe("AssistantPage", () => {
       await ask(user, "Show me the struggling students.");
 
       expect(await screen.findByRole("table", { name: "Query results" })).toBeInTheDocument();
+      expect(await screen.findByText("Aisha Rahman is at 82%.", {}, { timeout: 3_000 })).toBeInTheDocument();
       expect(screen.getByRole("columnheader", { name: "Full name" })).toBeInTheDocument();
       expect(screen.getByRole("cell", { name: "Aisha Rahman" })).toBeInTheDocument();
       expect(screen.getByRole("cell", { name: "82" })).toBeInTheDocument();
-      expect(screen.getByText("Aisha Rahman is at 82%.")).toBeInTheDocument();
     });
 
     it("shows a refusal without a retry alert", async () => {
@@ -403,7 +395,7 @@ describe("AssistantPage", () => {
         .mockResolvedValueOnce({
           kind: "final",
           requestId: REQUEST_ID,
-          answer: { natural_answer: "You teach 10.", confidence: "medium", provenance: null },
+          answer: { natural_answer: "You teach 10.", confidence: "medium" },
         });
       const user = userEvent.setup();
       renderPage();
@@ -452,10 +444,10 @@ describe("AssistantPage", () => {
       release({
         kind: "final",
         requestId: REQUEST_ID,
-        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+        answer: { natural_answer: "You teach 10.", confidence: "high" },
       });
       await waitFor(() => expect(screen.getByText("You teach 10.")).toBeInTheDocument());
-      expect(screen.getAllByText("Done")).toHaveLength(TEXT_TO_SQL_STAGE_ORDER.length);
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
       expect(screen.queryByText("Pending")).not.toBeInTheDocument();
     });
 
@@ -492,7 +484,7 @@ describe("AssistantPage", () => {
       expect(screen.queryByText("Checking")).not.toBeInTheDocument();
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
 
-      release({ natural_answer: "Fallback answer.", confidence: "high", provenance: null });
+      release({ natural_answer: "Fallback answer.", confidence: "high" });
       expect(await screen.findByText("Fallback answer.")).toBeInTheDocument();
       expect(screen.queryByRole("list", { name: "Answer progress" })).not.toBeInTheDocument();
       expect(textToSqlApi.askQuestion).toHaveBeenCalledWith("How many students do I teach?");
@@ -511,18 +503,17 @@ describe("AssistantPage", () => {
       renderPage();
       await ask(user);
 
-      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("In progress");
-      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("In progress");
-      expect(screen.getByText("Understanding your question")).toBeInTheDocument();
+      expect(screen.getByText("Checking your question")).toBeInTheDocument();
+      expect(screen.queryByText("Understanding your question")).not.toBeInTheDocument();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.queryByText("You teach 10.")).not.toBeInTheDocument();
 
       release({
         kind: "final",
         requestId: REQUEST_ID,
-        answer: { natural_answer: "You teach 10.", confidence: "high", provenance: null },
+        answer: { natural_answer: "You teach 10.", confidence: "high" },
       });
-      expect(await screen.findByText("You teach 10.")).toBeInTheDocument();
+      expect(await screen.findByText("You teach 10.", {}, { timeout: 4_000 })).toBeInTheDocument();
     });
 
     it("cancels an in-flight ask", async () => {
@@ -554,28 +545,76 @@ describe("AssistantPage", () => {
       expect(signal?.aborted).toBe(true);
     });
 
-    it("marks every earlier stage done when the stream skips to running", async () => {
-      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation(async (_question, handlers) => {
+    it("shows only the current stage when the stream skips to running", async () => {
+      let release: (value: textToSqlApi.TextToSqlStreamResult) => void = () => {};
+      vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
         handlers?.onProgress?.(progress("running", "running", "Looking up the data"));
-        return {
-          kind: "final",
-          requestId: REQUEST_ID,
-          answer: { natural_answer: "Done.", confidence: "high", provenance: null },
-        };
+        return new Promise((resolve) => {
+          release = resolve;
+        });
       });
       const user = userEvent.setup();
       renderPage();
       await ask(user, "Show me the struggling students.");
 
-      const writing = await screen.findByText("Writing the query");
-      expect(writing.closest("li")).toHaveTextContent("Done");
-      expect(screen.getByText("Checking").closest("li")).toHaveTextContent("Done");
-      expect(screen.getByText("Understanding").closest("li")).toHaveTextContent("Done");
-      expect(screen.getByText("Validating").closest("li")).toHaveTextContent("Done");
-      expect(screen.getByText("Running").closest("li")).toHaveTextContent("In progress");
-      expect(screen.getByText("Running").closest("li")).toHaveAttribute("aria-current", "step");
-      expect(screen.getByText("Summarising").closest("li")).toHaveTextContent("Pending");
+      expect(await screen.findByText("Looking up the data")).toBeInTheDocument();
+      expect(screen.queryByText("Checking")).not.toBeInTheDocument();
+      expect(screen.queryByText("Summarising")).not.toBeInTheDocument();
+
+      release({
+        kind: "final",
+        requestId: REQUEST_ID,
+        answer: { natural_answer: "Done.", confidence: "high" },
+      });
+      expect(await screen.findByText("Done.", {}, { timeout: 3_000 })).toBeInTheDocument();
+      expect(screen.queryByText("Looking up the data")).not.toBeInTheDocument();
     });
+
+    it(
+      "plays each stage in order before the answer",
+      async () => {
+        vi.mocked(textToSqlApi.askQuestionStream).mockImplementation((_question, handlers) => {
+          const frames = [
+            ["checking", "Checking your question"],
+            ["understanding", "Understanding your question"],
+            ["writing_query", "Writing a query"],
+            ["validating", "Checking the query"],
+            ["running", "Looking up the data"],
+            ["summarising", "Writing the answer"],
+          ] as const;
+          for (const [stage, message] of frames) {
+            handlers?.onProgress?.(progress(stage, "running", message));
+          }
+          return Promise.resolve({
+            kind: "final",
+            requestId: REQUEST_ID,
+            answer: { natural_answer: "You teach 10.", confidence: "high" },
+          });
+        });
+        const user = userEvent.setup();
+        renderPage();
+        await ask(user);
+
+        expect(screen.getByText("Checking your question")).toBeInTheDocument();
+        expect(screen.queryByText("You teach 10.")).not.toBeInTheDocument();
+
+        for (const phrase of [
+          "Understanding your question",
+          "Writing a query",
+          "Checking the query",
+          "Looking up the data",
+          "Writing the answer",
+        ]) {
+          expect(await screen.findByText(phrase, {}, { timeout: ASK_THINK_MS + 500 })).toBeInTheDocument();
+          expect(screen.queryByText("You teach 10.")).not.toBeInTheDocument();
+        }
+
+        expect(await screen.findByText("You teach 10.", {}, { timeout: ASK_THINK_MS + 500 })).toBeInTheDocument();
+        expect(screen.getByText("High confidence")).toBeInTheDocument();
+        expect(screen.queryByText("Writing the answer")).not.toBeInTheDocument();
+      },
+      12_000,
+    );
   });
 });
 

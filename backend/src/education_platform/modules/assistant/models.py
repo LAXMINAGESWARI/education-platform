@@ -6,7 +6,7 @@ import enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from education_platform.db.base import Base, UUIDTimestampMixin
@@ -33,6 +33,15 @@ class ChatConversation(UUIDTimestampMixin, Base):
 
 class ChatMessage(UUIDTimestampMixin, Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index(
+            "uq_chat_messages_conversation_client_request",
+            "conversation_id",
+            "client_request_id",
+            unique=True,
+            postgresql_where=text("client_request_id IS NOT NULL"),
+        ),
+    )
 
     conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("chat_conversations.id", ondelete="CASCADE"),
@@ -42,3 +51,4 @@ class ChatMessage(UUIDTimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text)
     citations: Mapped[list[Any] | None] = mapped_column(JsonDict, nullable=True)
     token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    client_request_id: Mapped[UUID | None] = mapped_column(nullable=True)

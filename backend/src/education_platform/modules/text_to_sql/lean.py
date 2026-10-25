@@ -265,7 +265,6 @@ async def _summarise(state: TextToSQLState, events: AskEvents | None) -> TextToS
         await events.final(
             composed.get("natural_answer") or "",
             composed.get("confidence"),
-            composed.get("provenance"),
         )
     return composed
 

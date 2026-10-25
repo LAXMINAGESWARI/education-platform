@@ -40,7 +40,8 @@ each turn's state. A compiled `StateGraph` is just wiring — a fixed set of nod
 it's safe to share across concurrent requests, and re-registering every node/edge on every
 single call would be pure overhead for no benefit.
 
-**Response shape is exactly three fields**: `natural_answer`, `confidence`, `provenance`.
+**Response shape is exactly two fields**: `natural_answer` and `confidence`.
+The queried-table line is not returned.
 `generated_sql`, `validated_sql`, `query_result`, and `audit_entry` are never included —
 enforced structurally, not just by omission: the handler builds an `AskOut` instance
 field-by-field rather than ever doing `AskOut(**result)` or returning the raw graph state,
@@ -113,7 +114,6 @@ class AskStreamIn(BaseModel):
 class AskOut(BaseModel):
     natural_answer: str
     confidence: str | None
-    provenance: str | None
 
 
 def _initial_state(
@@ -208,7 +208,6 @@ async def ask(
     return AskOut(
         natural_answer=result.get("natural_answer") or _UNEXPECTED_FAILURE_ANSWER,
         confidence=result.get("confidence"),
-        provenance=result.get("provenance"),
     )
 
 
