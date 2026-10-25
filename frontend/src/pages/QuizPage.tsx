@@ -95,9 +95,14 @@ export function QuizPage() {
     copyGuardCleanup.current?.();
     copyGuardCleanup.current = null;
     if (node === null) return;
-    copyGuardCleanup.current = installQuizCopyGuard(node, () => {
+    const detach = installQuizCopyGuard(node, () => {
       showCopyNoticeRef.current();
     });
+    node.dataset.quizCopyGuard = "on";
+    copyGuardCleanup.current = () => {
+      delete node.dataset.quizCopyGuard;
+      detach();
+    };
   }, []);
 
   useEffect(() => {
