@@ -174,7 +174,11 @@ Environment variables (see `.env.example`):
 | `CHAT_RETRIEVAL_LIMIT` | `6` | Default `retrieve_chunks` top-k |
 
 Pytest expects Compose Postgres and the `education_test` database (created by
-`docker/postgres/init.sql`).
+`docker/postgres/init.sql`). `pytest-xdist` gives each worker a clone named
+`<database>_<runid8>_gwN`, where `runid8` is the first eight alphanumeric
+characters of `PYTEST_XDIST_TESTRUNUID`. A later run drops leftover clones only
+when `pg_stat_activity` shows no sessions on them, including old
+`<database>_gwN` names, so two local runs can share one Postgres.
 
 ## Quality gate
 

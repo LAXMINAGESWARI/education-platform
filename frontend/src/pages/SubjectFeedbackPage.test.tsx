@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -635,20 +635,155 @@ describe("feedback hierarchy", () => {
   });
 
   it("does not scroll or move focus on a feedback load without a hash or section", async () => {
+    vi.mocked(getFeedbackHighlights).mockResolvedValue({
+      due_reviews: [
+        {
+          subtopic_id: "st-math",
+          subtopic_name: "Fractions practice",
+          topic_name: "Fractions",
+          days_since_last_attempt: 10,
+          due_interval_days: 7,
+          remediation: null,
+        },
+      ],
+      trajectories: [],
+    });
+    vi.mocked(fetchLearningDirectory).mockResolvedValue({
+      subjects: [
+        {
+          id: "math-1",
+          code: "MATH",
+          name: "Mathematics",
+          grade_name: "Grade 6",
+          academic_period_name: "Term 1",
+          progress_percent: 0,
+          topics: [
+            {
+              id: "topic-1",
+              title: "Fractions",
+              slug: "fractions",
+              sequence: 1,
+              progress_percent: 0,
+              complete: false,
+              objectives: [],
+              overall_quiz: null,
+              subtopics: [
+                {
+                  id: "st-math",
+                  title: "Fractions practice",
+                  slug: "fractions-practice",
+                  sequence: 1,
+                  has_lesson: false,
+                  lesson_completed: false,
+                  progress_percent: 0,
+                  quiz: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
     const previous = HTMLElement.prototype.scrollIntoView;
     const scrollIntoView = vi.fn();
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
     try {
-      render(
+      const picker = render(
         <MemoryRouter initialEntries={["/feedback"]}>
           <FeedbackSubjectPickerPage />
         </MemoryRouter>,
       );
 
-      expect(await screen.findByRole("heading", { name: "Feedback by subject" })).toBeInTheDocument();
+      const dueHeading = await screen.findByRole("heading", { name: "Due for review" });
+      await act(async () => {});
       expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(dueHeading).not.toHaveFocus();
       expect(document.activeElement).toBe(document.body);
-      expect(screen.queryByRole("heading", { name: "Due for review" })).not.toBeInTheDocument();
+      picker.unmount();
+
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      const attention = await screen.findByRole("heading", { name: "Needs attention: Algebra" });
+      await act(async () => {});
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(attention).not.toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("focuses due reviews from the section query without a hash", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await waitFor(() => {
+        expect(heading).toHaveFocus();
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("does not move focus when Try again reloads feedback", async () => {
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    vi.mocked(getFeedbackOverview).mockRejectedValueOnce(new Error("offline"));
+    try {
+      render(
+        <MemoryRouter initialEntries={["/feedback?section=due"]}>
+          <FeedbackSubjectPickerPage />
+        </MemoryRouter>,
+      );
+      const retry = await screen.findByRole("button", { name: "Try again" });
+      retry.focus();
+      const user = userEvent.setup();
+      await user.click(retry);
+      const heading = await screen.findByRole("heading", { name: "Due for review" });
+      await act(async () => {});
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(heading).not.toHaveFocus();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous;
+    }
+  });
+
+  it("does not focus a hidden needs-attention heading", async () => {
+    vi.mocked(getFeedbackSubject).mockResolvedValue({
+      ...subject,
+      topics_needing_attention: [],
+    });
+    const previous = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <MemoryRouter initialEntries={["/subjects/math-1/feedback#needs-attention"]}>
+          <Routes>
+            <Route path="/subjects/:subjectId/feedback" element={<SubjectFeedbackPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      const heading = await screen.findByRole("heading", { name: "No topics need attention right now." });
+      await act(async () => {});
+      expect(heading).toHaveClass("sr-only");
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(heading).not.toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
     } finally {
       HTMLElement.prototype.scrollIntoView = previous;
     }

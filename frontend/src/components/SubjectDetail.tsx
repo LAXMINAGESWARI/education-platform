@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { getFeedbackHighlights } from "../api/feedback";
+import { getFeedbackHighlights, getFeedbackSubject } from "../api/feedback";
 import type { SubjectNode } from "../api/types";
 import { dueReviewsPath, dueTopicIds, subjectFeedbackPath, weakTopicsPath } from "../lib/feedbackLinks";
-import { scoreNumber } from "../lib/feedbackHierarchy";
+import { topicsNeedingAttention, weakTopicNames } from "../lib/feedbackHierarchy";
 import {
   subjectBlurb,
   subjectCardCounts,
@@ -95,11 +95,33 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
   const blurb = subjectBlurb(subject);
   const complete = total > 0 && pct >= 100;
   const resume = subjectResumeTarget(subject);
-  const showWeakTopics = topics.some((topic) => {
-    const score = scoreNumber(topic.overall_quiz?.best_score_percent);
-    return score !== null && score < 70;
-  });
+  const [needingAttention, setNeedingAttention] = useState<readonly string[]>([]);
   const [dueTopics, setDueTopics] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setNeedingAttention((current) => (current.length === 0 ? current : []));
+    const apply = (next: readonly string[]) => {
+      if (cancelled) return;
+      setNeedingAttention((current) =>
+        current.length === next.length && current.every((name, index) => name === next[index])
+          ? current
+          : next,
+      );
+    };
+    void Promise.resolve()
+      .then(() => getFeedbackSubject(subject.id))
+      .then((detail) => {
+        const fromApi = topicsNeedingAttention(detail);
+        apply(fromApi ?? weakTopicNames(subject.topics));
+      })
+      .catch(() => {
+        apply(weakTopicNames(subject.topics));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [subject]);
 
   useEffect(() => {
     if (subject.topics.length === 0) return;
@@ -204,7 +226,7 @@ export function SubjectDetail({ subject }: { subject: SubjectNode }) {
                     <span className="pill-btn__action">Due reviews</span>
                   </span>
                 </Link>
-                {showWeakTopics ? (
+                {needingAttention.length > 0 ? (
                   <Link className="pill-btn" to={weakTopicsPath(subject.id)}>
                     <span className="pill-btn__face">
                       <span className="pill-btn__action">Weak topics</span>
