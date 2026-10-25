@@ -15,6 +15,7 @@ import {
   formatTrend,
   momentumGain,
   scoreNumber,
+  topicsNeedingAttention,
 } from "../lib/feedbackHierarchy";
 import { revealElementByIdWhenSettled } from "../lib/hashFocus";
 
@@ -143,7 +144,8 @@ export function SubjectFeedbackPage() {
 
   useEffect(() => {
     if (!detail || location.hash !== "#needs-attention") return;
-    if (detail.topics_needing_attention.length === 0) return;
+    const names = topicsNeedingAttention(detail);
+    if (!names || names.length === 0) return;
     return revealElementByIdWhenSettled("needs-attention");
   }, [detail, location.hash]);
 
@@ -163,6 +165,7 @@ export function SubjectFeedbackPage() {
   }
 
   const trend = formatTrend(detail.trend, detail.trend_delta);
+  const needingAttention = topicsNeedingAttention(detail) ?? [];
   const gain = momentumGain(detail.topics.map((topic) => topic.attempt_scores));
 
   return (
@@ -187,10 +190,10 @@ export function SubjectFeedbackPage() {
         <h2
           id="needs-attention"
           tabIndex={-1}
-          className={detail.topics_needing_attention.length > 0 ? "progress-label" : "sr-only"}
+          className={needingAttention.length > 0 ? "progress-label" : "sr-only"}
         >
-          {detail.topics_needing_attention.length > 0
-            ? `Needs attention: ${detail.topics_needing_attention.join(", ")}`
+          {needingAttention.length > 0
+            ? `Needs attention: ${needingAttention.join(", ")}`
             : "No topics need attention right now."}
         </h2>
         <Milestone mastered={detail.concepts_mastered} attempted={detail.concepts_attempted} />

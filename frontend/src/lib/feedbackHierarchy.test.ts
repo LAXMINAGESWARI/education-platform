@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PASS_PERCENT,
   attemptBadge,
   attemptTitle,
   focusSentence,
@@ -8,6 +9,8 @@ import {
   formatScore,
   formatTrend,
   momentumGain,
+  topicsNeedingAttention,
+  weakTopicNames,
 } from "./feedbackHierarchy";
 
 describe("feedback hierarchy display", () => {
@@ -40,6 +43,25 @@ describe("feedback hierarchy display", () => {
     expect(attemptTitle(4, 90)).toMatchObject({ label: "Breakthrough", color: "#b45309" });
     expect(attemptBadge("keep_going", 1, 40)).toBe("Keep going");
     expect(attemptBadge("not_attempted", 0, null)).toBe("Not attempted");
+  });
+
+  it("uses the needs-attention names and the shared pass mark", () => {
+    expect(PASS_PERCENT).toBe(70);
+    expect(topicsNeedingAttention({ topics_needing_attention: ["Algebra"] })).toEqual(["Algebra"]);
+    expect(topicsNeedingAttention({ topics_needing_attention: [] })).toEqual([]);
+    expect(topicsNeedingAttention({})).toBeNull();
+    const fractions = (score: number | null) => ({
+      title: "Fractions",
+      overall_quiz: score === null ? null : { best_score_percent: score },
+    });
+    expect(weakTopicNames([fractions(70)])).toEqual([]);
+    expect(weakTopicNames([fractions(69.99)])).toEqual(["Fractions"]);
+    expect(
+      weakTopicNames([
+        fractions(null),
+        { title: "Decimals", overall_quiz: { best_score_percent: null } },
+      ]),
+    ).toEqual([]);
   });
 
   it("averages the gain from the first attempt to the latest", () => {
