@@ -540,6 +540,13 @@ def test_numeric_check_tool_handles_invalid_input() -> None:
     assert check_numeric_answer("1/0", "0")["reject_key"] is True
 
 
+def test_numeric_check_tool_does_not_reject_an_equation() -> None:
+    for expression in ("2 * x - 3", "2x - 3", r"\frac{x}{2}"):
+        result = check_numeric_answer(expression, "5")
+        assert result["reject_key"] is False
+        assert result["ok"] is False
+
+
 def test_numeric_check_tool_rejects_a_wrong_key() -> None:
     ok = check_numeric_answer("20 * 20", "400")
     assert ok["ok"] is True

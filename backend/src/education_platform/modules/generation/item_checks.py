@@ -1,8 +1,11 @@
 """Save-time checks for a four-option item.
 
-Structural rules refuse an empty, repeated, or mis-keyed option. The numeric
-check evaluates an equality in the rationale on its own, so a written result
-such as ``π(3)^2(5) = 27π`` cannot pass when the product is ``45π``.
+Structural rules refuse an empty, repeated, or mis-keyed option. A final
+quantity in the rationale, such as ``$45π$`` or ``$x = 5$``, must match the
+keyed option. A worked equation such as ``$2x - 3 = 7$`` is a step, not the
+choice. The numeric check evaluates an arithmetic equality on its own, so a
+written result such as ``π(3)^2(5) = 27π`` cannot pass when the product is
+``45π``.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ def structural_problems(
     final = final_math_value(explanation)
     if final is not None and _quantitative(final):
         keyed = present[correct_label]
-        if _norm_math(final) != _norm_math(keyed):
+        if _answer_like(keyed) and not _same_answer(final, keyed):
             reasons.append("explanation final value does not match the keyed option")
     return tuple(reasons)
 
@@ -52,12 +55,15 @@ def numeric_problems(
     explanation: str,
 ) -> tuple[str, ...]:
     """Evaluate rationale equalities independently of the number written after ``=``."""
-    values = [(side, evaluate_expression(side)) for side in _equality_sides(explanation)]
-    evaluated = [(side, value) for side, value in values if value is not None]
-    if len(evaluated) >= 2:
-        anchor = evaluated[0][1]
-        if any(not _close(value, anchor) for _side, value in evaluated[1:]):
-            return ("rationale arithmetic does not match its expression",)
+    evaluated: list[tuple[str, float]] = []
+    for group in _equality_groups(explanation):
+        values = [(side, evaluate_expression(side)) for side in group]
+        numbers = [(side, value) for side, value in values if value is not None]
+        if len(numbers) >= 2:
+            anchor = numbers[0][1]
+            if any(not _close(value, anchor) for _side, value in numbers[1:]):
+                return ("rationale arithmetic does not match its expression",)
+        evaluated.extend(numbers)
     computed = next((value for side, value in evaluated if _has_operator(side)), None)
     if computed is None or correct_label not in OPTION_LABELS:
         return ()
@@ -99,10 +105,21 @@ def evaluate_expression(expr: str) -> float | None:
     return value
 
 
-def _equality_sides(text: str) -> list[str]:
-    if "=" not in text:
-        return []
-    return [side.strip(" .") for side in re.split(r"\s*=\s*", text) if side.strip(" .")]
+def _equality_groups(text: str) -> list[list[str]]:
+    """Each equality chain on its own, so steps are not compared with each other.
+
+    Dollar spans that contain ``=`` are the worked lines. Other prose is split
+    only when no such span exists. ``$2x = 10$`` and ``$x = 5$`` stay separate,
+    so the bare results 10 and 5 are not treated as one broken product.
+    """
+    spans = [span for span in _DOLLAR.findall(text) if "=" in span]
+    sources = spans or ([text] if "=" in text else [])
+    groups: list[list[str]] = []
+    for source in sources:
+        sides = [side.strip(" .") for side in re.split(r"\s*=\s*", source) if side.strip(" .")]
+        if sides:
+            groups.append(sides)
+    return groups
 
 
 def _prepare(expr: str) -> str:
@@ -160,6 +177,44 @@ def _has_operator(expr: str) -> bool:
 def _quantitative(text: str) -> bool:
     folded = text.casefold()
     return bool(re.search(r"\d", folded) or "π" in folded or "\\pi" in folded)
+
+
+def _answer_like(text: str) -> bool:
+    """A keyed choice that is a quantity or short formula, not a sentence."""
+    if not _quantitative(text) and "$" not in text and "\\" not in text:
+        return False
+    prose = [
+        word
+        for word in re.findall(r"[A-Za-z]{2,}", text)
+        if word.casefold() not in {"pi", "cm", "mathrm", "text"}
+    ]
+    return len(prose) < 2
+
+
+def _same_answer(final: str, keyed: str) -> bool:
+    """True when both sides name the same result, or the span is a worked step."""
+    if _norm_math(final) == _norm_math(keyed):
+        return True
+    final_value = _boxed_value(final)
+    keyed_value = _boxed_value(keyed)
+    if final_value is None or keyed_value is None:
+        return True
+    return final_value == keyed_value
+
+
+def _boxed_value(text: str) -> str | None:
+    """Normalized quantity, or the right-hand side of ``x = ...``.
+
+    ``None`` means the span is a worked equation such as ``2x - 3 = 7`` and is
+    not the boxed answer.
+    """
+    norm = _norm_math(text)
+    if "=" not in norm:
+        return norm
+    left, right = norm.rsplit("=", 1)
+    if not right or not re.fullmatch(r"[a-z]", left):
+        return None
+    return right
 
 
 def _norm_math(text: str) -> str:

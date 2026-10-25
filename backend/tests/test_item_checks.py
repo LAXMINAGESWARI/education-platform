@@ -42,6 +42,33 @@ def test_explanation_final_value_must_match_the_keyed_option() -> None:
     assert any("keyed option" in reason for reason in reasons)
 
 
+def test_equation_steps_are_not_the_keyed_option() -> None:
+    options = {"A": "$x = 5$", "B": "$x = 2$", "C": "$x = 7$", "D": "$x = 3$"}
+    rationale = "Start from $2x - 3 = 7$. Add 3 to get $2x = 10$. Divide by 2 to get $x = 5$."
+    assert structural_problems(options, "A", rationale) == ()
+    assert numeric_problems(options, "A", rationale) == ()
+
+
+def test_solution_matches_a_bare_number_or_the_assignment() -> None:
+    options = {"A": "$5$", "B": "$2$", "C": "$7$", "D": "$3$"}
+    assert structural_problems(options, "A", "The solution is $x = 5$.") == ()
+    assigned = {"A": "$x = 5$", "B": "$x = 2$", "C": "$x = 7$", "D": "$x = 3$"}
+    assert structural_problems(assigned, "A", "The solution is $5$.") == ()
+    wrong = structural_problems(assigned, "D", "The solution is $x = 5$.")
+    assert any("keyed option" in reason for reason in wrong)
+
+
+def test_operation_choice_is_not_compared_to_the_equation() -> None:
+    options = {
+        "A": "Add 3 to both sides",
+        "B": "Subtract 2 from both sides",
+        "C": "Multiply both sides by 2",
+        "D": "Divide both sides by 3",
+    }
+    rationale = "The equation $2x - 3 = 7$ becomes simpler after adding 3."
+    assert structural_problems(options, "A", rationale) == ()
+
+
 def test_options_must_be_distinct_after_normalizing_latex() -> None:
     options = {"A": r"$27\pi$", "B": "27π", "C": "36π", "D": "18π"}
     reasons = structural_problems(options, "A", "The volume is $27\\pi$.")
