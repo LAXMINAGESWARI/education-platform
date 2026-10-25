@@ -1,4 +1,4 @@
-.PHONY: test-fast test-changed test-lf
+.PHONY: test-fast test-changed test-lf test-shard-durations
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 
@@ -11,3 +11,7 @@ test-changed:
 
 test-lf:
 	uv run pytest --lf -n auto --dist loadfile
+
+# Rewrite tests/shard_durations.txt from a full fast-suite run.
+test-shard-durations:
+	$(ROOT)/scripts/record-shard-durations.py
