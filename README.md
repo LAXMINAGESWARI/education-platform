@@ -175,7 +175,9 @@ Optional settings in `backend/.env`:
 - `TEXT_TO_SQL_PIPELINE=lean` to stream the teacher assistant's progress. With the default `legacy`,
   `POST /api/v1/text-to-sql/ask/stream` returns 404 and the page falls back to the plain ask, which
   shows only "Thinking…". Restart the API after changing it.
-- Ingest worker (admin PDF upload): `cd backend && uv run python -m education_platform.workers`
+- Ingest worker (admin PDF upload). It runs natively on Windows, Linux, and macOS:
+  `cd backend && uv run python -m education_platform.workers`. Ctrl+C stops it, and on Windows
+  Ctrl+Break does too: the worker stops claiming jobs, then finishes or requeues the current one.
 
 | Service | URL |
 | --- | --- |

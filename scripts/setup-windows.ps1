@@ -50,7 +50,8 @@ Next steps:
      (the API does not seed on startup)
   3. Start the API: cd backend; uv run uvicorn education_platform.main:app --reload --host 127.0.0.1 --port 8000
   4. Frontend: cd frontend; copy .env.example .env; npm install; npm run dev
-  5. Optional ingest worker: cd backend; uv run python -m education_platform.workers
+  5. Optional ingest worker (runs natively on Windows): cd backend; uv run python -m education_platform.workers
+     Ctrl+C or Ctrl+Break stops it: no new jobs are claimed, and the current job finishes or is requeued before the process exits.
   6. Optional policy LLM: set OPENROUTER_API_KEY in backend/.env
   7. Open: API docs http://127.0.0.1:8000/docs  |  app http://localhost:5173
 

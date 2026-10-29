@@ -215,10 +215,12 @@ def run_forever(
 ) -> None:
     """Poll feedback summaries, then ingest jobs, then generation jobs.
 
-    SIGTERM and SIGINT stop new claims. The current job may finish inside
-    ``WORKER_SHUTDOWN_GRACE_SECONDS``. Otherwise its lease is requeued (the
-    attempt is refunded) and the in-flight job is cancelled so its ``finally``
-    blocks run. The process then returns and exits 0.
+    SIGTERM and SIGINT stop new claims. On Windows, Ctrl+Break (SIGBREAK) does
+    too. The current job may finish inside ``WORKER_SHUTDOWN_GRACE_SECONDS``.
+    Otherwise its lease is requeued (the attempt is refunded) and the in-flight
+    job is cancelled so its ``finally`` blocks run. The process then returns
+    and exits 0. A KeyboardInterrupt from that cancellation is the same stop
+    path on Linux (SIGUSR1) and Windows (``interrupt_main``).
     """
     state = shutdown if shutdown is not None else WorkerShutdown()
     if shutdown is None:
