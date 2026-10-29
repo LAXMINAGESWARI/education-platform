@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from education_platform.core.config import Settings, get_settings
 from education_platform.modules.assistant.graph import (
@@ -18,10 +20,12 @@ from education_platform.modules.assistant.graph import (
     retrieve_node,
     summarize_node,
 )
+from education_platform.modules.assistant.models import ChatMessage, ChatMessageRole
 from education_platform.modules.assistant.policy_events import (
     push_policy_events,
     reset_policy_events,
 )
+from education_platform.modules.assistant.service import _after_timestamp
 from education_platform.modules.assistant.stream import clear_policy_runs
 from education_platform.modules.authorization.principal import Principal
 
@@ -66,6 +70,11 @@ def _state(**over: Any) -> dict[str, Any]:
     }
     state.update(over)
     return state
+
+
+def test_reply_timestamp_stays_after_the_question_when_the_clock_does_not_move() -> None:
+    moment = datetime.now(UTC) + timedelta(minutes=1)
+    assert _after_timestamp(moment) == moment + timedelta(microseconds=1)
 
 
 def _admin_headers(client: TestClient) -> dict[str, str]:
@@ -291,6 +300,13 @@ def test_policy_stream_route_replays_one_request_and_refuses(
     messages = detail.json()["messages"]
     assert [row["content"] for row in messages].count(question) == 1
     assert sum(1 for row in messages if row["role"] == "assistant") == 2
+    user_row = next(row for row in messages if row["role"] == "user" and row["content"] == question)
+    answer_row = next(
+        row for row in messages if row["role"] == "assistant" and row["content"] == final["content"]
+    )
+    assert datetime.fromisoformat(answer_row["created_at"]) > datetime.fromisoformat(
+        user_row["created_at"]
+    )
 
     refusal_id = str(uuid4())
     refused = _read_stream(
@@ -314,6 +330,75 @@ def test_policy_stream_route_replays_one_request_and_refuses(
     assert terminal[1] is not None
     assert terminal[1]["message"]
     assert terminal[1]["assistant_message"]["content"] == terminal[1]["message"]
+
+
+def test_policy_stream_replays_when_reply_sorts_before_the_question(
+    client: TestClient,
+    seeded_db: Session,
+) -> None:
+    """A tied created_at must still replay. uuid order is not insertion order."""
+    headers = _admin_headers(client)
+    created = client.post("/api/v1/chats", json={"title": "Attendance"}, headers=headers)
+    assert created.status_code == 201, created.text
+    conv_id = UUID(created.json()["id"])
+    request_id = uuid4()
+    question = "What happens after three absences?"
+    answer = "Three absences are recorded on the attendance register."
+    moment = datetime.now(UTC)
+    question_id = UUID("ffffffff-ffff-4fff-bfff-ffffffffffff")
+    reply_id = UUID("00000000-0000-4000-8000-000000000001")
+    seeded_db.add(
+        ChatMessage(
+            id=question_id,
+            conversation_id=conv_id,
+            role=ChatMessageRole.USER,
+            content=question,
+            citations=None,
+            token_estimate=1,
+            client_request_id=request_id,
+            created_at=moment,
+            updated_at=moment,
+        )
+    )
+    seeded_db.add(
+        ChatMessage(
+            id=reply_id,
+            conversation_id=conv_id,
+            role=ChatMessageRole.ASSISTANT,
+            content=answer,
+            citations=None,
+            token_estimate=1,
+            created_at=moment,
+            updated_at=moment,
+        )
+    )
+    seeded_db.commit()
+
+    detail = client.get(f"/api/v1/chats/{conv_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    rows = detail.json()["messages"]
+    stored_user = next(row for row in rows if row["id"] == str(question_id))
+    stored_reply = next(row for row in rows if row["id"] == str(reply_id))
+    assert stored_reply["created_at"] == stored_user["created_at"]
+    assert stored_reply["id"] < stored_user["id"]
+
+    clear_policy_runs()
+    replayed = _read_stream(
+        client,
+        f"/api/v1/chats/{conv_id}/messages/stream",
+        {"content": question, "request_id": str(request_id)},
+        headers,
+    )
+    assert [name for name, _payload in replayed] == ["final"]
+    assert replayed[-1][1] is not None
+    assert replayed[-1][1]["content"] == answer
+
+    after = client.get(f"/api/v1/chats/{conv_id}", headers=headers)
+    assert after.status_code == 200, after.text
+    saved = after.json()["messages"]
+    assert [row["content"] for row in saved].count(question) == 1
+    assert [row["content"] for row in saved].count(answer) == 1
+    assert sum(1 for row in saved if row["role"] == "assistant") == 2
 
 
 def test_policy_stream_error_rolls_back_and_blank_messages_are_rejected(

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.core.config import get_settings
@@ -158,7 +159,7 @@ async def get_conversation(
         await session.scalars(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == conv.id)
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(*_transcript_order())
         )
     ).all()
     return ConversationDetailOut(
@@ -207,13 +208,38 @@ async def owned_conversation(
     return await _get_owned_conversation(session, principal, conversation_id)
 
 
+def _transcript_order() -> tuple[Any, ...]:
+    """Reading order for one conversation.
+
+    Postgres ``now()`` is the transaction timestamp, so the question and its
+    reply share ``created_at``. Role keeps the question first. ``id`` is a
+    random uuid, not insertion order, so it cannot decide which row came first.
+    """
+    return (
+        ChatMessage.created_at.asc(),
+        case(
+            (ChatMessage.role == ChatMessageRole.USER, 0),
+            (ChatMessage.role == ChatMessageRole.ASSISTANT, 1),
+            else_=2,
+        ),
+        ChatMessage.id.asc(),
+    )
+
+
+def _after_timestamp(moment: datetime) -> datetime:
+    current = datetime.now(UTC)
+    if current > moment:
+        return current
+    return moment + timedelta(microseconds=1)
+
+
 async def _ordered_messages(session: AsyncSession, conversation_id: UUID) -> list[ChatMessage]:
     return list(
         (
             await session.scalars(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == conversation_id)
-                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+                .order_by(*_transcript_order())
             )
         ).all()
     )
@@ -297,6 +323,7 @@ async def persist_policy_turn(
     existing_user: ChatMessage | None,
 ) -> PostMessageOut:
     settings = get_settings()
+    anchor = datetime.now(UTC) if existing_user is None else existing_user.created_at
     if existing_user is None:
         user_msg = ChatMessage(
             conversation_id=conv.id,
@@ -305,6 +332,8 @@ async def persist_policy_turn(
             citations=None,
             token_estimate=estimate_tokens(text),
             client_request_id=client_request_id,
+            created_at=anchor,
+            updated_at=anchor,
         )
         session.add(user_msg)
         await session.flush()
@@ -315,12 +344,15 @@ async def persist_policy_turn(
         {"id": item.id, "label": item.label, "excerpt": item.excerpt} for item in reply.citations
     ]
     prompt_tokens = estimate_tokens(text) + sum(estimate_tokens(turn.content) for turn in history)
+    answered_at = _after_timestamp(anchor)
     assistant_msg = ChatMessage(
         conversation_id=conv.id,
         role=ChatMessageRole.ASSISTANT,
         content=reply.content,
         citations=list(citations_raw) if citations_raw else None,
         token_estimate=estimate_tokens(reply.content),
+        created_at=answered_at,
+        updated_at=answered_at,
     )
     session.add(assistant_msg)
     conv.context_used_tokens = prompt_tokens
