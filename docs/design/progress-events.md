@@ -283,8 +283,17 @@ not use the stage enum.
 `POST /api/v1/chats/{conversation_id}/messages/stream` sends
 `{ "content", "request_id" }`.
 
-`kind` = `policy_chat`. Same request-scoped rules as text-to-SQL, including
-reconnect-by-reask with the same `request_id`.
+`kind` = `policy_chat`. The stage envelope matches the other streams. A repeat
+POST with the same `request_id` replays the saved turn and does not insert
+another message. Policy chat keeps that turn in `chat_messages`. A text-to-SQL
+post keeps no answer, so a repeat there starts another ask.
+
+Replay follows `chat_messages.reply_to_message_id`. A legacy assistant row has
+no link. Replay then uses the next assistant reply after the question and stops
+at the next question. Transcript order is `created_at` from the database clock.
+A question and its reply share that timestamp when they are saved in one
+transaction, and the question sorts first on a tie. The in-process stream run
+cache is keyed by user, conversation, and `request_id`.
 
 | Stage | Graph nodes |
 | --- | --- |

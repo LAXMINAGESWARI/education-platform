@@ -259,7 +259,12 @@ end, with the same `UsageRecord` shape as `complete`. Each delta is one
 answer text. `final` is `{ "content", "citations" }` plus the saved user
 message, assistant message, and context. `table` is not emitted. `refusal`,
 `error`, and the 15 s heartbeat are. A repeat POST with the same `request_id`
-replays the saved turn and does not insert another message. The text-to-SQL
-stages `writing_query`, `validating`, and `running` are not used. The answer
+replays the saved turn and does not insert another message. Replay follows
+`chat_messages.reply_to_message_id`. A legacy assistant row has no link: replay
+uses the next assistant reply and stops at the next question. Ordering uses
+`created_at` from the database clock, with the question first when the
+timestamps tie. The in-process stream run cache is keyed by user, conversation,
+and `request_id`. The text-to-SQL stages `writing_query`, `validating`, and
+`running` are not used. The answer
 step calls `complete_stream` for `policy_chat.answer` when the gateway is on.
 The frame encoder and heartbeat are the text-to-SQL ones.

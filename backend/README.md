@@ -140,8 +140,10 @@ folder trees or auto-discovered routers.
 - **Administrators** may call `GET /me/learning-directory` without student enrollments.
 - **Administrators** only for ingest upload/status routes (`require_administrator`).
 - **Administrators** only for `/chats*` policy assistant routes.
-- **Teachers** — role exists in schema; no teacher backend module or APIs yet (frontend uses
-  fixtures).
+- **Teachers** — `GET /insights/*` and `GET /at-risk/flags` are narrowed by `Scope` to assigned
+  classes; `POST /text-to-sql/ask` and `POST /text-to-sql/ask/stream` are teacher-only (the stream
+  returns 404 unless `TEXT_TO_SQL_PIPELINE=lean`); `/authoring/*` drafts are reviewed and published
+  by a person.
 - Student-facing quiz endpoints never expose answer keys or correct option labels.
 
 ## Configuration
@@ -160,6 +162,7 @@ Environment variables (see `.env.example`):
 | `OPENROUTER_API_KEY` | unset | Required for live LLM stages (Policy assistant, ADK generation) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Chat model id |
+| `TEXT_TO_SQL_PIPELINE` | `legacy` | `lean` enables the parallel text-to-SQL pipeline and `POST /text-to-sql/ask/stream`; restart the API after changing it |
 | `JEV_GUARD_TIMEOUT_SECONDS` | `8` | Jev Decisions timeout and the gateway guard-step timeout. Does not inherit `JEV_TIMEOUT_SECONDS` |
 | `GUARD_JEV_BLOCK_THRESHOLD` | `0.6` | Noul probability treated as the old classifier's `true` |
 | `GUARD_JEV_MODEL` | `typesafe/jev-1.14` | Decisions model posted by the chat guard. Does not follow `JEV_MODEL` |

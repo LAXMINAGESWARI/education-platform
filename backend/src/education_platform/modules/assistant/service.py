@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from education_platform.core.config import get_settings
@@ -158,7 +159,7 @@ async def get_conversation(
         await session.scalars(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == conv.id)
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(*_transcript_order())
         )
     ).all()
     return ConversationDetailOut(
@@ -207,13 +208,31 @@ async def owned_conversation(
     return await _get_owned_conversation(session, principal, conversation_id)
 
 
+def _transcript_order() -> tuple[Any, ...]:
+    """Reading order for one conversation.
+
+    Postgres ``now()`` is the transaction timestamp, so the question and its
+    reply share ``created_at``. Role keeps the question first. ``id`` is a
+    random uuid, not insertion order, so it cannot decide which row came first.
+    """
+    return (
+        ChatMessage.created_at.asc(),
+        case(
+            (ChatMessage.role == ChatMessageRole.USER, 0),
+            (ChatMessage.role == ChatMessageRole.ASSISTANT, 1),
+            else_=2,
+        ),
+        ChatMessage.id.asc(),
+    )
+
+
 async def _ordered_messages(session: AsyncSession, conversation_id: UUID) -> list[ChatMessage]:
     return list(
         (
             await session.scalars(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == conversation_id)
-                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+                .order_by(*_transcript_order())
             )
         ).all()
     )
@@ -249,6 +268,32 @@ class PolicyStreamLoad:
     replay: PostMessageOut | None
 
 
+def _assistant_for(
+    rows: list[ChatMessage], index: int, question: ChatMessage
+) -> ChatMessage | None:
+    """Reply linked to this question, or a legacy reply before the next question.
+
+    A greeting or a later turn's answer can sit next to this question when
+    clocks disagree. Those rows point elsewhere, so they are not this reply.
+    """
+    linked = next(
+        (
+            row
+            for row in rows
+            if row.role == ChatMessageRole.ASSISTANT and row.reply_to_message_id == question.id
+        ),
+        None,
+    )
+    if linked is not None:
+        return linked
+    for later in rows[index + 1 :]:
+        if later.role == ChatMessageRole.USER:
+            return None
+        if later.role == ChatMessageRole.ASSISTANT and later.reply_to_message_id is None:
+            return later
+    return None
+
+
 async def load_policy_stream(
     session: AsyncSession,
     conv: ChatConversation,
@@ -260,10 +305,7 @@ async def load_policy_stream(
     for index, message in enumerate(rows):
         if message.role != ChatMessageRole.USER or message.client_request_id != request_id:
             continue
-        assistant = next(
-            (later for later in rows[index + 1 :] if later.role == ChatMessageRole.ASSISTANT),
-            None,
-        )
+        assistant = _assistant_for(rows, index, message)
         if assistant is None:
             return PolicyStreamLoad(
                 history=_history_from(rows[:index], content=content),
@@ -321,6 +363,7 @@ async def persist_policy_turn(
         content=reply.content,
         citations=list(citations_raw) if citations_raw else None,
         token_estimate=estimate_tokens(reply.content),
+        reply_to_message_id=user_msg.id,
     )
     session.add(assistant_msg)
     conv.context_used_tokens = prompt_tokens
