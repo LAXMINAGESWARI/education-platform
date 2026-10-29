@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -226,13 +226,6 @@ def _transcript_order() -> tuple[Any, ...]:
     )
 
 
-def _after_timestamp(moment: datetime) -> datetime:
-    current = datetime.now(UTC)
-    if current > moment:
-        return current
-    return moment + timedelta(microseconds=1)
-
-
 async def _ordered_messages(session: AsyncSession, conversation_id: UUID) -> list[ChatMessage]:
     return list(
         (
@@ -275,6 +268,32 @@ class PolicyStreamLoad:
     replay: PostMessageOut | None
 
 
+def _assistant_for(
+    rows: list[ChatMessage], index: int, question: ChatMessage
+) -> ChatMessage | None:
+    """Reply linked to this question, or a legacy reply before the next question.
+
+    A greeting or a later turn's answer can sit next to this question when
+    clocks disagree. Those rows point elsewhere, so they are not this reply.
+    """
+    linked = next(
+        (
+            row
+            for row in rows
+            if row.role == ChatMessageRole.ASSISTANT and row.reply_to_message_id == question.id
+        ),
+        None,
+    )
+    if linked is not None:
+        return linked
+    for later in rows[index + 1 :]:
+        if later.role == ChatMessageRole.USER:
+            return None
+        if later.role == ChatMessageRole.ASSISTANT and later.reply_to_message_id is None:
+            return later
+    return None
+
+
 async def load_policy_stream(
     session: AsyncSession,
     conv: ChatConversation,
@@ -286,10 +305,7 @@ async def load_policy_stream(
     for index, message in enumerate(rows):
         if message.role != ChatMessageRole.USER or message.client_request_id != request_id:
             continue
-        assistant = next(
-            (later for later in rows[index + 1 :] if later.role == ChatMessageRole.ASSISTANT),
-            None,
-        )
+        assistant = _assistant_for(rows, index, message)
         if assistant is None:
             return PolicyStreamLoad(
                 history=_history_from(rows[:index], content=content),
@@ -323,7 +339,6 @@ async def persist_policy_turn(
     existing_user: ChatMessage | None,
 ) -> PostMessageOut:
     settings = get_settings()
-    anchor = datetime.now(UTC) if existing_user is None else existing_user.created_at
     if existing_user is None:
         user_msg = ChatMessage(
             conversation_id=conv.id,
@@ -332,8 +347,6 @@ async def persist_policy_turn(
             citations=None,
             token_estimate=estimate_tokens(text),
             client_request_id=client_request_id,
-            created_at=anchor,
-            updated_at=anchor,
         )
         session.add(user_msg)
         await session.flush()
@@ -344,15 +357,13 @@ async def persist_policy_turn(
         {"id": item.id, "label": item.label, "excerpt": item.excerpt} for item in reply.citations
     ]
     prompt_tokens = estimate_tokens(text) + sum(estimate_tokens(turn.content) for turn in history)
-    answered_at = _after_timestamp(anchor)
     assistant_msg = ChatMessage(
         conversation_id=conv.id,
         role=ChatMessageRole.ASSISTANT,
         content=reply.content,
         citations=list(citations_raw) if citations_raw else None,
         token_estimate=estimate_tokens(reply.content),
-        created_at=answered_at,
-        updated_at=answered_at,
+        reply_to_message_id=user_msg.id,
     )
     session.add(assistant_msg)
     conv.context_used_tokens = prompt_tokens

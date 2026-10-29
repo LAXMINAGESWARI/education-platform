@@ -25,7 +25,6 @@ from education_platform.modules.assistant.policy_events import (
     push_policy_events,
     reset_policy_events,
 )
-from education_platform.modules.assistant.service import _after_timestamp
 from education_platform.modules.assistant.stream import clear_policy_runs
 from education_platform.modules.authorization.principal import Principal
 
@@ -70,11 +69,6 @@ def _state(**over: Any) -> dict[str, Any]:
     }
     state.update(over)
     return state
-
-
-def test_reply_timestamp_stays_after_the_question_when_the_clock_does_not_move() -> None:
-    moment = datetime.now(UTC) + timedelta(minutes=1)
-    assert _after_timestamp(moment) == moment + timedelta(microseconds=1)
 
 
 def _admin_headers(client: TestClient) -> dict[str, str]:
@@ -304,9 +298,7 @@ def test_policy_stream_route_replays_one_request_and_refuses(
     answer_row = next(
         row for row in messages if row["role"] == "assistant" and row["content"] == final["content"]
     )
-    assert datetime.fromisoformat(answer_row["created_at"]) > datetime.fromisoformat(
-        user_row["created_at"]
-    )
+    assert answer_row["created_at"] == user_row["created_at"]
 
     refusal_id = str(uuid4())
     refused = _read_stream(
@@ -399,6 +391,167 @@ def test_policy_stream_replays_when_reply_sorts_before_the_question(
     assert [row["content"] for row in saved].count(question) == 1
     assert [row["content"] for row in saved].count(answer) == 1
     assert sum(1 for row in saved if row["role"] == "assistant") == 2
+
+
+@pytest.mark.parametrize(
+    "offset",
+    [timedelta(seconds=-2), timedelta(hours=1)],
+    ids=["api-behind", "api-ahead"],
+)
+def test_policy_stream_replay_ignores_api_clock_skew(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    offset: timedelta,
+) -> None:
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return datetime.now(tz) + offset
+
+    monkeypatch.setattr("education_platform.modules.assistant.service.datetime", _Clock)
+    headers = _admin_headers(client)
+    created = client.post("/api/v1/chats", json={"title": "Attendance"}, headers=headers)
+    assert created.status_code == 201, created.text
+    conv_id = created.json()["id"]
+    request_id = str(uuid4())
+    question = "What happens after three absences?"
+    frames = _read_stream(
+        client,
+        f"/api/v1/chats/{conv_id}/messages/stream",
+        {"content": question, "request_id": request_id},
+        headers,
+    )
+    final = next(payload for name, payload in frames if name == "final" and payload is not None)
+    detail = client.get(f"/api/v1/chats/{conv_id}", headers=headers)
+    messages = detail.json()["messages"]
+    assert messages[0]["content"].startswith("Ask about attendance")
+    assert messages[1]["role"] == "user" and messages[1]["content"] == question
+    assert messages[2]["content"] == final["content"]
+
+    clear_policy_runs()
+    stored = _read_stream(
+        client,
+        f"/api/v1/chats/{conv_id}/messages/stream",
+        {"content": question, "request_id": request_id},
+        headers,
+    )
+    assert [name for name, _payload in stored] == ["final"]
+    assert stored[-1][1] is not None
+    assert stored[-1][1]["content"] == final["content"]
+    assert not stored[-1][1]["content"].startswith("Ask about attendance")
+
+
+def test_policy_stream_replay_does_not_borrow_a_later_answer(
+    client: TestClient,
+    seeded_db: Session,
+) -> None:
+    headers = _admin_headers(client)
+    created = client.post("/api/v1/chats", json={"title": "Attendance"}, headers=headers)
+    assert created.status_code == 201, created.text
+    conv_id = UUID(created.json()["id"])
+    request_id = uuid4()
+    base = datetime.now(UTC)
+    question_id = uuid4()
+    later_question_id = uuid4()
+    later_reply_id = uuid4()
+    seeded_db.add(
+        ChatMessage(
+            id=question_id,
+            conversation_id=conv_id,
+            role=ChatMessageRole.USER,
+            content="What happens after three absences?",
+            citations=None,
+            token_estimate=1,
+            client_request_id=request_id,
+            created_at=base,
+            updated_at=base,
+        )
+    )
+    seeded_db.add(
+        ChatMessage(
+            id=later_question_id,
+            conversation_id=conv_id,
+            role=ChatMessageRole.USER,
+            content="A different question",
+            citations=None,
+            token_estimate=1,
+            client_request_id=uuid4(),
+            created_at=base + timedelta(seconds=2),
+            updated_at=base + timedelta(seconds=2),
+        )
+    )
+    seeded_db.flush()
+    seeded_db.add(
+        ChatMessage(
+            id=later_reply_id,
+            conversation_id=conv_id,
+            role=ChatMessageRole.ASSISTANT,
+            content="ANSWER TO SECOND",
+            citations=None,
+            token_estimate=1,
+            reply_to_message_id=later_question_id,
+            created_at=base + timedelta(seconds=1),
+            updated_at=base + timedelta(seconds=1),
+        )
+    )
+    seeded_db.commit()
+
+    clear_policy_runs()
+    replayed = _read_stream(
+        client,
+        f"/api/v1/chats/{conv_id}/messages/stream",
+        {"content": "What happens after three absences?", "request_id": str(request_id)},
+        headers,
+    )
+    names = [name for name, _payload in replayed]
+    final = next(payload for name, payload in replayed if name == "final" and payload is not None)
+    assert "progress" in names
+    assert final["content"] != "ANSWER TO SECOND"
+
+
+def test_policy_stream_cache_is_scoped_to_the_conversation(client: TestClient) -> None:
+    headers = _admin_headers(client)
+    request_id = str(uuid4())
+    first = client.post("/api/v1/chats", json={"title": "First"}, headers=headers)
+    second = client.post("/api/v1/chats", json={"title": "Second"}, headers=headers)
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    first_id = first.json()["id"]
+    second_id = second.json()["id"]
+    first_question = "What is the attendance policy?"
+    second_question = "What is the late homework policy?"
+
+    clear_policy_runs()
+    first_frames = _read_stream(
+        client,
+        f"/api/v1/chats/{first_id}/messages/stream",
+        {"content": first_question, "request_id": request_id},
+        headers,
+    )
+    first_final = next(
+        payload for name, payload in first_frames if name == "final" and payload is not None
+    )
+    assert first_final["user_message"]["content"] == first_question
+    second_frames = _read_stream(
+        client,
+        f"/api/v1/chats/{second_id}/messages/stream",
+        {"content": second_question, "request_id": request_id},
+        headers,
+    )
+    assert "progress" in [name for name, _payload in second_frames]
+    second_final = next(
+        payload for name, payload in second_frames if name == "final" and payload is not None
+    )
+    assert second_final["user_message"]["content"] == second_question
+    again = _read_stream(
+        client,
+        f"/api/v1/chats/{first_id}/messages/stream",
+        {"content": first_question, "request_id": request_id},
+        headers,
+    )
+    assert [name for name, _payload in again] == ["final"]
+    assert again[-1][1] is not None
+    assert again[-1][1]["user_message"]["content"] == first_question
 
 
 def test_policy_stream_error_rolls_back_and_blank_messages_are_rejected(

@@ -53,7 +53,7 @@ _STAGE_MESSAGE = {
 _STAGE_PERCENT = {"checking": 25, "searching": 60, "summarising": 90}
 
 _LOCK = asyncio.Lock()
-_RUNS: dict[tuple[str, str], _Run] = {}
+_RUNS: dict[tuple[str, str, str], _Run] = {}
 _BACKGROUND: set[asyncio.Task[None]] = set()
 
 
@@ -167,8 +167,9 @@ def _evict_finished_runs() -> None:
             return
 
 
-async def _claim(user_id: UUID, request_id: UUID) -> tuple[_Run, bool]:
-    key = (str(user_id), str(request_id))
+async def _claim(user_id: UUID, conversation_id: UUID, request_id: UUID) -> tuple[_Run, bool]:
+    """One live run per conversation. A client may reuse a request id elsewhere."""
+    key = (str(user_id), str(conversation_id), str(request_id))
     async with _LOCK:
         current = _RUNS.get(key)
         if current is not None:
@@ -279,7 +280,7 @@ async def iter_policy_stream(
     request_id: UUID,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
 ) -> AsyncIterator[bytes]:
-    run, owner = await _claim(principal.user_id, request_id)
+    run, owner = await _claim(principal.user_id, conversation_id, request_id)
     if not owner:
         async for frame in _follow(run, heartbeat_seconds):
             yield frame
