@@ -60,7 +60,7 @@ and nothing in this repository is a prediction about a real child.
 - Dashboard, curriculum browser and curriculum PDF upload with ingest status.
 - Knowledge-document upload and indexing (Docling chunking, pgvector embeddings).
 - Policy assistant: multi-chat, retrieval over the indexed documents, streamed answers.
-- Institution-wide at-risk view and an audit-event log.
+- Institution-wide at-risk view and an audit-event log (API: `GET /api/v1/admin/audit-events`; no admin page).
 
 ## Status
 
@@ -76,7 +76,7 @@ and nothing in this repository is a prediction about a real child.
 | Central LLM gateway (retries, fallback models, circuit breaker, usage rows) | **Built**, enabled per feature by flag |
 | Jev lesson and item judge | **Built**. Default `shadow` mode records scores and leaves the gate unchanged; `enforce` is opt-in |
 | Postgres + pgvector, Postgres ingest worker | **Built** |
-| Production deploy (Oracle ARM VM, Cloudflare Tunnel, k3s chart) | **Built** (see `deploy/`) |
+| Production deploy (Oracle ARM VM, Cloudflare Tunnel, k3s chart) | **Built** ([deploy/README.md](deploy/README.md), [chart](deploy/helm/curioed/README.md)) |
 | Four-pillar analytics snapshots, MinIO, React Native client, student grounded assistant | **Deferred** |
 
 Full matrix: [docs/README.md#implementation-status](docs/README.md#implementation-status).
@@ -122,6 +122,8 @@ flowchart LR
 | `academics` | Periods, grades, subjects, enrollments, learning directory, demo bootstrap/reset |
 | `materials` | Curriculum seed, lessons, progress, PDF ingest hooks |
 | `assessments` | Quizzes and scored attempts (no answer keys on student APIs) |
+| `engagement` | Active seconds on a lesson slide, and the engagement rate shown on feedback |
+| `self_evaluation` | A student's confidence rating for a subject |
 | `insights` | Scoped reads over the `student_360` register (dashboard, roster, student) |
 | `at_risk`, `attendance` | Early-warning engine (pure function over `student_360`), flags, dismissals |
 | `text_to_sql` | Teacher ask-the-data: legacy LangGraph pipeline and lean pipeline with SSE stream |
@@ -271,9 +273,10 @@ curl http://127.0.0.1:8000/health
 
 ## Production deploy
 
-One Oracle Cloud Always Free ARM VM, a Linux PC behind a Cloudflare Tunnel, or the k3s Helm chart.
+One Oracle Cloud Always Free ARM VM, or a Linux PC behind a Cloudflare Tunnel.
 Local `docker compose up -d postgres` is unchanged. Steps, GoDaddy DNS, and the
-GitHub auto-deploy secrets are in [deploy/README.md](deploy/README.md).
+GitHub auto-deploy secrets are in [deploy/README.md](deploy/README.md). The k3s Helm
+chart is documented in [deploy/helm/curioed/README.md](deploy/helm/curioed/README.md).
 
 ## Quality checks
 
