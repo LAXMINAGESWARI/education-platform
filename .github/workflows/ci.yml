@@ -264,6 +264,38 @@ jobs:
             cloudflare/cloudflared:2026.10.1 \
             ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
 
+  worker-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-groups --locked
+      - name: Smoke-test worker signal install
+        run: |
+          uv run python - <<'PY'
+          from education_platform.workers.runner import run_forever
+          from education_platform.workers.shutdown import WorkerShutdown
+
+          assert callable(run_forever)
+          state = WorkerShutdown(
+              grace_seconds=1,
+              release=lambda _lease: None,
+              exit=lambda _code: None,
+          )
+          state.install_signals()
+          print("install_signals ok")
+          PY
+      # tests/conftest.py imports fcntl and clones Postgres. This job does neither.
+      - name: Windows signal unit tests
+        run: uv run pytest tests/test_worker_windows_signals.py --noconftest --cov-fail-under=0
+
   quality:
     runs-on: ubuntu-latest
     # Aggregator only: this job reads `needs` and does not run pytest.

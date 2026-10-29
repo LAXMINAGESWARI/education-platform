@@ -5,12 +5,19 @@ and the worker does not need to be PID 1. A second signal does not move the
 deadline or release twice.
 
 After the grace period the lease is released and committed first. The watch
-thread then sets a flag and delivers SIGUSR1 to the main thread. That handler
-raises KeyboardInterrupt only when the flag is set, including when the job is
-blocked in sleep, so ``finally`` blocks run. A SIGUSR1 from anywhere else is
-logged and ignored, so it cannot abort a job whose lease was not released.
-SIGINT cannot do this: it is already handled by ``note_signal``, and a second
-SIGINT does not raise.
+thread then sets a flag and wakes the main thread. On Linux and macOS that wake
+is SIGUSR1. ``_interrupt_job`` raises KeyboardInterrupt only when the flag is
+set, including when the job is blocked in sleep, so ``finally`` blocks run. A
+SIGUSR1 from anywhere else is logged and ignored, so it cannot abort a job
+whose lease was not released. On those platforms SIGINT cannot do this: it is
+already handled by ``note_signal``, and a second SIGINT does not raise.
+
+Without SIGUSR1 (Windows), the wake is ``_thread.interrupt_main`` and it runs
+only when that same flag is set. ``interrupt_main`` schedules SIGINT for the
+main thread; ``note_signal`` raises KeyboardInterrupt for that delivery alone.
+Ctrl+C and Ctrl+Break still request a graceful shutdown before the lease is
+released. ``interrupt_main`` cannot interrupt a blocking C call that does not
+return to the interpreter.
 
 ``os._exit`` is not used: it would skip those blocks and drop a job that was
 about to commit.
@@ -18,6 +25,7 @@ about to commit.
 
 from __future__ import annotations
 
+import _thread
 import logging
 import signal
 import threading
@@ -40,6 +48,15 @@ def _wait_for_event(event: threading.Event, timeout: float) -> bool:
     return event.wait(timeout)
 
 
+def _has_usr1() -> bool:
+    """True when SIGUSR1 can be delivered to the main thread.
+
+    Read on each call so a platform without ``SIGUSR1`` or ``pthread_kill``
+    never touches those attributes. Linux and macOS keep the SIGUSR1 path.
+    """
+    return hasattr(signal, "SIGUSR1") and hasattr(signal, "pthread_kill")
+
+
 _interrupt_after_release = threading.Event()
 
 
@@ -54,7 +71,7 @@ def clear_interrupt_request() -> None:
 
 
 def request_interrupt_after_release() -> None:
-    """Allow the next SIGUSR1 to raise. The watcher calls this after the release."""
+    """Allow the next main-thread wake to raise. The watcher calls this after the release."""
     _interrupt_after_release.set()
 
 
@@ -72,15 +89,29 @@ def _interrupt_job(_signum: int, _frame: FrameType | None) -> None:
 
 
 def wake_worker_main() -> None:
-    """Raise KeyboardInterrupt on the main thread and wake a blocking sleep."""
-    ident = threading.main_thread().ident
-    if ident is None:
+    """Raise KeyboardInterrupt on the main thread and wake a blocking sleep.
+
+    With SIGUSR1, deliver that signal and let ``_interrupt_job`` apply the
+    lease-release flag. Without it, ``_thread.interrupt_main`` runs only when
+    the flag is already set. That call schedules SIGINT; it does not interrupt
+    a blocking C call that never returns to the interpreter.
+    """
+    if _has_usr1():
+        ident = threading.main_thread().ident
+        if ident is None:
+            return
+        signal.pthread_kill(ident, signal.SIGUSR1)
         return
-    signal.pthread_kill(ident, signal.SIGUSR1)
+    if not _interrupt_after_release.is_set():
+        logger.warning(
+            "Ignored main-thread interrupt; shutdown has not released the in-flight lease"
+        )
+        return
+    _thread.interrupt_main()
 
 
 class WorkerShutdown:
-    """Idempotent SIGTERM/SIGINT handling for the job-claim loop."""
+    """Idempotent SIGTERM/SIGINT/SIGBREAK handling for the job-claim loop."""
 
     def __init__(
         self,
@@ -112,11 +143,16 @@ class WorkerShutdown:
     def install_signals(self) -> None:
         """Register SIGTERM and SIGINT, then watch for them on a daemon thread.
 
+        SIGUSR1 is registered only where it can be delivered to the main thread.
+        SIGBREAK (Windows Ctrl+Break) uses the same handler as SIGTERM and SIGINT.
         A second call replaces the same handlers and does not start another thread.
         """
         signal.signal(signal.SIGTERM, self.note_signal)
         signal.signal(signal.SIGINT, self.note_signal)
-        signal.signal(signal.SIGUSR1, _interrupt_job)
+        if _has_usr1():
+            signal.signal(signal.SIGUSR1, _interrupt_job)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, self.note_signal)
         if self._thread is not None:
             return
         self._thread = threading.Thread(
@@ -127,7 +163,15 @@ class WorkerShutdown:
         self._thread.start()
 
     def note_signal(self, _signum: int, _frame: FrameType | None = None) -> None:
-        """Request shutdown. A second signal does not move the grace deadline."""
+        """Request shutdown. A second signal does not move the grace deadline.
+
+        Where SIGUSR1 exists this never raises. Without it, ``interrupt_main``
+        re-enters this handler via SIGINT, and that delivery raises only after
+        the lease release has committed.
+        """
+        if not _has_usr1() and _interrupt_after_release.is_set():
+            _interrupt_after_release.clear()
+            raise KeyboardInterrupt
         with self._lock:
             self.stop.set()
             if self._signaled:

@@ -33,7 +33,8 @@ database.
 
 ### Ingest worker
 
-PDF ingest polls Postgres `ingest_jobs` (no Redis). Run a worker process:
+PDF ingest polls Postgres `ingest_jobs` (no Redis). The worker process runs natively on Windows,
+Linux, and macOS:
 
 ```bash
 # from repo root
@@ -42,6 +43,9 @@ docker compose up -d postgres
 # from backend/ (separate terminal)
 uv run python -m education_platform.workers
 ```
+
+Ctrl+C requests a graceful stop. On Windows, Ctrl+Break does the same. The worker stops claiming
+jobs, lets the current job finish inside the shutdown grace period, or requeues that job and exits.
 
 First Docling / sentence-transformers runs download models (can take several minutes). Uploads are
 stored under `backend/var/uploads/`; embeddings live in Postgres `chunk_embeddings` (pgvector).
