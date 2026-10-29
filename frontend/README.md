@@ -1,7 +1,8 @@
 # Frontend
 
 Vite + React + TypeScript **multi-role web client** for CurioEd: student
-(live API), administrator (live API including policy chats), and teacher (mock fixtures).
+(live API), administrator (live API including policy chats), and teacher (live API: classes,
+at-risk list, ask-the-data assistant, question bank).
 
 See the [documentation hub](../docs/README.md) for product vision and implementation status.
 
@@ -14,7 +15,12 @@ See the [documentation hub](../docs/README.md) for product vision and implementa
 | `/admin/materials/...` | Admin | Live `GET /me/learning-directory` + curriculum PDF ingest |
 | `/admin/documents` | Admin | Live knowledge-document upload/list (ingest status) |
 | `/admin/policy` | Admin | Live chats API (`src/api/chats.ts`) |
-| `/teacher/...` | Teacher | Mock (`src/mocks/teacherAssignments.ts`) |
+| `/admin/at-risk` | Admin | Live `GET /at-risk/flags` (`src/api/atRisk.ts`) |
+| `/teacher`, `/teacher/classes/...` | Teacher | Live `GET /insights/*` (`src/api/insights.ts`) |
+| `/teacher/at-risk` | Teacher | Live `GET /at-risk/flags`, dismiss (`src/api/atRisk.ts`) |
+| `/teacher/assistant` | Teacher | Live `POST /text-to-sql/ask`, or `/ask/stream` when the API runs `TEXT_TO_SQL_PIPELINE=lean` (`src/api/textToSql.ts`) |
+| `/teacher/questions` | Teacher | Live authoring API (`src/api/authoring.ts`) |
+| `/teacher/topics/:id/generation` | Teacher | Live generation runs + progress stream (`src/api/generation.ts`) |
 
 Post-login routing uses `MeResponse.roles` (priority admin → teacher → student): administrators →
 `/admin`, teachers → `/teacher`, students → `/` (then enrollment gate).
@@ -64,6 +70,10 @@ Administrators do not require student enrollments to read the learning directory
 
 1. **Sign in** as `meera.krishnan@alnoor.school` / `demo1234`, or use **Enter as teacher** in dev
 2. Explore `/teacher` classes, roster, and subject materials for that teacher's assignments
+3. `/teacher/at-risk` — early-warning list with the reasons for each flag
+4. `/teacher/assistant` — ask a question about your own classes. Set `TEXT_TO_SQL_PIPELINE=lean` on the
+   API (and restart it) to see the live stage stepper; otherwise the page shows only "Thinking…"
+5. `/teacher/questions` — generate, review, and publish draft questions
 
 ## DEV shortcuts
 
@@ -81,6 +91,6 @@ cannot load materials (clear error; use the seeded administrator). Policy chat i
 | --- | --- |
 | `src/auth/gates.test.tsx` | Enrollment and role gates |
 | `src/pages/admin/*.test.tsx` | Admin materials browser |
-| `src/pages/teacher/*.test.tsx` | Teacher workspace fixtures |
+| `src/pages/teacher/*.test.tsx` | Teacher workspace pages |
 
 UI mockups for design reference: [docs/assets/](../docs/assets/).
