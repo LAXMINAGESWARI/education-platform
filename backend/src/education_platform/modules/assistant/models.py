@@ -52,3 +52,8 @@ class ChatMessage(UUIDTimestampMixin, Base):
     citations: Mapped[list[Any] | None] = mapped_column(JsonDict, nullable=True)
     token_estimate: Mapped[int] = mapped_column(Integer, default=0)
     client_request_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    reply_to_message_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )

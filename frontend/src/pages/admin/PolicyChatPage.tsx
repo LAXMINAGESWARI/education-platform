@@ -302,7 +302,7 @@ export function PolicyChatPage() {
       if (!saved) {
         triggerHaptic("error");
         setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-        setError(result.message);
+        setError(result.kind === "refusal" ? result.message : "Send failed");
         return;
       }
       setMessages((prev) => {
